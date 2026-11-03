@@ -106,7 +106,7 @@ document.querySelector('#core').textContent=s.python_core==='connected'?'متص�
 function commandReply(text) {
   const command = (text || "").trim().split(/\\s+/, 1)[0].split("@", 1)[0].toLowerCase();
   if (command === "/start") {
-    return "🌸 به KageCatch خوش اومدی!\nاینجا قراره پیدا کردن و گرفتن کاراکترها راحت‌تر بشه.\nاز بخش کچ و پیک می‌تونی بات‌های موردنظرت رو بشناسی و وضعیت قابلیت‌ها رو ببینی.\nبرای راهنما /help رو بزن.";
+    return "🌸 به KageCatch خوش اومدی!\nاینجا قراره کچ و پیک کاراکترها راحت‌تر بشه.\nاز بخش کچ و پیک می‌تونی بات‌های موردنظرت رو بشناسی و وضعیت قابلیت‌ها رو ببینی.\nبرای راهنما /help رو بزن.";
   }
   if (command === "/panel") {
     return "🎯 پنل KageCatch\n\n🎬 SenpaiCatcherBot — کچ ویدئویی با دستور /pick {name}\n🖼 HentaCatcherBot — کچ تصویری با دستور /catch {name}\n🖼 Character_Catcher_Bot — کچ تصویری با دستور /catch {name}\n\n⏳ اتصال و اجرای خودکار کچ در KageCatch هنوز فعال نشده؛ فعلاً این بخش فقط معرفی بات‌هاست.";
