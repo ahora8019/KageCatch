@@ -38,27 +38,30 @@ The Bot API handler boundary currently supports only exact `/start`, `/help`,
 
 This is a safe handler foundation, not a live enrollment UX. Do not enable Bot API collection of login codes or 2FA passwords: Telegram bot private chats are not end-to-end encrypted.
 
-## Worker-to-Core bridge authentication (Phase 6 foundation)
+## Worker-to-Core bridge (Phase 6 foundation)
 
-The Python runtime now defines the authentication contract for internal Worker-to-Core HTTP requests:
-- HMAC-SHA256 signs the uppercase HTTP method, exact path, Unix timestamp, nonce, and SHA-256 digest of the raw request body.
-- Requests use `X-KageCatch-Timestamp`, `X-KageCatch-Nonce`, and `X-KageCatch-Signature` headers.
-- The default clock-skew window is five minutes; malformed headers, stale timestamps, invalid signatures, and reused nonces fail closed.
-- The shared secret must be at least 32 bytes and must be provisioned out-of-band by a secret manager. Never commit it or expose it in logs.
-- The replay-guard interface requires an atomic nonce reservation. The included in-memory implementation is for tests/single-process development only; multi-instance production requires a durable shared store (for example, a transactional D1-backed implementation or Redis with atomic set-if-absent and TTL).
-- The bridge module does not open a network listener, execute commands, connect Telegram sessions, or enable Catch/Pick. The Worker-side signer, authenticated HTTP transport, persistent replay storage, and end-to-end integration remain future work.
+The two repository branches now contain a source-level bridge contract:
+
+- The Cloudflare Worker signs outbound requests with HMAC-SHA256 over the version tag, uppercase HTTP method, exact path, Unix timestamp, random nonce, and SHA-256 digest of the exact raw JSON body.
+- Headers: `X-KageCatch-Timestamp`, `X-KageCatch-Nonce`, and `X-KageCatch-Signature`.
+- Worker forwarding is restricted to exact `/connect` and `/cancel` commands from a private chat where Telegram sender ID equals chat ID. The Worker constructs a minimal payload containing only update ID, sender ID, private chat ID/type, and the exact command; it does not forward arbitrary message text, phone numbers, OTPs, or 2FA passwords.
+- Worker requires an HTTPS origin in `PYTHON_CORE_URL`, a `BRIDGE_SHARED_SECRET` of at least 32 characters, and uses a five-second timeout. It validates the Core reply chat ID and message length before calling Telegram sendMessage.
+- Python `EnrollmentBridge` verifies the same HMAC canonical format using constant-time comparison, rejects timestamps outside a 60-second window, and dispatches only `/connect` or `/cancel` to the existing private-chat handler.
+- `SQLiteNonceStore` provides atomic, persistent replay protection across process restarts on one Core host. Its database path must be on durable private storage; the directory is created with restrictive permissions and the DB is set to mode 0600 where supported.
+- `bridge_auth.py` also exposes reusable HMAC signing/verification primitives. Its in-memory replay guard is for tests/single-process development only.
 
 Canonical signing input (UTF-8, newline-delimited):
 
 ```text
-HTTP_METHOD
-/path
+v1
+POST
+/internal/telegram-update
 UNIX_TIMESTAMP
-lowercase_hex_nonce
+URL_SAFE_RANDOM_NONCE
 sha256_hex(raw_body)
 ```
 
-Do not deploy this foundation as a production bridge until both sides use the exact same canonicalization, the replay guard is durable and shared, transport is protected with HTTPS, secret rotation is documented, and integration/security tests pass.
+**Not deployed or connected:** the Python bridge is a callable service boundary, not a running HTTP/ASGI server. The Cloudflare Worker has not been deployed with `PYTHON_CORE_URL` or `BRIDGE_SHARED_SECRET`; no shared secret has been provisioned. The local SQLite replay ledger is single-host only; multi-instance Core requires a shared transactional replay store. There is no end-to-end health handshake, persistent update-ID deduplication, live account enrollment, Listener, or Catch/Pick execution. Keep production forwarding disabled until a real Core host, durable storage, secret rotation, transport tests, and security review are complete.
 
 ## Self-control commands
 
