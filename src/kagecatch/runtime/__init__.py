@@ -1,5 +1,6 @@
 """Runtime services for KageCatch execution workers."""
 
+from .bridge_auth import BridgeAuthError, InMemoryReplayGuard, ReplayGuard, sign_bridge_request, verify_bridge_request
 from .enrollment import (
     AccountOwnershipError,
     EnrollmentAttemptsExceeded,
@@ -25,6 +26,11 @@ from .telethon_adapter import (
 )
 
 __all__ = [
+    "BridgeAuthError",
+    "InMemoryReplayGuard",
+    "ReplayGuard",
+    "sign_bridge_request",
+    "verify_bridge_request",
     "EncryptedFileSessionStore",
     "AccountOwnershipError",
     "EnrollmentAttemptsExceeded",
