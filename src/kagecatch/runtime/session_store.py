@@ -56,9 +56,11 @@ class EncryptedFileSessionStore:
 
     def load(self, account_id: str) -> str | None:
         path = self._path_for(account_id)
+        if path.is_symlink():
+            raise SessionStoreError("session entry is not a regular file")
         if not path.exists():
             return None
-        if path.is_symlink() or not path.is_file():
+        if not path.is_file():
             raise SessionStoreError("session entry is not a regular file")
         try:
             encrypted = path.read_bytes()
