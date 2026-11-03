@@ -38,6 +38,28 @@ The Bot API handler boundary currently supports only exact `/start`, `/help`,
 
 This is a safe handler foundation, not a live enrollment UX. Do not enable Bot API collection of login codes or 2FA passwords: Telegram bot private chats are not end-to-end encrypted.
 
+## Worker-to-Core bridge authentication (Phase 6 foundation)
+
+The Python runtime now defines the authentication contract for internal Worker-to-Core HTTP requests:
+- HMAC-SHA256 signs the uppercase HTTP method, exact path, Unix timestamp, nonce, and SHA-256 digest of the raw request body.
+- Requests use `X-KageCatch-Timestamp`, `X-KageCatch-Nonce`, and `X-KageCatch-Signature` headers.
+- The default clock-skew window is five minutes; malformed headers, stale timestamps, invalid signatures, and reused nonces fail closed.
+- The shared secret must be at least 32 bytes and must be provisioned out-of-band by a secret manager. Never commit it or expose it in logs.
+- The replay-guard interface requires an atomic nonce reservation. The included in-memory implementation is for tests/single-process development only; multi-instance production requires a durable shared store (for example, a transactional D1-backed implementation or Redis with atomic set-if-absent and TTL).
+- The bridge module does not open a network listener, execute commands, connect Telegram sessions, or enable Catch/Pick. The Worker-side signer, authenticated HTTP transport, persistent replay storage, and end-to-end integration remain future work.
+
+Canonical signing input (UTF-8, newline-delimited):
+
+```text
+HTTP_METHOD
+/path
+UNIX_TIMESTAMP
+lowercase_hex_nonce
+sha256_hex(raw_body)
+```
+
+Do not deploy this foundation as a production bridge until both sides use the exact same canonicalization, the replay guard is durable and shared, transport is protected with HTTPS, secret rotation is documented, and integration/security tests pass.
+
 ## Self-control commands
 
 Commands are intended to be invoked only after the Telegram integration validates that a message is an outgoing message from the authenticated account in Saved Messages.
