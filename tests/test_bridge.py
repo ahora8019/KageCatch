@@ -224,3 +224,14 @@ async def test_rejects_oversized_and_invalid_json_bodies(tmp_path):
 
     assert large_result.status_code == 413
     assert invalid_result.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_sqlite_nonce_reservation_survives_store_recreation_and_expires(tmp_path):
+    database = tmp_path / "shared-nonces.sqlite3"
+    first = SQLiteNonceStore(database)
+    second = SQLiteNonceStore(database)
+
+    assert await first.reserve("durable_nonce_1234567890", expires_at=200, now=100)
+    assert not await second.reserve("durable_nonce_1234567890", expires_at=200, now=100)
+    assert await second.reserve("durable_nonce_1234567890", expires_at=300, now=201)
