@@ -60,11 +60,13 @@ class SessionManager:
             if current is not None and current.is_connected():
                 return False
             if current is not None:
-                self._sessions.pop(normalized, None)
                 try:
                     await current.disconnect()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    raise RuntimeError(
+                        "could not clean up the previous session"
+                    ) from exc
+                self._sessions.pop(normalized, None)
 
             session = self._factory(normalized)
             try:
@@ -89,8 +91,9 @@ class SessionManager:
         """Disconnect and remove only the requested account's session."""
         normalized = self._validate_account_id(account_id)
         async with self._lock_for(normalized):
-            session = self._sessions.pop(normalized, None)
+            session = self._sessions.get(normalized)
             if session is None:
                 return False
             await session.disconnect()
+            self._sessions.pop(normalized, None)
             return True
