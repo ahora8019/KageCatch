@@ -138,7 +138,11 @@ class EnrollmentService:
             raise ValueError("phone_number must use international E.164 format")
 
         async with self._lock_for(owner_id):
-            if owner_id in self._challenges:
+            existing = self._challenges.get(owner_id)
+            if existing is not None and self._clock() >= existing.expires_at:
+                await self._discard(owner_id)
+                existing = None
+            if existing is not None:
                 raise EnrollmentInProgressError("an enrollment is already pending")
 
             client = self._client_factory(owner_id)
