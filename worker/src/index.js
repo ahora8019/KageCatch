@@ -142,7 +142,7 @@ async function signBridgeRequest(secret, method, path, timestamp, nonce, body) {
   const encoder = new TextEncoder();
   const bodyHash = await crypto.subtle.digest("SHA-256", encoder.encode(body));
   const hashHex = Array.from(new Uint8Array(bodyHash), byte => byte.toString(16).padStart(2, "0")).join("");
-  const canonical = ["v1", method.toUpperCase(), path, timestamp, nonce, hashHex].join("\\n");
+  const canonical = ["v1", method.toUpperCase(), path, timestamp, nonce, hashHex].join("\n");
   const key = await crypto.subtle.importKey(
     "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
   );
