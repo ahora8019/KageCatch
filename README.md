@@ -26,6 +26,18 @@ The Python runtime now includes an enrollment state machine and a Telethon enrol
 
 The enrollment state is in-memory, so a Python Core restart invalidates pending challenges; users must restart enrollment. The bot UX, persistent account-to-owner mapping, account removal/revocation flow, and production deployment are not part of this phase yet.
 
+## Telegram enrollment bot handlers (Phase 5 foundation)
+
+The Bot API handler boundary currently supports only exact `/start`, `/help`,
+`/connect`, and `/cancel` commands from the sender's own private chat:
+- Rejects group chats, mismatched sender/chat IDs, malformed updates, and commands addressed to another bot.
+- `/connect` reports that enrollment is disabled until a reviewed secure flow is available.
+- `/cancel` cancels only the pending challenge owned by the calling Telegram user.
+- Plain text, phone numbers, login codes, and 2FA passwords are never interpreted or forwarded to the enrollment service.
+- No webhook, Worker, or live bot deployment was changed by this phase.
+
+This is a safe handler foundation, not a live enrollment UX. Do not enable Bot API collection of login codes or 2FA passwords: Telegram bot private chats are not end-to-end encrypted.
+
 ## Self-control commands
 
 Commands are intended to be invoked only after the Telegram integration validates that a message is an outgoing message from the authenticated account in Saved Messages.
