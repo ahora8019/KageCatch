@@ -22,6 +22,11 @@ class FakeEnrollmentService:
         return True
 
 
+class FakeMessenger:
+    async def send_message(self, chat_id, text):
+        return None
+
+
 def signed_headers(body, *, nonce="asgi_nonce_1234567890", method="POST", path=BRIDGE_PATH):
     timestamp = str(NOW)
     body_hash = hashlib.sha256(body).hexdigest()
@@ -75,7 +80,7 @@ async def invoke(app, *, method="POST", path=BRIDGE_PATH, headers=None, body=b""
 @pytest.mark.asyncio
 async def test_asgi_endpoint_dispatches_valid_signed_request_and_returns_json_reply(tmp_path):
     service = FakeEnrollmentService()
-    handler = EnrollmentBotHandler(service)
+    handler = EnrollmentBotHandler(service, FakeMessenger())
     bridge = EnrollmentBridge(
         handler,
         SECRET,
@@ -98,7 +103,7 @@ async def test_asgi_endpoint_dispatches_valid_signed_request_and_returns_json_re
 async def test_asgi_endpoint_rejects_wrong_method_and_path(tmp_path):
     app = EnrollmentBridgeASGI(
         EnrollmentBridge(
-            EnrollmentBotHandler(FakeEnrollmentService()),
+            EnrollmentBotHandler(FakeEnrollmentService(), FakeMessenger()),
             SECRET,
             SQLiteNonceStore(tmp_path / "nonces.sqlite3"),
             clock=lambda: NOW,
@@ -116,7 +121,7 @@ async def test_asgi_endpoint_rejects_wrong_method_and_path(tmp_path):
 async def test_asgi_endpoint_rejects_duplicate_authentication_headers(tmp_path):
     app = EnrollmentBridgeASGI(
         EnrollmentBridge(
-            EnrollmentBotHandler(FakeEnrollmentService()),
+            EnrollmentBotHandler(FakeEnrollmentService(), FakeMessenger()),
             SECRET,
             SQLiteNonceStore(tmp_path / "nonces.sqlite3"),
             clock=lambda: NOW,
@@ -136,7 +141,7 @@ async def test_asgi_endpoint_rejects_duplicate_authentication_headers(tmp_path):
 async def test_asgi_endpoint_stops_reading_oversized_request_body(tmp_path):
     app = EnrollmentBridgeASGI(
         EnrollmentBridge(
-            EnrollmentBotHandler(FakeEnrollmentService()),
+            EnrollmentBotHandler(FakeEnrollmentService(), FakeMessenger()),
             SECRET,
             SQLiteNonceStore(tmp_path / "nonces.sqlite3"),
             clock=lambda: NOW,
