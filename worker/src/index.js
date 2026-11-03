@@ -120,6 +120,106 @@ function commandReply(text) {
   return null;
 }
 
+
+function inlinePanelKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: "🏠 پنل اصلی", callback_data: "kc:home" }],
+      [
+        { text: "🤖 بات‌ها", callback_data: "kc:bots" },
+        { text: "📊 وضعیت", callback_data: "kc:status" },
+      ],
+      [
+        { text: "⚙️ تنظیمات", callback_data: "kc:settings" },
+        { text: "🛑 توقف اضطراری", callback_data: "kc:stop" },
+      ],
+    ],
+  };
+}
+
+function panelView(action) {
+  const views = {
+    "kc:home": {
+      text: "🌸 پنل کنترل KageCatch\\n\\nAuto Catch: خاموش 🔴\\nاجرای Catch تا تکمیل اتصال و تأیید نهایی غیرفعال است.\\n\\nاز دکمه‌های زیر برای مشاهده بخش‌ها استفاده کن.",
+    },
+    "kc:bots": {
+      text: "🤖 مدیریت بات‌ها\\n\\n🎬 SenpaiCatcherBot — وضعیت اتصال: بررسی‌نشده\\n🖼 HentaCatcherBot — وضعیت اتصال: بررسی‌نشده\\n🖼 Character_Catcher_Bot — وضعیت اتصال: بررسی‌نشده\\n\\nانتخاب و روشن‌کردن بات‌ها پس از اتصال امن Python Core فعال می‌شود. هیچ Catchی اجرا نمی‌شود.",
+    },
+    "kc:status": {
+      text: "📊 وضعیت KageCatch\\n\\n🟢 Telegram Worker: پاسخ‌گو\\n🔴 Python Core: هنوز متصل/تأیید نشده\\n🔴 Auto Catch: خاموش\\n⏸ صف Catch: فعال نیست\\n\\nاین وضعیت از اجرای واقعی Catch خبر نمی‌دهد.",
+    },
+    "kc:settings": {
+      text: "⚙️ تنظیمات\\n\\nتنظیمات حساب، سهمیه و Listener هنوز به ذخیره‌سازی پایدار متصل نشده‌اند.\\nتا آن زمان این گزینه‌ها فقط نمایشی هستند و تغییری در حساب ایجاد نمی‌کنند.",
+    },
+    "kc:stop": {
+      text: "🛑 توقف اضطراری\\n\\nAuto Catch در حال حاضر از ابتدا غیرفعال است و هیچ Catch فعالی از KageCatch اجرا نمی‌شود.\\nوضعیت امن حفظ شد؛ این دکمه هیچ درخواست Catch ارسال نمی‌کند.",
+    },
+  };
+  return views[action] || null;
+}
+
+async function handleCallbackQuery(update, env) {
+  const query = update?.callback_query;
+  const callbackId = query?.id;
+  const sender = query?.from;
+  const message = query?.message;
+  const chat = message?.chat;
+  const messageId = message?.message_id;
+  if (typeof callbackId !== "string" || !callbackId ||
+      !Number.isSafeInteger(sender?.id) || sender.id <= 0 ||
+      sender.is_bot === true || !Number.isSafeInteger(chat?.id) ||
+      !Number.isSafeInteger(messageId) || messageId <= 0) {
+    return new Response("OK", { status: 200 });
+  }
+
+  const ownsPrivateChat = chat.type === "private" && sender.id === chat.id;
+  if (!ownsPrivateChat) {
+    try {
+      await telegramApi(env, "answerCallbackQuery", {
+        callback_query_id: callbackId,
+        text: "این پنل فقط از اکانت صاحب همان گفت‌وگوی خصوصی قابل کنترل است.",
+        show_alert: true,
+      });
+    } catch {
+      return new Response("Telegram callback acknowledgement failed", { status: 502 });
+    }
+    return new Response("OK", { status: 200 });
+  }
+
+  const view = panelView(query.data);
+  if (!view) {
+    try {
+      await telegramApi(env, "answerCallbackQuery", {
+        callback_query_id: callbackId,
+        text: "این گزینه معتبر یا فعال نیست.",
+        show_alert: true,
+      });
+    } catch {
+      return new Response("Telegram callback acknowledgement failed", { status: 502 });
+    }
+    return new Response("OK", { status: 200 });
+  }
+
+  const answerText = query.data === "kc:stop"
+    ? "Auto Catch از قبل خاموش است؛ وضعیت امن حفظ شد."
+    : "انجام شد.";
+  try {
+    await telegramApi(env, "answerCallbackQuery", {
+      callback_query_id: callbackId,
+      text: answerText,
+    });
+    await telegramApi(env, "editMessageText", {
+      chat_id: chat.id,
+      message_id: messageId,
+      text: view.text,
+      reply_markup: inlinePanelKeyboard(),
+    });
+  } catch {
+    return new Response("Telegram panel update failed", { status: 502 });
+  }
+  return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
 function extractBridgeCommand(update) {
   const message = update?.message;
   const sender = message?.from;
@@ -233,12 +333,17 @@ async function handleWebhook(request, env) {
     return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
   }
 
+  if (update.callback_query) return handleCallbackQuery(update, env);
+
   const message = update.message;
   if (message && Number.isSafeInteger(message.chat?.id) && typeof message.text === "string") {
     const reply = commandReply(message.text);
     if (reply) {
       try {
-        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: reply });
+        const payload = { chat_id: message.chat.id, text: reply };
+        const command = message.text.trim().split(/\\s+/, 1)[0].split("@", 1)[0].toLowerCase();
+        if (command === "/panel") payload.reply_markup = inlinePanelKeyboard();
+        await telegramApi(env, "sendMessage", payload);
       } catch {
         return new Response("Telegram delivery failed", { status: 502 });
       }
