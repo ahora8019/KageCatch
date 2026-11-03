@@ -1,6 +1,6 @@
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -104,15 +104,18 @@ document.querySelector('#core').textContent=s.python_core==='connected'?'متص�
 }
 
 function commandReply(text) {
-  const command = (text || "").trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
+  const command = (text || "").trim().split(/\\s+/, 1)[0].split("@", 1)[0].toLowerCase();
   if (command === "/start") {
-    return "🌸 به KageCatch خوش آمدی!\nControl Bot فعال است. برای مشاهدهٔ وضعیت از /panel استفاده کن.";
+    return "🌸 به KageCatch خوش اومدی!\nاینجا قراره پیدا کردن و گرفتن کاراکترها راحت‌تر بشه.\nاز بخش کچ و پیک می‌تونی بات‌های موردنظرت رو بشناسی و وضعیت قابلیت‌ها رو ببینی.\nبرای راهنما /help رو بزن.";
   }
-  if (command === "/panel" || command === "/status") {
-    return "🎛 پنل KageCatch\nوضعیت Control Worker: فعال\nWebhook: امن و متصل\nPython Core: هنوز متصل نشده\nاجرای Catch تا اتصال و تأیید هسته فعال نیست.";
+  if (command === "/panel") {
+    return "🎯 پنل KageCatch\n\n🎬 SenpaiCatcherBot — کچ ویدئویی با دستور /pick {name}\n🖼 HentaCatcherBot — کچ تصویری با دستور /catch {name}\n🖼 Character_Catcher_Bot — کچ تصویری با دستور /catch {name}\n\n⏳ اتصال و اجرای خودکار کچ در KageCatch هنوز فعال نشده؛ فعلاً این بخش فقط معرفی بات‌هاست.";
+  }
+  if (command === "/status") {
+    return "📊 وضعیت KageCatch\n\n🌸 بخش معرفی بات‌های کچ: فعال\n🎯 مدیریت و اجرای خودکار Catch: هنوز آماده نیست\n📥 دریافت درخواست و صف کچ: هنوز فعال نشده\n\nبه محض آماده شدن قابلیت‌ها، وضعیت همین‌جا به‌روزرسانی می‌شه.";
   }
   if (command === "/help") {
-    return "دستورات فعلی:\n/start — شروع\n/panel — پنل کنترل\n/status — وضعیت سرویس\n/help — راهنما";
+    return "📖 راهنمای KageCatch\n\n/start — شروع کار\n/panel — معرفی بات‌های کچ\n/status — وضعیت قابلیت‌ها\n/help — نمایش این راهنما\n\nدستورهای بات‌های هدف:\n🎬 SenpaiCatcherBot: /pick {name}\n🖼 HentaCatcherBot: /catch {name}\n🖼 Character_Catcher_Bot: /catch {name}\n\n⚠️ این دستورها متعلق به بات‌های هدف هستند؛ اجرای مستقیم کچ از داخل KageCatch هنوز فعال نشده.";
   }
   return null;
 }
