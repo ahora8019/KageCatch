@@ -68,7 +68,7 @@ test("/panel describes catchers and clearly states catch execution is not active
   assert.match(sent.payload.text, /SenpaiCatcherBot/);
   assert.match(sent.payload.text, /HentaCatcherBot/);
   assert.match(sent.payload.text, /Character_Catcher_Bot/);
-  assert.match(sent.payload.text, /فعال نیست|آماده نیست/);
+  assert.match(sent.payload.text, /هنوز فعال نشده|آماده نیست/);
   assert.doesNotMatch(sent.payload.text, /Worker|سرور|Webhook|Python Core/i);
 });
 
