@@ -108,3 +108,116 @@ test("rejects GET requests to webhook", async () => {
   const response = await worker.fetch(request("/webhook"), env(fetch));
   assert.equal(response.status, 405);
 });
+
+
+test("forwards only private /connect commands with a signed sanitized body", async () => {
+  const { createHash, createHmac } = await import("node:crypto");
+  const calls = [];
+  const bridgeSecret = "test-bridge-shared-secret-with-more-than-32-chars";
+  const fakeFetch = async (url, init) => {
+    calls.push({ url, init });
+    if (String(url).startsWith("https://core.example.test/")) {
+      return new Response(JSON.stringify({
+        ok: true,
+        handled: true,
+        reply: { chat_id: 99, text: "اتصال فعلاً فعال نیست." },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+  };
+  const update = {
+    update_id: 41,
+    message: {
+      message_id: 8,
+      from: { id: 99, is_bot: false, first_name: "Test" },
+      chat: { id: 99, type: "private", username: "private" },
+      text: "/connect",
+      date: 1800000000,
+      caption: "must not be forwarded",
+    },
+  };
+  const response = await worker.fetch(request("/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": secret },
+    body: JSON.stringify(update),
+  }), {
+    ...env(fakeFetch),
+    PYTHON_CORE_URL: "https://core.example.test",
+    BRIDGE_SHARED_SECRET: bridgeSecret,
+  });
+
+  assert.equal(response.status, 200);
+  const bridgeCall = calls.find(call => String(call.url).startsWith("https://core.example.test/"));
+  assert.ok(bridgeCall);
+  const forwarded = JSON.parse(bridgeCall.init.body);
+  assert.deepEqual(forwarded, {
+    update_id: 41,
+    message: {
+      from: { id: 99 },
+      chat: { id: 99, type: "private" },
+      text: "/connect",
+    },
+  });
+  assert.equal(bridgeCall.init.method, "POST");
+  assert.equal(bridgeCall.init.headers["content-type"], "application/json");
+
+  const timestamp = bridgeCall.init.headers["X-KageCatch-Timestamp"];
+  const nonce = bridgeCall.init.headers["X-KageCatch-Nonce"];
+  const signature = bridgeCall.init.headers["X-KageCatch-Signature"];
+  assert.match(timestamp, /^\\d+$/);
+  assert.match(nonce, /^[a-f0-9]{32}$/);
+  const path = "/internal/telegram-update";
+  const bodyHash = createHash("sha256").update(bridgeCall.init.body).digest("hex");
+  const canonical = ["v1", "POST", path, timestamp, nonce, bodyHash].join("\\n");
+  const expected = createHmac("sha256", bridgeSecret).update(canonical).digest("hex");
+  assert.equal(signature, expected);
+  assert.ok(calls.some(call => String(call.url).includes("api.telegram.org") &&
+    JSON.parse(call.init.body).text === "اتصال فعلاً فعال نیست."));
+});
+
+test("does not forward group commands or credential-like text to Python Core", async () => {
+  let calls = 0;
+  const fakeFetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+  };
+  const baseEnv = {
+    ...env(fakeFetch),
+    PYTHON_CORE_URL: "https://core.example.test",
+    BRIDGE_SHARED_SECRET: "test-bridge-shared-secret-with-more-than-32-chars",
+  };
+  for (const message of [
+    { from: { id: 99 }, chat: { id: -100, type: "group" }, text: "/connect" },
+    { from: { id: 99 }, chat: { id: 99, type: "private" }, text: "123456" },
+    { from: { id: 99 }, chat: { id: 100, type: "private" }, text: "/cancel" },
+  ]) {
+    const response = await worker.fetch(request("/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": secret },
+      body: JSON.stringify({ update_id: 42, message }),
+    }), baseEnv);
+    assert.equal(response.status, 200);
+  }
+  assert.equal(calls, 0);
+});
+
+test("returns gateway failure when configured Python Core cannot be reached", async () => {
+  const fakeFetch = async () => { throw new Error("network unavailable"); };
+  const response = await worker.fetch(request("/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": secret },
+    body: JSON.stringify({
+      update_id: 43,
+      message: {
+        from: { id: 99 },
+        chat: { id: 99, type: "private" },
+        text: "/cancel",
+      },
+    }),
+  }), {
+    ...env(fakeFetch),
+    PYTHON_CORE_URL: "https://core.example.test",
+    BRIDGE_SHARED_SECRET: "test-bridge-shared-secret-with-more-than-32-chars",
+  });
+  assert.equal(response.status, 502);
+});
