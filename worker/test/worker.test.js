@@ -164,7 +164,7 @@ test("forwards only private /connect commands with a signed sanitized body", asy
   const timestamp = bridgeCall.init.headers["X-KageCatch-Timestamp"];
   const nonce = bridgeCall.init.headers["X-KageCatch-Nonce"];
   const signature = bridgeCall.init.headers["X-KageCatch-Signature"];
-  assert.match(timestamp, /^\\d+$/);
+  assert.equal(String(Number(timestamp)), timestamp);
   assert.match(nonce, /^[a-f0-9]{32}$/);
   const path = "/internal/telegram-update";
   const bodyHash = createHash("sha256").update(bridgeCall.init.body).digest("hex");
