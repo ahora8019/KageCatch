@@ -168,7 +168,7 @@ test("forwards only private /connect commands with a signed sanitized body", asy
   assert.match(nonce, /^[a-f0-9]{32}$/);
   const path = "/internal/telegram-update";
   const bodyHash = createHash("sha256").update(bridgeCall.init.body).digest("hex");
-  const canonical = ["v1", "POST", path, timestamp, nonce, bodyHash].join("\\n");
+  const canonical = ["v1", "POST", path, timestamp, nonce, bodyHash].join("\n");
   const expected = createHmac("sha256", bridgeSecret).update(canonical).digest("hex");
   assert.equal(signature, expected);
   assert.ok(calls.some(call => String(call.url).includes("api.telegram.org") &&
