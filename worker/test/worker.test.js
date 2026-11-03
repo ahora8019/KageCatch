@@ -10,7 +10,7 @@ function env(fetchImpl) {
   return {
     TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: secret,
-    fetch: fetchImpl,
+    FETCH: fetchImpl,
   };
 }
 
