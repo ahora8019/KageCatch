@@ -17,7 +17,7 @@ from typing import Protocol
 _TIMESTAMP_HEADER = "X-KageCatch-Timestamp"
 _NONCE_HEADER = "X-KageCatch-Nonce"
 _SIGNATURE_HEADER = "X-KageCatch-Signature"
-_NONCE_PATTERN = re.compile(r"^[0-9a-f]{32,128}$")
+_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _SIGNATURE_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -66,7 +66,7 @@ def _canonical_message(
     if not isinstance(body, bytes):
         raise ValueError("body must be raw bytes")
     body_hash = hashlib.sha256(body).hexdigest()
-    return "\n".join((method, path, timestamp, nonce, body_hash)).encode("utf-8")
+    return "\n".join(("v1", method, path, timestamp, nonce, body_hash)).encode("utf-8")
 
 
 def sign_bridge_request(
@@ -83,7 +83,7 @@ def sign_bridge_request(
     if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp <= 0:
         raise ValueError("timestamp must be a positive Unix timestamp")
     if not isinstance(nonce, str) or not _NONCE_PATTERN.fullmatch(nonce):
-        raise ValueError("nonce must be 32-128 lowercase hexadecimal characters")
+        raise ValueError("nonce must be 16-128 URL-safe characters")
     timestamp_text = str(timestamp)
     message = _canonical_message(
         method=method, path=path, timestamp=timestamp_text, nonce=nonce, body=body
