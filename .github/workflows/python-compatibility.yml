@@ -44,3 +44,16 @@ jobs:
 
       - name: Compile source and tests
         run: python -m compileall -q src tests
+
+  worker-test:
+    name: Worker tests (Node.js 22)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run Worker tests
+        run: node --test worker/test/*.test.js
