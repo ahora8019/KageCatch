@@ -8,7 +8,23 @@ Private, invite-only, multi-user Telegram character-catching automation.
 
 The Python foundation provides isolated per-user control state, exact Persian command parsing, a control service, a command router, per-account async session lifecycle management, encrypted session-string storage, and an optional Telethon adapter.
 
-Live Catch/Pick execution, persistent job queues, real-time Listener routing, and account enrollment/login are not implemented yet.
+Live Catch/Pick execution, persistent job queues, real-time Listener routing, and the Telegram bot conversation integration for account enrollment are not implemented yet.
+
+## Account enrollment foundation (Phase 4)
+
+The Python runtime now includes an enrollment state machine and a Telethon enrollment adapter:
+- Starts a fresh, blank MTProto session for each initiating Telegram user.
+- Requests a Telegram login code and supports the 2FA password only if Telegram asks for it.
+- Binds enrollment to the initiating Telegram user ID; a different account ID is rejected.
+- Keeps the phone-code hash and pending client only in short-lived process memory.
+- Never stores or returns the login code or 2FA password.
+- Expires pending challenges after five minutes by default and limits credential attempts to three.
+- Supports cancellation and disconnects the pending client on expiry, cancellation, failed ownership checks, and completion.
+- Persists the authorized session through the encrypted SessionStore only after ownership verification.
+
+**Important security limitation:** Telegram bot private chats are not end-to-end encrypted. If a login code or 2FA password is submitted through the bot, it necessarily passes through the bot's update-processing infrastructure. The Python service avoids persisting or logging those values, but this does not make the chat end-to-end secret from the service operator or a compromised backend. Do not connect real accounts until the complete Worker-to-Core transport, access controls, redaction, secret handling, and threat model have been reviewed. A private local enrollment flow is safer where practical.
+
+The enrollment state is in-memory, so a Python Core restart invalidates pending challenges; users must restart enrollment. The bot UX, persistent account-to-owner mapping, account removal/revocation flow, and production deployment are not part of this phase yet.
 
 ## Self-control commands
 
