@@ -1,7 +1,19 @@
 """Runtime services for KageCatch execution workers."""
 
-from .bridge_auth import BridgeAuthError, InMemoryReplayGuard, ReplayGuard, sign_bridge_request, verify_bridge_request
-from .bridge import BRIDGE_PATH, BridgeResult, EnrollmentBridge, SQLiteNonceStore, canonical_request
+from .bridge_auth import (
+    BridgeAuthError,
+    InMemoryReplayGuard,
+    ReplayGuard,
+    sign_bridge_request,
+    verify_bridge_request,
+)
+from .bridge import (
+    BRIDGE_PATH,
+    BridgeResult,
+    EnrollmentBridge,
+    SQLiteNonceStore,
+    canonical_request,
+)
 from .enrollment import (
     AccountOwnershipError,
     EnrollmentAttemptsExceeded,
