@@ -109,7 +109,7 @@ function commandReply(text) {
     return "🌸 به KageCatch خوش اومدی!\nاینجا قراره کچ و پیک کاراکترها راحت‌تر بشه.\nاز بخش کچ و پیک می‌تونی بات‌های موردنظرت رو بشناسی و وضعیت قابلیت‌ها رو ببینی.\nبرای راهنما /help رو بزن.";
   }
   if (command === "/panel") {
-    return "🎯 پنل KageCatch\n\n🎬 SenpaiCatcherBot — کچ ویدئویی با دستور /pick {name}\n🖼 HentaCatcherBot — کچ تصویری با دستور /catch {name}\n🖼 Character_Catcher_Bot — کچ تصویری با دستور /catch {name}\n\n⏳ اتصال و اجرای خودکار کچ در KageCatch هنوز فعال نشده؛ فعلاً این بخش فقط معرفی بات‌هاست.";
+    return "🎯 پنل KageCatch\n\nAuto Catch: خاموش 🔴\n🎬 SenpaiCatcherBot — کچ ویدئویی با دستور /pick {name}\n🖼 HentaCatcherBot — کچ تصویری با دستور /catch {name}\n🖼 Character_Catcher_Bot — کچ تصویری با دستور /catch {name}\n\n⏳ اتصال و اجرای خودکار کچ در KageCatch هنوز فعال نشده؛ فعلاً این بخش فقط معرفی بات‌هاست.";
   }
   if (command === "/status") {
     return "📊 وضعیت KageCatch\n\n🌸 بخش معرفی بات‌های کچ: فعال\n🎯 مدیریت و اجرای خودکار Catch: هنوز آماده نیست\n📥 دریافت درخواست و صف کچ: هنوز فعال نشده\n\nبه محض آماده شدن قابلیت‌ها، وضعیت همین‌جا به‌روزرسانی می‌شه.";
@@ -140,19 +140,19 @@ function inlinePanelKeyboard() {
 function panelView(action) {
   const views = {
     "kc:home": {
-      text: "🌸 پنل کنترل KageCatch\\n\\nAuto Catch: خاموش 🔴\\nاجرای Catch تا تکمیل اتصال و تأیید نهایی غیرفعال است.\\n\\nاز دکمه‌های زیر برای مشاهده بخش‌ها استفاده کن.",
+      text: "🌸 پنل کنترل KageCatch\n\nAuto Catch: خاموش 🔴\nاجرای Catch تا تکمیل اتصال و تأیید نهایی غیرفعال است.\n\nاز دکمه‌های زیر برای مشاهده بخش‌ها استفاده کن.",
     },
     "kc:bots": {
-      text: "🤖 مدیریت بات‌ها\\n\\n🎬 SenpaiCatcherBot — وضعیت اتصال: بررسی‌نشده\\n🖼 HentaCatcherBot — وضعیت اتصال: بررسی‌نشده\\n🖼 Character_Catcher_Bot — وضعیت اتصال: بررسی‌نشده\\n\\nانتخاب و روشن‌کردن بات‌ها پس از اتصال امن Python Core فعال می‌شود. هیچ Catchی اجرا نمی‌شود.",
+      text: "🤖 مدیریت بات‌ها\n\n🎬 سنپای (SenpaiCatcherBot) — وضعیت اتصال: بررسی‌نشده\n🖼 هنتا (HentaCatcherBot) — وضعیت اتصال: بررسی‌نشده\n🖼 کاراکتر (Character_Catcher_Bot) — وضعیت اتصال: بررسی‌نشده\n\nانتخاب و روشن‌کردن بات‌ها پس از اتصال امن Python Core فعال می‌شود. هیچ Catchی اجرا نمی‌شود.",
     },
     "kc:status": {
-      text: "📊 وضعیت KageCatch\\n\\n🟢 Telegram Worker: پاسخ‌گو\\n🔴 Python Core: هنوز متصل/تأیید نشده\\n🔴 Auto Catch: خاموش\\n⏸ صف Catch: فعال نیست\\n\\nاین وضعیت از اجرای واقعی Catch خبر نمی‌دهد.",
+      text: "📊 وضعیت KageCatch\n\n🟢 Telegram Worker: پاسخ‌گو\n🔴 Python Core: هنوز متصل/تأیید نشده\n🔴 Auto Catch: خاموش\n⏸ صف Catch: فعال نیست\n\nاین وضعیت از اجرای واقعی Catch خبر نمی‌دهد.",
     },
     "kc:settings": {
-      text: "⚙️ تنظیمات\\n\\nتنظیمات حساب، سهمیه و Listener هنوز به ذخیره‌سازی پایدار متصل نشده‌اند.\\nتا آن زمان این گزینه‌ها فقط نمایشی هستند و تغییری در حساب ایجاد نمی‌کنند.",
+      text: "⚙️ تنظیمات\n\nتنظیمات حساب، سهمیه و Listener هنوز به ذخیره‌سازی پایدار متصل نشده‌اند.\nتا آن زمان این گزینه‌ها فقط نمایشی هستند و تغییری در حساب ایجاد نمی‌کنند.",
     },
     "kc:stop": {
-      text: "🛑 توقف اضطراری\\n\\nAuto Catch در حال حاضر از ابتدا غیرفعال است و هیچ Catch فعالی از KageCatch اجرا نمی‌شود.\\nوضعیت امن حفظ شد؛ این دکمه هیچ درخواست Catch ارسال نمی‌کند.",
+      text: "🛑 توقف اضطراری\n\nAuto Catch در حال حاضر از ابتدا غیرفعال است و هیچ Catch فعالی از KageCatch اجرا نمی‌شود.\nوضعیت امن حفظ شد؛ این دکمه هیچ درخواست Catch ارسال نمی‌کند.",
     },
   };
   return views[action] || null;
