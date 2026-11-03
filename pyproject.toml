@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 telegram = ["Telethon>=1.40,<2"]
 
 [tool.pytest.ini_options]
