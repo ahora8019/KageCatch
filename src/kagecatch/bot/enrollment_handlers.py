@@ -35,8 +35,11 @@ class EnrollmentBotHandler:
         self._messenger = messenger
         self._bot_username = bot_username
 
-    async def handle(self, update: dict[str, Any]) -> bool:
+    async def handle(
+        self, update: dict[str, Any], *, messenger: MessageSender | None = None
+    ) -> bool:
         """Handle one Bot API update; return False when it is not a safe command."""
+        sender = messenger or self._messenger
         message = update.get("message") if isinstance(update, dict) else None
         if not isinstance(message, dict):
             return False
@@ -66,7 +69,7 @@ class EnrollmentBotHandler:
             return False
 
         if command in ("/start", "/help"):
-            await self._messenger.send_message(
+            await sender.send_message(
                 chat_id,
                 "مدیریت اتصال حساب KageCatch\n"
                 "/connect — راهنمای اتصال امن حساب\n"
