@@ -104,7 +104,7 @@ document.querySelector('#core').textContent=s.python_core==='connected'?'متص�
 }
 
 function commandReply(text) {
-  const command = (text || "").trim().split(/\\s+/, 1)[0].split("@", 1)[0].toLowerCase();
+  const command = (text || "").trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
   if (command === "/start") {
     return "🌸 به KageCatch خوش اومدی!\nاینجا قراره کچ و پیک کاراکترها راحت‌تر بشه.\nاز بخش کچ و پیک می‌تونی بات‌های موردنظرت رو بشناسی و وضعیت قابلیت‌ها رو ببینی.\nبرای راهنما /help رو بزن.";
   }
