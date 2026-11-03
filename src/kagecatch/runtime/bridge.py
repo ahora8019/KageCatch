@@ -7,22 +7,17 @@ A persistent SQLite nonce ledger rejects replayed requests across process restar
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
-import re
 import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
+from .bridge_auth import BridgeAuthError, verify_bridge_request
+
 
 BRIDGE_PATH = "/internal/telegram-update"
-_TIMESTAMP_HEADER = "x-kagecatch-timestamp"
-_NONCE_HEADER = "x-kagecatch-nonce"
-_SIGNATURE_HEADER = "x-kagecatch-signature"
-_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
-_SIGNATURE_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 
 
 def canonical_request(
@@ -37,20 +32,24 @@ def canonical_request(
 
 
 class NonceStore(Protocol):
-    def claim(self, nonce: str, now: int, ttl_seconds: int) -> bool: ...
+    async def reserve(self, nonce: str, *, expires_at: int, now: int) -> bool: ...
 
 
 class SQLiteNonceStore:
-    """Persistent, atomic nonce ledger; use a private durable local data path."""
+    """Persistent atomic nonce ledger for one Python Core host."""
 
     def __init__(self, database_path: str | Path) -> None:
         self._path = Path(database_path)
         self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with self._connect() as connection:
+        connection = self._connect()
+        try:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS bridge_nonces ("
-                "nonce TEXT PRIMARY KEY, seen_at INTEGER NOT NULL)"
+                "nonce TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)"
             )
+            connection.commit()
+        finally:
+            connection.close()
         if self._path.exists():
             try:
                 self._path.chmod(0o600)
@@ -62,21 +61,23 @@ class SQLiteNonceStore:
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
-    def claim(self, nonce: str, now: int, ttl_seconds: int) -> bool:
-        """Atomically claim a nonce once; expired ledger entries are pruned."""
+    async def reserve(self, nonce: str, *, expires_at: int, now: int) -> bool:
+        """Atomically reserve a nonce once and prune expired reservations."""
+        connection = self._connect()
         try:
-            with self._connect() as connection:
+            with connection:
                 connection.execute(
-                    "DELETE FROM bridge_nonces WHERE seen_at < ?",
-                    (now - ttl_seconds,),
+                    "DELETE FROM bridge_nonces WHERE expires_at < ?", (now,)
                 )
                 connection.execute(
-                    "INSERT INTO bridge_nonces (nonce, seen_at) VALUES (?, ?)",
-                    (nonce, now),
+                    "INSERT INTO bridge_nonces (nonce, expires_at) VALUES (?, ?)",
+                    (nonce, expires_at),
                 )
             return True
         except sqlite3.IntegrityError:
             return False
+        finally:
+            connection.close()
 
 
 @dataclass(frozen=True)
@@ -106,8 +107,8 @@ class EnrollmentBridge:
         max_clock_skew_seconds: int = 60,
         max_body_bytes: int = 64 * 1024,
     ) -> None:
-        if not isinstance(shared_secret, str) or len(shared_secret) < 32:
-            raise ValueError("shared_secret must contain at least 32 characters")
+        if not isinstance(shared_secret, str) or len(shared_secret.encode("utf-8")) < 32:
+            raise ValueError("shared_secret must contain at least 32 bytes")
         if max_clock_skew_seconds < 1 or max_body_bytes < 1:
             raise ValueError("bridge limits must be positive")
         self._handler = enrollment_handler
@@ -134,38 +135,26 @@ class EnrollmentBridge:
             return BridgeResult(413, {"ok": False, "error": "payload_too_large"})
 
         normalized_headers = {key.lower(): value for key, value in headers.items()}
-        timestamp = normalized_headers.get(_TIMESTAMP_HEADER, "")
-        nonce = normalized_headers.get(_NONCE_HEADER, "")
-        signature = normalized_headers.get(_SIGNATURE_HEADER, "")
-        if (
-            not timestamp.isascii()
-            or not timestamp.isdigit()
-            or not _NONCE_PATTERN.fullmatch(nonce)
-            or not _SIGNATURE_PATTERN.fullmatch(signature)
-        ):
-            return BridgeResult(401, {"ok": False, "error": "unauthorized"})
-
-        now = int(self._clock())
-        request_time = int(timestamp)
-        if abs(now - request_time) > self._max_clock_skew:
-            return BridgeResult(401, {"ok": False, "error": "unauthorized"})
-
-        expected = hmac.new(
-            self._secret,
-            canonical_request(method, path, timestamp, nonce, body),
-            hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(expected, signature):
-            return BridgeResult(401, {"ok": False, "error": "unauthorized"})
-
+        auth_headers = {
+            "X-KageCatch-Timestamp": normalized_headers.get("x-kagecatch-timestamp", ""),
+            "X-KageCatch-Nonce": normalized_headers.get("x-kagecatch-nonce", ""),
+            "X-KageCatch-Signature": normalized_headers.get("x-kagecatch-signature", ""),
+        }
         try:
-            claimed = self._nonce_store.claim(
-                nonce, now, self._max_clock_skew * 2
+            await verify_bridge_request(
+                secret=self._secret,
+                method=method.upper(),
+                path=path,
+                body=body,
+                headers=auth_headers,
+                replay_guard=self._nonce_store,
+                now=int(self._clock()),
+                max_clock_skew_seconds=self._max_clock_skew,
             )
+        except BridgeAuthError:
+            return BridgeResult(401, {"ok": False, "error": "unauthorized"})
         except Exception:
             return BridgeResult(503, {"ok": False, "error": "replay_store_unavailable"})
-        if not claimed:
-            return BridgeResult(401, {"ok": False, "error": "unauthorized"})
 
         try:
             update = json.loads(body)
