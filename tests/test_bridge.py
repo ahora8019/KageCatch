@@ -187,7 +187,7 @@ async def test_rejects_unsupported_commands_and_group_updates(tmp_path):
         json.dumps({"update_id": 2, "message": {"from": {"id": 1}, "chat": {"id": -100, "type": "group"}, "text": "/cancel"}}).encode(),
     ):
         result = await bridge.handle("POST", "/internal/telegram-update",
-                                     signed_request(secret, update, nonce="nonce_" + str(len(update)) + "abcdefghijkl"),
+                                     signed_request(secret, update, nonce="nonce_" + str(len(update)) + "abcdefghijklmnopqr"),
                                      update)
         assert result.status_code == 200
         assert result.payload["handled"] is False
