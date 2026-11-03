@@ -171,13 +171,13 @@ class EnrollmentService:
 
     async def submit_code(self, owner_id: int, code: str) -> EnrollmentResult:
         owner_id = self._validate_owner_id(owner_id)
-        if not isinstance(code, str) or not re.fullmatch(r"[0-9]{3,10}", code):
-            raise ValueError("code must contain only 3 to 10 digits")
-
         async with self._lock_for(owner_id):
             challenge = await self._get_live_challenge(owner_id)
             if challenge.password_required:
                 raise EnrollmentError("the 2FA password is required for this challenge")
+            if not isinstance(code, str) or not re.fullmatch(r"[0-9]{3,10}", code):
+                await self._record_failed_attempt(owner_id, challenge)
+                raise InvalidEnrollmentCode("Telegram rejected the login code")
             try:
                 account_id = await challenge.client.sign_in(
                     challenge.phone_number, code, challenge.phone_code_hash
