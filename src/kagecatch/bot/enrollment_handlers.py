@@ -95,7 +95,7 @@ class EnrollmentBotHandler:
                 if cancelled
                 else "درخواست اتصال فعالی برای لغو وجود ندارد."
             )
-            await self._messenger.send_message(chat_id, response)
+            await reply_sender.send_message(chat_id, response)
             return True
 
         return False
