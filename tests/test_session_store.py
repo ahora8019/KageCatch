@@ -64,6 +64,14 @@ class EncryptedFileSessionStoreTests(unittest.TestCase):
         with self.assertRaises(SessionStoreError):
             self.store.load("account-a")
 
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_rejects_a_symlink_instead_of_treating_a_dangling_link_as_missing(self) -> None:
+        link = self.root / f"{'a' * 64}.session"
+        link.symlink_to(self.root / "missing-target")
+
+        with self.assertRaises(SessionStoreError):
+            self.store.load("a")
+
     @unittest.skipUnless(os.name == "posix", "POSIX permission semantics")
     def test_session_file_permissions_are_owner_only(self) -> None:
         self.store.save("account-a", "private-session")
