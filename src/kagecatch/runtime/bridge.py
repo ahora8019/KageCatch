@@ -180,13 +180,8 @@ class EnrollmentBridge:
             return BridgeResult(200, {"ok": True, "handled": False})
 
         capture = _ReplyCapture()
-        handler = self._handler.__class__(
-            self._handler._enrollment_service,
-            capture,
-            bot_username=getattr(self._handler, "_bot_username", None),
-        )
         try:
-            handled = await handler.handle(update)
+            handled = await self._handler.handle(update, messenger=capture)
         except Exception:
             return BridgeResult(500, {"ok": False, "error": "handler_failed"})
         payload: dict[str, Any] = {"ok": True, "handled": handled}
