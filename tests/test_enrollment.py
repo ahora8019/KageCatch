@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from kagecatch.runtime.enrollment import (
@@ -11,6 +9,7 @@ from kagecatch.runtime.enrollment import (
     EnrollmentService,
     EnrollmentStatus,
     InvalidEnrollmentCode,
+    InvalidEnrollmentPassword,
 )
 
 
@@ -41,7 +40,7 @@ class FakeEnrollmentClient:
 
     async def check_password(self, password):
         if password != self.accepted_password:
-            raise ValueError("invalid password")
+            raise InvalidEnrollmentPassword("invalid password")
         return self.account_id
 
     def export_session(self):
