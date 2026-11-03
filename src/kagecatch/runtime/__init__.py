@@ -7,6 +7,7 @@ from .bridge_auth import (
     sign_bridge_request,
     verify_bridge_request,
 )
+from .bridge_asgi import EnrollmentBridgeASGI
 from .bridge import (
     BRIDGE_PATH,
     BridgeResult,
@@ -47,6 +48,7 @@ __all__ = [
     "BRIDGE_PATH",
     "BridgeResult",
     "EnrollmentBridge",
+    "EnrollmentBridgeASGI",
     "SQLiteNonceStore",
     "canonical_request",
     "EncryptedFileSessionStore",
