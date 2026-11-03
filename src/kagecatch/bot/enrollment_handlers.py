@@ -39,18 +39,18 @@ class EnrollmentBotHandler:
         self, update: dict[str, Any], *, messenger: MessageSender | None = None
     ) -> bool:
         """Handle one Bot API update; return False when it is not a safe command."""
-        sender = messenger or self._messenger
+        message_sender = messenger or self._messenger
         message = update.get("message") if isinstance(update, dict) else None
         if not isinstance(message, dict):
             return False
 
-        sender = message.get("from")
+        telegram_sender = message.get("from")
         chat = message.get("chat")
         text = message.get("text")
-        if not isinstance(sender, dict) or not isinstance(chat, dict):
+        if not isinstance(telegram_sender, dict) or not isinstance(chat, dict):
             return False
 
-        owner_id = sender.get("id")
+        owner_id = telegram_sender.get("id")
         chat_id = chat.get("id")
         if (
             isinstance(owner_id, bool)
@@ -69,7 +69,7 @@ class EnrollmentBotHandler:
             return False
 
         if command in ("/start", "/help"):
-            await sender.send_message(
+            await message_sender.send_message(
                 chat_id,
                 "مدیریت اتصال حساب KageCatch\n"
                 "/connect — راهنمای اتصال امن حساب\n"
@@ -79,7 +79,7 @@ class EnrollmentBotHandler:
             return True
 
         if command == "/connect":
-            await self._messenger.send_message(
+            await message_sender.send_message(
                 chat_id,
                 "اتصال حساب فعلاً فعال نیست.\n"
                 "چت خصوصی بات تلگرام رمزنگاری سرتاسری ندارد؛ "
