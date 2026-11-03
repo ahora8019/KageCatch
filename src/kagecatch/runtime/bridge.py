@@ -21,7 +21,7 @@ BRIDGE_PATH = "/internal/telegram-update"
 _TIMESTAMP_HEADER = "x-kagecatch-timestamp"
 _NONCE_HEADER = "x-kagecatch-nonce"
 _SIGNATURE_HEADER = "x-kagecatch-signature"
-_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{22,128}$")
+_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _SIGNATURE_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 
 
