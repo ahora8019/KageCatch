@@ -1,9 +1,10 @@
+import hashlib
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
 from kagecatch.runtime.session_store import EncryptedFileSessionStore, SessionStoreError
 
@@ -66,7 +67,8 @@ class EncryptedFileSessionStoreTests(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
     def test_rejects_a_symlink_instead_of_treating_a_dangling_link_as_missing(self) -> None:
-        link = self.root / f"{'a' * 64}.session"
+        digest = hashlib.sha256(b"a").hexdigest()
+        link = self.root / f"{digest}.session"
         link.symlink_to(self.root / "missing-target")
 
         with self.assertRaises(SessionStoreError):
