@@ -55,7 +55,7 @@ async function health(env) {
       bot: { id: bot.id, username: bot.username, first_name: bot.first_name },
       pending_updates: webhook.pending_update_count ?? 0,
       last_telegram_error: webhook.last_error_message ?? null,
-      python_core: "not_connected",
+      python_core: env.PYTHON_CORE_URL && env.BRIDGE_SHARED_SECRET ? "configured_not_verified" : "not_connected",
       version: VERSION,
     });
   } catch {
@@ -120,6 +120,80 @@ function commandReply(text) {
   return null;
 }
 
+function extractBridgeCommand(update) {
+  const message = update?.message;
+  const sender = message?.from;
+  const chat = message?.chat;
+  if (!message || !sender || !chat || sender.is_bot === true) return null;
+  if (!Number.isSafeInteger(sender.id) || sender.id <= 0) return null;
+  if (!Number.isSafeInteger(chat.id) || chat.id !== sender.id || chat.type !== "private") return null;
+  if (message.text !== "/connect" && message.text !== "/cancel") return null;
+  return {
+    update_id: update.update_id,
+    message: {
+      from: { id: sender.id },
+      chat: { id: chat.id, type: "private" },
+      text: message.text,
+    },
+  };
+}
+
+async function signBridgeRequest(secret, method, path, timestamp, nonce, body) {
+  const encoder = new TextEncoder();
+  const bodyHash = await crypto.subtle.digest("SHA-256", encoder.encode(body));
+  const hashHex = Array.from(new Uint8Array(bodyHash), byte => byte.toString(16).padStart(2, "0")).join("");
+  const canonical = ["v1", method.toUpperCase(), path, timestamp, nonce, hashHex].join("\\n");
+  const key = await crypto.subtle.importKey(
+    "raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(canonical));
+  return Array.from(new Uint8Array(signature), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function forwardToPythonCore(env, sanitizedUpdate) {
+  if (!env.PYTHON_CORE_URL || !env.BRIDGE_SHARED_SECRET || env.BRIDGE_SHARED_SECRET.length < 32) {
+    throw new Error("Python Core bridge is not configured");
+  }
+  const base = new URL(env.PYTHON_CORE_URL);
+  if (base.protocol !== "https:" || base.username || base.password ||
+      base.pathname !== "/" || base.search || base.hash) {
+    throw new Error("Python Core URL must be an HTTPS origin");
+  }
+  const path = "/internal/telegram-update";
+  const target = new URL(path, base).toString();
+  const body = JSON.stringify(sanitizedUpdate);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = crypto.randomUUID().replace(/-/g, "");
+  const signature = await signBridgeRequest(
+    env.BRIDGE_SHARED_SECRET, "POST", path, timestamp, nonce, body,
+  );
+  const requestFetch = env.FETCH || fetch;
+  const response = await requestFetch(target, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-KageCatch-Timestamp": timestamp,
+      "X-KageCatch-Nonce": nonce,
+      "X-KageCatch-Signature": signature,
+    },
+    body,
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error("Python Core bridge rejected the request");
+  const result = await response.json();
+  if (!result || result.ok !== true || typeof result.handled !== "boolean") {
+    throw new Error("Python Core bridge returned an invalid response");
+  }
+  if (result.reply !== undefined) {
+    if (!result.reply || result.reply.chat_id !== sanitizedUpdate.message.chat.id ||
+        typeof result.reply.text !== "string" || result.reply.text.length < 1 ||
+        result.reply.text.length > 4096) {
+      throw new Error("Python Core bridge returned an invalid reply");
+    }
+  }
+  return result;
+}
+
 async function handleWebhook(request, env) {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
   if (!env.TELEGRAM_WEBHOOK_SECRET) return new Response("Webhook secret missing", { status: 503 });
@@ -133,6 +207,32 @@ async function handleWebhook(request, env) {
   let update;
   try { update = JSON.parse(new TextDecoder().decode(raw)); } catch { return new Response("Bad Request", { status: 400 }); }
   if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) return new Response("Bad Request", { status: 400 });
+  const bridgedUpdate = extractBridgeCommand(update);
+  if (bridgedUpdate) {
+    try {
+      if (env.PYTHON_CORE_URL || env.BRIDGE_SHARED_SECRET) {
+        const result = await forwardToPythonCore(env, bridgedUpdate);
+        if (result.reply) {
+          await telegramApi(env, "sendMessage", {
+            chat_id: result.reply.chat_id,
+            text: result.reply.text,
+          });
+        }
+      } else {
+        const text = bridgedUpdate.message.text === "/connect"
+          ? "اتصال حساب فعلاً فعال نیست؛ مسیر امن Python Core هنوز پیکربندی نشده است."
+          : "مدیریت درخواست اتصال فعلاً در دسترس نیست.";
+        await telegramApi(env, "sendMessage", {
+          chat_id: bridgedUpdate.message.chat.id,
+          text,
+        });
+      }
+    } catch {
+      return new Response("Python Core bridge or Telegram delivery failed", { status: 502 });
+    }
+    return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+
   const message = update.message;
   if (message && Number.isSafeInteger(message.chat?.id) && typeof message.text === "string") {
     const reply = commandReply(message.text);
