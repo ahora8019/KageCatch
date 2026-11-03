@@ -48,3 +48,20 @@ def test_enable_global_does_not_enable_any_bot_implicitly():
     state.enable_global()
 
     assert state.can_auto_catch(BotName.SENPAI) is False
+
+
+def test_each_user_has_independent_control_state():
+    first = ControlState(user_id="user-1")
+    second = ControlState(user_id="user-2")
+    first.enable_global()
+    first.enable_bot(BotName.SENPAI)
+
+    assert first.can_auto_catch(BotName.SENPAI) is True
+    assert second.can_auto_catch(BotName.SENPAI) is False
+
+
+def test_blank_user_id_is_rejected():
+    import pytest
+
+    with pytest.raises(ValueError, match="user_id"):
+        ControlState(user_id="  ")
