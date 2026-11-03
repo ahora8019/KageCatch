@@ -92,7 +92,7 @@ class _Challenge:
 class EnrollmentService:
     """Coordinate a bounded enrollment flow, isolated by Telegram user ID."""
 
-    _PHONE_PATTERN = re.compile(r"^\\+[1-9][0-9]{7,14}$")
+    _PHONE_PATTERN = re.compile(r"^\+[1-9][0-9]{7,14}$")
 
     def __init__(
         self,
