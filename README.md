@@ -61,7 +61,7 @@ URL_SAFE_RANDOM_NONCE
 sha256_hex(raw_body)
 ```
 
-**Not deployed or connected:** the Python bridge is a callable service boundary, not a running HTTP/ASGI server. The Cloudflare Worker has not been deployed with `PYTHON_CORE_URL` or `BRIDGE_SHARED_SECRET`; no shared secret has been provisioned. The local SQLite replay ledger is single-host only; multi-instance Core requires a shared transactional replay store. There is no end-to-end health handshake, persistent update-ID deduplication, live account enrollment, Listener, or Catch/Pick execution. Keep production forwarding disabled until a real Core host, durable storage, secret rotation, transport tests, and security review are complete.
+**ASGI transport foundation added:** `EnrollmentBridgeASGI` now exposes the authenticated bridge as a framework-free ASGI application. It enforces the exact route and POST method, rejects duplicate authentication headers, bounds streamed request-body size, and returns JSON with `no-store` headers. It can be hosted by an ASGI server behind an HTTPS reverse proxy; this repository does not yet configure or deploy that server. The Cloudflare Worker has not been deployed with `PYTHON_CORE_URL` or `BRIDGE_SHARED_SECRET`; no shared secret has been provisioned. The local SQLite replay ledger is single-host only; multi-instance Core requires a shared transactional replay store. There is no end-to-end health handshake, persistent update-ID deduplication, live account enrollment, Listener, or Catch/Pick execution. Keep production forwarding disabled until a real Core host, durable storage, secret rotation, transport tests, and security review are complete.
 
 ## Self-control commands
 
