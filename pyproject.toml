@@ -7,7 +7,7 @@ name = "kagecatch"
 version = "0.1.0"
 description = "Multi-user Telegram character catch orchestration core"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["cryptography>=42,<47"]
 
 [project.optional-dependencies]
 telegram = ["telethon>=1.36,<2"]
