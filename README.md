@@ -25,10 +25,10 @@ Session components:
 - `kagecatch/session_manager.py`: Fernet encryption/decryption boundary.
 - `kagecatch/sqlite_session_store.py`: single-host SQLite persistence for encrypted blobs.
 - `kagecatch/session_runtime.py`: isolated per-user Telethon clients, authorization checks, disconnect and revocation.
-- `kagecatch/telegram_authorization.py`: explicit authorization flow.
-- `scripts/authorize_telegram.py`: local interactive command; login code and optional 2FA password are entered locally, never through the bot.
+- `kagecatch/telegram_authorization.py`: local interactive authorization helper.
+- `kagecatch/telegram_auth_flow.py`: short-lived, per-user bot-driven authorization state machine (5-minute TTL, 3 attempts, optional 2FA, cancellation).
 
-A real-account authorization test has not yet been run. The owner must execute the local CLI in a private environment and supply Telegram verification details directly to that terminal. No production Worker deployment or live catch has been performed.
+The bot-driven flow is transport-independent and is not yet wired to the deployed Cloudflare Control Worker or a running Python host. The Worker-to-Python authenticated API, production execution host, and real-account validation remain pending. Never log or persist login codes or 2FA passwords. No production Worker deployment or live catch has been performed.
 
 ## Development
 
