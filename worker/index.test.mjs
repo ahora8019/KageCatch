@@ -37,7 +37,7 @@ test("unknown callback is rejected safely", () => {
 test("start and panel commands return the inline menu", () => {
   const start = commandReply("/start");
   const panel = commandReply("/panel");
-  assert.equal(start.reply_markup.inline_keyboard.length, 4);
+  assert.equal(start.reply_markup.inline_keyboard.length, 5);
   assert.deepEqual(panel.reply_markup, start.reply_markup);
 });
 
