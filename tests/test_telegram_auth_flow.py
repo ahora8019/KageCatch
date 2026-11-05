@@ -134,6 +134,29 @@ class TelegramAuthorizationFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(client.connected)
 
+    async def test_rejects_a_second_pending_login_for_same_user(self):
+        client = FakeClient()
+        flow = self.make_flow(client)
+        await flow.start(user_id="tg-1", phone="+10000000000")
+
+        with self.assertRaises(RuntimeError):
+            await flow.start(user_id="tg-1", phone="+10000000001")
+
+        self.assertTrue(client.connected)
+
+    async def test_discards_pending_login_after_three_failed_codes(self):
+        client = FakeClient()
+        flow = self.make_flow(client, max_attempts=3)
+        await flow.start(user_id="tg-1", phone="+10000000000")
+
+        for _ in range(3):
+            with self.assertRaises(ValueError):
+                await flow.submit_code(user_id="tg-1", code="00000")
+
+        self.assertFalse(client.connected)
+        with self.assertRaises(LookupError):
+            await flow.submit_code(user_id="tg-1", code="12345")
+
 
 if __name__ == "__main__":
     unittest.main()
