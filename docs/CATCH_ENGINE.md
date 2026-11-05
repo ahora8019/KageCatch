@@ -50,9 +50,9 @@ No real Telegram account has been authorized or tested. The bot-driven flow has 
 - Key rotation, access auditing, a managed production database, and deployment integration remain incomplete.
 - No real Telegram account was connected and no catch command was sent during this development phase.
 
-## Remaining integration work
+## Control bot interface\n\nThe menu exposes account connection, connected accounts, settings, statistics, security/session controls, disconnect, and help. These are honest status screens only; they do not imply that the Python core or account management is operational. `/status` and `/help` remain shortcuts. `/admin` is disabled until an owner ID and explicit authorization policy are configured. Worker unit tests run with `node --test worker/index.test.mjs`.\n\n## Remaining integration work
 
-- Validate the local authorization CLI against an owner-controlled Telegram account.
+- Design and review a secure local authorization handoff that does not transmit OTPs, 2FA passwords, or StringSessions through the bot chat.
 - Add key rotation and session access/revocation auditing.
 - Add persistent quotas and atomic deduplication.
 - Add live Telegram response listeners and verifiers for each target bot.
