@@ -28,9 +28,9 @@ Session components:
 - `kagecatch/telegram_authorization.py`: local interactive authorization helper.
 - `kagecatch/telegram_auth_flow.py`: short-lived, per-user bot-driven authorization state machine (5-minute TTL, 3 attempts, optional 2FA, cancellation).
 
-The bot-driven flow is transport-independent and is not yet wired to the deployed Cloudflare Control Worker or a running Python host. The Worker-to-Python authenticated API, production execution host, and real-account validation remain pending. Never log or persist login codes or 2FA passwords. No production Worker deployment or live catch has been performed.
+The authorization state machine is isolated from the bot transport and must not be exposed as a chat-based OTP/2FA collection flow. The reviewed Control Worker source is in `worker/index.mjs`; it provides an inline-first menu and deliberately refuses to collect Telegram login codes or 2FA passwords. The menu is not yet deployed. A secure local authorization handoff, authenticated Worker-to-Python API, production execution host, and real-account validation remain pending. No production Worker deployment or live catch has been performed.
 
-## Development
+## Control bot interface\n\n`worker/index.mjs` contains the reviewed Cloudflare Worker source. The menu is inline-first; `/status`, `/help`, and `/admin` remain secondary shortcuts. `/admin` is intentionally disabled until an owner identity and authorization policy are configured. Account connection is intentionally unavailable until a secure handoff is implemented; never ask users to send Telegram login codes or 2FA passwords to the bot.\n\n## Development
 
 Python 3.11+ is required. Install the Telegram integration and run tests with:
 
