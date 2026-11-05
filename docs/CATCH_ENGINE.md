@@ -32,17 +32,15 @@ SQLiteSessionStore persists ciphertext (not raw StringSessions) in a local SQLit
 
 ## Authorizing an account
 
-The explicit authorization helper is in kagecatch/telegram_authorization.py. The local CLI is scripts/authorize_telegram.py.
+The transport-independent, bot-driven authorization state machine is in kagecatch/telegram_auth_flow.py. It supports one pending login per KageCatch user, a five-minute default expiry, a three-attempt limit, explicit cancellation, optional 2FA, and persistence only after Telegram confirms authorization. Phone codes and 2FA passwords are held only as method arguments during the request; they are not stored in the pending state or database.
 
-1. Install the project with the Telegram extra: python -m pip install '.[telegram]'.
-2. Configure KAGECATCH_API_ID, KAGECATCH_API_HASH, KAGECATCH_FERNET_KEY, and KAGECATCH_USER_ID as environment secrets.
-3. Run python scripts/authorize_telegram.py from a private terminal.
-4. Enter the phone number, Telegram login code, and (only if requested) 2FA password in that terminal. The code/password are hidden where getpass is used.
-5. The script persists a session only after Telegram confirms the account is authorized. It disconnects the client afterward.
+The Cloudflare Control Worker must accept authorization input only from the user's private chat, map the Telegram sender ID to the KageCatch user ID, and call a separately hosted Python execution API over authenticated HTTPS. It must never log update bodies, phone codes, 2FA passwords, API credentials, or session strings. Secret-bearing Telegram messages should be deleted on a best-effort basis after processing; deletion is not a guarantee that Telegram or a client has erased all copies. The Worker-to-Python API adapter, backend deployment, and production wiring are not implemented yet.
 
-Never send login codes, 2FA passwords, API hashes, Fernet keys, or StringSessions to the KageCatch control bot, ChatGPT, GitHub issues, logs, or repository files. Do not commit the generated data/kagecatch-sessions.sqlite3 database. The repository .gitignore excludes local database and secret files.
+For local development only, the explicit authorization helper and CLI remain available in kagecatch/telegram_authorization.py and scripts/authorize_telegram.py. The CLI collects verification material in a private terminal.
 
-The CLI has not yet been run against a real account. A real-account test requires the owner to run it in a private environment and enter Telegram's verification material locally; those credentials must not be shared in this chat.
+Never send API hashes, Fernet keys, or StringSessions to the bot, ChatGPT, GitHub issues, logs, or repository files. Do not commit data/kagecatch-sessions.sqlite3. The repository .gitignore excludes local database and secret files.
+
+No real Telegram account has been authorized or tested. The bot-driven flow has unit-level test coverage only; it is not yet connected to the deployed Control Worker or a running Python host.
 
 ## Verification boundaries
 
