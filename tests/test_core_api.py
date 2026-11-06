@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from kagecatch.core_api import InMemoryNonceStore, create_app
 
 
-SECRET = "core-test-secret"
+SECRET = "core-test-secret-0123456789abcdef"
 
 
 def signed_headers(method, path, body=b"", *, timestamp=None, nonce="test-nonce-0001", secret=SECRET):
@@ -29,6 +29,7 @@ class FakeRuntime:
         self.clients = {"2001": object()}
         self.disconnected = []
         self.revoked = []
+        self.session_manager = None
 
     @property
     def active_user_count(self):
@@ -44,6 +45,7 @@ class FakeRuntime:
     async def revoke_user(self, user_id):
         self.revoked.append(user_id)
         self.clients.pop(user_id, None)
+        await self.session_manager.revoke_session(user_id)
 
 
 class FakeSessionManager:
@@ -63,6 +65,7 @@ class CoreApiTests(unittest.TestCase):
     def setUp(self):
         self.runtime = FakeRuntime()
         self.sessions = FakeSessionManager()
+        self.runtime.session_manager = self.sessions
         self.app = create_app(
             core_secret=SECRET,
             runtime=self.runtime,
