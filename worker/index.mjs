@@ -194,7 +194,7 @@ export class ConnectionLinkStore {
       if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 600) return json({ error: 'invalid_request' }, 400);
       const bytes = crypto.getRandomValues(new Uint8Array(32));
       let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      const token = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      const token = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
       const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
       await this.state.storage.put(key, { telegramUserId, expiresAt: Date.now() + ttlSeconds * 1000 });
