@@ -32,15 +32,15 @@ test("main menu is inline-first and exposes the agreed account controls", () => 
   assert.equal(menu.inline_keyboard.flat().some((button) => button.url), false);
 });
 
-test("connect callback never asks for a phone, login code, or 2FA password", () => {
+test("connect callback explains the standalone account link without exposing a chat credential prompt", () => {
   const result = resolveCallback("account:connect");
-  assert.match(result.text, /کد ورود و رمز دومرحله‌ای فقط داخل فرم امن پنل وارد می‌شن/);
-  assert.match(result.text, /اینجا توی چت نفرستشون/);
-  assert.doesNotMatch(result.text, /شماره تلفن خود را وارد کن|کد ورود را بفرست|رمز دومرحله‌ای را وارد کن/);
+  assert.match(result.text, /لینک مخصوص خودت ساخته بشه/);
+  assert.match(result.text, /صفحهٔ ورود باز بشه/);
+  assert.doesNotMatch(result.text, /پنل|کد ورود را بفرست|رمز دومرحله‌ای را وارد کن/);
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /هنوز حسابی وصل نکردی/);
+  assert.match(resolveCallback("account:list").text, /گزینهٔ «اتصال حساب»/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
