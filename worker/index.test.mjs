@@ -54,6 +54,7 @@ function createDurableObjectState() {
     async get(key) { return values.get(key); },
     async put(key, value) { values.set(key, value); },
     async delete(key) { return values.delete(key); },
+    async list({ prefix = "" } = {}) { return new Map([...values.entries()].filter(([key]) => key.startsWith(prefix))); },
     async transaction(callback) {
       const run = tail.then(() => callback(storage));
       tail = run.catch(() => {});
@@ -254,4 +255,68 @@ test("owner menu includes global monitoring and member administration", () => {
   assert.ok(callbacks.includes("owner:stats"));
   assert.ok(callbacks.includes("owner:settings"));
   assert.ok(callbacks.includes("owner:broadcast"));
+});
+
+
+test("user registry creates MEMBER records and reserves OWNER for the configured ID", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  const member = await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  const owner = await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  assert.equal((await member.json()).role, "MEMBER");
+  assert.equal((await owner.json()).role, "OWNER");
+  const fetched = await post("/user", { telegramUserId: 2002 });
+  assert.equal((await fetched.json()).user.status, "active");
+});
+
+test("blocked member remains blocked on /start registration", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  await post("/manage-user", { telegramUserId: 2002, action: "block" });
+  const restarted = await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  assert.equal((await restarted.json()).status, "blocked");
+});
+
+test("member cannot invoke owner-only callbacks through the webhook", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+    OWNER_TELEGRAM_ID: "1001",
+    CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      calls.push({ method: url.split("/").pop(), payload: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const update = {
+    update_id: 88,
+    callback_query: {
+      id: "callback-88", from: { id: 2002 },
+      message: { message_id: 9, chat: { id: 2002, type: "private" } },
+      data: "owner:stats",
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.ok(calls.some((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true));
+  assert.ok(!calls.some((call) => call.method === "editMessageText"));
 });
