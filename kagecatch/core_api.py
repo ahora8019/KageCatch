@@ -52,6 +52,7 @@ def _configuration_presence(core_secret: str | None = None) -> dict[str, bool]:
         "telegram_api_id_configured": bool(os.getenv("KAGECATCH_API_ID")),
         "telegram_api_hash_configured": bool(os.getenv("KAGECATCH_API_HASH")),
         "session_encryption_key_configured": bool(os.getenv("KAGECATCH_FERNET_KEY")),
+        "session_store_url_configured": bool(os.getenv("KAGECATCH_SESSION_STORE_URL")),
         "telethon_available": importlib.util.find_spec("telethon") is not None,
     }
 
@@ -65,9 +66,15 @@ def _configured_runtime():
 
     from .session_manager import SessionManager
     from .session_runtime import SessionRuntime, TelethonSessionClientFactory
-    from .sqlite_session_store import SQLiteSessionStore
-
-    store = SQLiteSessionStore(os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3"))
+    if os.getenv("KAGECATCH_SESSION_STORE_URL"):
+        from .d1_session_store import D1SessionStore
+        store = D1SessionStore(
+            os.environ["KAGECATCH_SESSION_STORE_URL"],
+            os.getenv("KAGECATCH_CORE_SECRET", ""),
+        )
+    else:
+        from .sqlite_session_store import SQLiteSessionStore
+        store = SQLiteSessionStore(os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3"))
     manager = SessionManager(fernet_key=fernet_key, store=store)
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
     runtime = SessionRuntime(session_manager=manager, client_factory=factory)
