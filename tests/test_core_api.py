@@ -191,13 +191,15 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "connected")
         self.assertEqual(self.runtime.connect_calls, ["2001"])
-\n    def test_connect_can_be_cancelled(self):
+
+    def test_connect_can_be_cancelled(self):
         path = "/v1/accounts/2001/connect/cancel"
         response = self.client.post(path, headers=signed_headers("POST", path))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "cancelled")
         self.assertEqual(self.auth_flow.cancelled, ["2001"])
-\n    def test_revoke_disconnects_and_deletes_authorized_session(self):
+
+    def test_revoke_disconnects_and_deletes_authorized_session(self):
         path = "/v1/accounts/2001"
         response = self.client.delete(path, headers=signed_headers("DELETE", path))
         self.assertEqual(response.status_code, 200)
