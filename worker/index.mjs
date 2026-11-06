@@ -61,11 +61,10 @@ export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
 
 export function resolveRole(userId, ownerTelegramId, storedRole = "MEMBER", status = "active") {
   if (status === "blocked") return "BLOCKED";
-  if (!Number.isSafeInteger(userId) || !/^\d+$/.test(String(ownerTelegramId || ""))) return "DENIED";
-  if (String(userId) === String(ownerTelegramId)) return "OWNER";
+  if (!Number.isSafeInteger(userId)) return "DENIED";
+  if (/^\d+$/.test(String(ownerTelegramId || "")) && String(userId) === String(ownerTelegramId)) return "OWNER";
   return storedRole === "MEMBER" ? "MEMBER" : "DENIED";
 }
-
 const BACK_MENU = { inline_keyboard: [[{ text: "⬅️ منوی اصلی", callback_data: "menu:main" }]] };
 
 export function resolveCallback(data) {
