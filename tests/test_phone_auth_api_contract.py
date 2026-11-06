@@ -49,7 +49,7 @@ class PhoneAuthApiTests(unittest.TestCase):
         body = json.dumps(payload, separators=(",", ":")).encode()
         timestamp = str(int(time.time()))
         digest = hashlib.sha256(body).hexdigest()
-        message = f"{timestamp}\\n{nonce}\\nPOST\\n{path}\\n{digest}".encode()
+        message = f"{timestamp}\n{nonce}\nPOST\n{path}\n{digest}".encode()
         signature = hmac.new(self.secret.encode(), message, hashlib.sha256).hexdigest()
         headers = {"X-KageCatch-Timestamp": timestamp, "X-KageCatch-Nonce": nonce, "X-KageCatch-Signature": signature, "content-type": "application/json"}
         return self.client.post(path, content=body, headers=headers)
