@@ -61,15 +61,31 @@ class FakeSessionManager:
         self.sessions.pop(user_id, None)
 
 
+class FakeAuthFlow:
+    def __init__(self):
+        self.cancelled = []
+
+    async def start(self, *, user_id):
+        return {"status": "pending", "login_url": "tg://login?token=one-time", "expires_in": 30}
+
+    async def get_status(self, *, user_id):
+        return {"status": "pending", "expires_in": 20, "login_url": "tg://login?token=one-time"}
+
+    async def cancel(self, *, user_id):
+        self.cancelled.append(user_id)
+
+
 class CoreApiTests(unittest.TestCase):
     def setUp(self):
         self.runtime = FakeRuntime()
         self.sessions = FakeSessionManager()
         self.runtime.session_manager = self.sessions
+        self.auth_flow = FakeAuthFlow()
         self.app = create_app(
             core_secret=SECRET,
             runtime=self.runtime,
             session_manager=self.sessions,
+            auth_flow=self.auth_flow,
             nonce_store=InMemoryNonceStore(),
         )
         self.client = TestClient(self.app)
@@ -125,7 +141,27 @@ class CoreApiTests(unittest.TestCase):
         self.assertIn("2001", self.sessions.sessions)
         self.assertEqual(self.runtime.disconnected, ["2001"])
 
-    def test_revoke_disconnects_and_deletes_authorized_session(self):
+
+    def test_connect_returns_a_telegram_deep_link_not_a_qr_image(self):
+        path = "/v1/accounts/2001/connect"
+        response = self.client.post(path, headers=signed_headers("POST", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["login_url"].startswith("tg://login?token="))
+        self.assertNotIn("qr_image", response.json())
+
+    def test_connect_status_is_available_to_worker(self):
+        path = "/v1/accounts/2001/connect/status"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "pending")
+
+    def test_connect_can_be_cancelled(self):
+        path = "/v1/accounts/2001/connect/cancel"
+        response = self.client.post(path, headers=signed_headers("POST", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "cancelled")
+        self.assertEqual(self.auth_flow.cancelled, ["2001"])
+\n    def test_revoke_disconnects_and_deletes_authorized_session(self):
         path = "/v1/accounts/2001"
         response = self.client.delete(path, headers=signed_headers("DELETE", path))
         self.assertEqual(response.status_code, 200)
