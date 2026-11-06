@@ -1,6 +1,8 @@
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
+const CONNECTION_LINK_TTL_SECONDS = 300;
+const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -177,6 +179,40 @@ document.querySelector('#bot').textContent=s.bot?.username?'@'+s.bot.username:'�
 document.querySelector('#core').textContent=s.python_core==='connected'?'متصل':'هنوز متصل نیست';
 }).catch(()=>{document.querySelector('#worker').textContent='عدم دسترسی';});
 </script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" } });
+}
+
+export class ConnectionLinkStore {
+  constructor(state) { this.state = state; }
+  async fetch(request) {
+    if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST' } });
+    const url = new URL(request.url);
+    let body;
+    try { if (!(request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) throw new Error('content type'); body = await request.json(); }
+    catch { return json({ error: 'invalid_request' }, 400); }
+    if (url.pathname === '/create') {
+      const { telegramUserId, ttlSeconds } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 600) return json({ error: 'invalid_request' }, 400);
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
+      const token = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+      const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      await this.state.storage.put(key, { telegramUserId, expiresAt: Date.now() + ttlSeconds * 1000 });
+      return json({ token, expiresIn: ttlSeconds }, 201);
+    }
+    if (url.pathname === '/consume') {
+      const token = body?.token;
+      if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(token)) return json({ error: 'invalid_link' }, 400);
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+      const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const record = await this.state.storage.get(key);
+      if (!record) return json({ error: 'invalid_or_used_link' }, 410);
+      await this.state.storage.delete(key);
+      if (record.expiresAt <= Date.now()) return json({ error: 'expired_link' }, 410);
+      return json({ valid: true }, 200);
+    }
+    return json({ error: 'not_found' }, 404);
+  }
 }
 
 async function handleCallback(callback, env) {
