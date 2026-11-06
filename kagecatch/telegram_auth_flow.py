@@ -1,13 +1,13 @@
-"""Short-lived, per-user Telegram authorization state for a bot-driven flow.
+"""Restart-safe, short-lived per-user Telegram authorization flow.
 
-The caller is responsible for accepting secrets only in a private, authenticated
-chat, suppressing update/body logging, and deleting secret-bearing messages on a
-best-effort basis. This module never persists phone codes or 2FA passwords.
+Only an encrypted, temporary Telethon StringSession and challenge metadata are
+persisted by SessionManager. Login codes and 2FA passwords are never stored.
 """
 from __future__ import annotations
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -29,7 +29,7 @@ class TelegramAuthorizationFlow:
     def __init__(
         self,
         *,
-        client_factory: Callable[[], object],
+        client_factory: Callable[..., object],
         session_manager,
         ttl_seconds: int = 300,
         max_attempts: int = 3,
@@ -43,13 +43,76 @@ class TelegramAuthorizationFlow:
         self._session_manager = session_manager
         self._ttl_seconds = ttl_seconds
         self._max_attempts = max_attempts
-        if clock is None:
-            import time
-            clock = time.monotonic
-        self._clock = clock
+        self._clock = clock or time.time
         self._pending: dict[str, _PendingAuthorization] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
+
+    def _new_client(self, session_string: str = ""):
+        try:
+            return self._client_factory(session_string)
+        except TypeError:
+            # Backward-compatible for injected test factories that take no args.
+            if session_string:
+                return self._client_factory()
+            raise
+
+    async def _persist(self, user_id: str, pending: _PendingAuthorization) -> None:
+        session_string = pending.client.session.save()
+        if not isinstance(session_string, str) or not session_string:
+            raise RuntimeError("Telethon did not produce a resumable session")
+        await self._session_manager.save_pending_authorization(
+            user_id,
+            {
+                "version": 1,
+                "phone": pending.phone,
+                "phone_code_hash": pending.phone_code_hash,
+                "session_string": session_string,
+                "expires_at": pending.expires_at,
+                "attempts": pending.attempts,
+            },
+        )
+
+    async def _restore(self, user_id: str) -> _PendingAuthorization | None:
+        payload = await self._session_manager.load_pending_authorization(user_id)
+        if payload is None:
+            return None
+        try:
+            if payload.get("version") != 1:
+                raise ValueError
+            phone = payload["phone"]
+            phone_hash = payload["phone_code_hash"]
+            session_string = payload["session_string"]
+            expires_at = float(payload["expires_at"])
+            attempts = int(payload.get("attempts", 0))
+            if (
+                not isinstance(phone, str)
+                or not re.fullmatch(r"\+[1-9]\d{7,14}", phone)
+                or not isinstance(phone_hash, str)
+                or not phone_hash
+                or not isinstance(session_string, str)
+                or not session_string
+                or attempts < 0
+            ):
+                raise ValueError
+        except (KeyError, TypeError, ValueError) as exc:
+            await self._session_manager.delete_pending_authorization(user_id)
+            raise ValueError("stored authorization challenge is invalid") from exc
+        if self._clock() >= expires_at or attempts >= self._max_attempts:
+            await self._session_manager.delete_pending_authorization(user_id)
+            return None
+        client = self._new_client(session_string)
+        try:
+            await client.connect()
+        except Exception:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            raise
+        pending = _PendingAuthorization(client, phone, phone_hash, expires_at, attempts)
+        self._pending[user_id] = pending
+        return pending
 
     async def _lock_for(self, user_id: str) -> asyncio.Lock:
         self._validate_user(user_id)
@@ -60,10 +123,10 @@ class TelegramAuthorizationFlow:
         lock = await self._lock_for(user_id)
         async with lock:
             current = self._pending.get(user_id)
-            if current is not None and self._clock() < current.expires_at:
-                raise RuntimeError("an authorization attempt is already pending")
+            if current is None:
+                current = await self._restore(user_id)
             if current is not None:
-                await self._discard(user_id)
+                raise RuntimeError("an authorization attempt is already pending")
 
             normalized_phone = phone.strip() if isinstance(phone, str) else ""
             if not re.fullmatch(r"\+[1-9]\d{7,14}", normalized_phone):
@@ -71,19 +134,21 @@ class TelegramAuthorizationFlow:
             if await self._session_manager.load_session(user_id):
                 raise RuntimeError("already_authorized")
 
-            client = self._client_factory()
+            client = self._new_client()
             try:
                 await client.connect()
                 sent_code = await client.send_code_request(normalized_phone)
                 code_hash = getattr(sent_code, "phone_code_hash", None)
                 if not code_hash:
                     raise RuntimeError("Telegram did not return a login challenge")
-                self._pending[user_id] = _PendingAuthorization(
+                pending = _PendingAuthorization(
                     client=client,
                     phone=normalized_phone,
                     phone_code_hash=code_hash,
                     expires_at=self._clock() + self._ttl_seconds,
                 )
+                await self._persist(user_id, pending)
+                self._pending[user_id] = pending
             except BaseException:
                 try:
                     await client.disconnect()
@@ -105,6 +170,7 @@ class TelegramAuthorizationFlow:
                     phone_code_hash=pending.phone_code_hash,
                 )
             except SessionPasswordNeededError:
+                await self._persist(user_id, pending)
                 return "password_required"
             except Exception:
                 await self._record_failed_attempt(user_id, pending)
@@ -129,6 +195,8 @@ class TelegramAuthorizationFlow:
         async with lock:
             pending = self._pending.get(user_id)
             if pending is None:
+                pending = await self._restore(user_id)
+            if pending is None:
                 return {"status": "not_pending"}
             if self._clock() >= pending.expires_at:
                 await self._discard(user_id)
@@ -147,6 +215,8 @@ class TelegramAuthorizationFlow:
     async def _get_pending(self, user_id: str) -> _PendingAuthorization:
         pending = self._pending.get(user_id)
         if pending is None:
+            pending = await self._restore(user_id)
+        if pending is None:
             raise LookupError("no pending Telegram authorization for this user")
         if self._clock() >= pending.expires_at:
             await self._discard(user_id)
@@ -159,6 +229,8 @@ class TelegramAuthorizationFlow:
         pending.attempts += 1
         if pending.attempts >= self._max_attempts:
             await self._discard(user_id)
+        else:
+            await self._persist(user_id, pending)
 
     async def _complete(
         self, user_id: str, pending: _PendingAuthorization
@@ -178,11 +250,14 @@ class TelegramAuthorizationFlow:
 
     async def _discard(self, user_id: str) -> None:
         pending = self._pending.pop(user_id, None)
-        if pending is not None:
-            try:
-                await pending.client.disconnect()
-            except Exception:
-                pass
+        try:
+            await self._session_manager.delete_pending_authorization(user_id)
+        finally:
+            if pending is not None:
+                try:
+                    await pending.client.disconnect()
+                except Exception:
+                    pass
 
     @staticmethod
     def _validate_user(user_id: str) -> None:
