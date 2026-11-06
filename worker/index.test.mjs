@@ -8,7 +8,7 @@ test("panel explains login requirements and never leaves the connect button sile
   const html = await response.text();
   assert.match(html, /برای وصل کردن حسابت، اول پنل رو از دکمهٔ داخل چت KageCatch باز کن/);
   assert.match(html, /دوست KageCatch/);
-  assert.match(html, /main\\{padding-bottom:124px\\}/);
+  assert.match(html, /main\{padding-bottom:124px\}/);
 });
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
@@ -259,7 +259,7 @@ test("panel exposes the secure phone, code, and optional 2FA connection flow", a
   assert.match(html, /api\/account\/connect\/code/);
   assert.match(html, /api\/account\/connect\/password/);
   assert.match(html, /ارسال کد/);
-  assert.match(html, /کد یک‌بارمصرف ارسال‌شده از طرف Telegram/);
+  assert.match(html, /کدی که تلگرام برات فرستاده رو همین‌جا بنویس/);
   assert.match(html, /رمز دومرحله‌ای/);
 });
 
