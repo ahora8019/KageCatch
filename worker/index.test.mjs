@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
   const menu = buildMainMenu();
@@ -33,11 +33,24 @@ test("unknown callback is rejected safely", () => {
   assert.equal(resolveCallback("account:unknown").alert, true);
 });
 
-test("start and panel commands return the inline menu", () => {
+test("/start opens a separate welcome menu instead of dropping users into the panel", () => {
   const start = commandReply("/start");
+  const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data);
+  assert.deepEqual(callbacks, ["home:panel", "home:status", "home:help"]);
+  assert.equal(callbacks.includes("account:connect"), false);
+  assert.equal(callbacks.includes("owner:members"), false);
+});
+
+test("/panel opens the member feature menu directly as an explicit choice", () => {
   const panel = commandReply("/panel");
-  assert.equal(start.reply_markup.inline_keyboard.length, 5);
-  assert.deepEqual(panel.reply_markup, start.reply_markup);
+  const callbacks = panel.reply_markup.inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("account:connect"));
+  assert.ok(callbacks.includes("account:list"));
+});
+
+test("owner start menu separates admin entry from member panel entry", () => {
+  const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
+  assert.deepEqual(callbacks, ["home:admin", "home:panel", "home:status", "home:help"]);
 });
 
 test("status and help remain available as slash-command shortcuts", () => {
