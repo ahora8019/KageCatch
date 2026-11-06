@@ -291,8 +291,21 @@ async function handleOwnerCallback(callback, env) {
   if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\n\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
   if (data === 'owner:members') {
     const result = await registryRequest(env, '/users', {});
-    const lines = (result.users || []).map((u) => '• ' + u.telegramUserId + ' — ' + u.role + ' — ' + u.status);
-    return { text: '👥 اعضای KageCatch\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: BACK_MENU };
+    const users = result.users || [];
+    const lines = users.map((u) => '• ' + u.telegramUserId + ' — ' + u.role + ' — ' + u.status);
+    const keyboard = users.filter((u) => u.role !== 'OWNER').slice(0, 20).map((u) => [{
+      text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + u.telegramUserId,
+      callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId,
+    }]);
+    keyboard.push([{ text: '⬅️ منوی اصلی', callback_data: 'menu:main' }]);
+    return { text: '👥 اعضای KageCatch\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
+  }
+  const manage = data.match(/^owner:(block|unblock):(\d+)$/);
+  if (manage) {
+    const telegramUserId = Number(manage[2]);
+    if (!Number.isSafeInteger(telegramUserId)) return { text: 'شناسه عضو معتبر نیست.', keyboard: BACK_MENU, alert: true };
+    const result = await registryRequest(env, '/manage-user', { telegramUserId, action: manage[1] });
+    return { text: 'وضعیت عضو ' + telegramUserId + ' به‌روزرسانی شد: ' + result.status, keyboard: BACK_MENU };
   }
   return { text: 'گزینه مدیریتی نامعتبر است.', keyboard: BACK_MENU, alert: true };
 }
