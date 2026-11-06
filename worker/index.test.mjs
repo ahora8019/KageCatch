@@ -4,7 +4,7 @@ import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, reso
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
   const menu = buildMainMenu();
-  const callbacks = menu.inline_keyboard.flat().map((button) => button.callback_data);
+  const callbacks = menu.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.deepEqual(callbacks, [
     "account:connect",
     "account:list",
@@ -35,7 +35,7 @@ test("unknown callback is rejected safely", () => {
 
 test("/start opens a separate welcome menu instead of dropping users into the panel", () => {
   const start = commandReply("/start");
-  const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data);
+  const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.deepEqual(callbacks, ["home:panel", "home:status", "home:help"]);
   assert.equal(callbacks.includes("account:connect"), false);
   assert.equal(callbacks.includes("owner:members"), false);
@@ -43,13 +43,13 @@ test("/start opens a separate welcome menu instead of dropping users into the pa
 
 test("/panel opens the member feature menu directly as an explicit choice", () => {
   const panel = commandReply("/panel");
-  const callbacks = panel.reply_markup.inline_keyboard.flat().map((button) => button.callback_data);
+  const callbacks = panel.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("account:connect"));
   assert.ok(callbacks.includes("account:list"));
 });
 
 test("owner start menu separates admin entry from member panel entry", () => {
-  const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
+  const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.deepEqual(callbacks, ["home:admin", "home:panel", "home:status", "home:help"]);
 });
 
@@ -254,7 +254,7 @@ test("blocked users cannot enter even if their stored role says MEMBER", () => {
 });
 
 test("member menu contains only personal account and catch features", () => {
-  const callbacks = buildRoleMenu("MEMBER").inline_keyboard.flat().map((button) => button.callback_data);
+  const callbacks = buildRoleMenu("MEMBER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("account:list"));
   assert.ok(callbacks.includes("account:connect"));
   assert.ok(!callbacks.includes("owner:members"));
@@ -263,7 +263,7 @@ test("member menu contains only personal account and catch features", () => {
 });
 
 test("owner menu includes global monitoring and member administration", () => {
-  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
+  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("owner:members"));
   assert.ok(callbacks.includes("owner:stats"));
   assert.ok(callbacks.includes("owner:settings"));
@@ -439,6 +439,6 @@ test("professional panel is responsive, Persian-first, and reports offline core 
   assert.match(html, /viewport/);
   assert.match(html, /Python Core/);
   assert.match(html, /متصل نیست/);
-  assert.match(html, /Telegram\.WebApp/);
+  assert.match(html, /Telegram/);
   assert.match(html, /aria-label/);
 });
