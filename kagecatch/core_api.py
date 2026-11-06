@@ -70,8 +70,8 @@ def _configured_runtime():
     manager = SessionManager(fernet_key=fernet_key, store=store)
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
     runtime = SessionRuntime(session_manager=manager, client_factory=factory)
-    from .telegram_qr_auth_flow import TelegramQrAuthorizationFlow
-    auth_flow = TelegramQrAuthorizationFlow(client_factory=lambda: factory(""), session_manager=manager)
+    from .telegram_auth_flow import TelegramAuthorizationFlow
+    auth_flow = TelegramAuthorizationFlow(client_factory=lambda: factory(""), session_manager=manager)
     return manager, runtime, auth_flow
 
 
@@ -164,17 +164,85 @@ def create_app(
         }
 
     @app.post("/v1/accounts/{telegram_user_id}/connect", dependencies=[Depends(require_core_auth)])
-    async def connect_account(telegram_user_id: int):
+    async def connect_account(telegram_user_id: int, request: Request):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
             raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
         if auth_flow is None:
             raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
         try:
-            return await auth_flow.start(user_id=str(telegram_user_id))
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        phone = payload.get("phone") if isinstance(payload, dict) else None
+        if not isinstance(phone, str):
+            raise HTTPException(status_code=400, detail="phone_required")
+        try:
+            result = await auth_flow.start(user_id=str(telegram_user_id), phone=phone)
+            return {"status": result}
         except RuntimeError as exc:
             if "already_authorized" in str(exc):
                 return {"status": "already_authorized"}
             raise HTTPException(status_code=409, detail="authorization_already_pending") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_phone") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="telegram_code_request_failed") from exc
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect/code", dependencies=[Depends(require_core_auth)])
+    async def submit_connect_code(telegram_user_id: int, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        code = payload.get("code") if isinstance(payload, dict) else None
+        if not isinstance(code, str) or not code.strip():
+            raise HTTPException(status_code=400, detail="code_required")
+        try:
+            result = await auth_flow.submit_code(user_id=str(telegram_user_id), code=code)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="authorization_not_pending") from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=410, detail="authorization_expired") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_telegram_code") from exc
+        if result == "connected" and runtime is not None:
+            try:
+                await runtime.connect_user(str(telegram_user_id))
+            except Exception:
+                return {"status": "authorized"}
+        return {"status": result}
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect/password", dependencies=[Depends(require_core_auth)])
+    async def submit_connect_password(telegram_user_id: int, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        password = payload.get("password") if isinstance(payload, dict) else None
+        if not isinstance(password, str) or not password:
+            raise HTTPException(status_code=400, detail="password_required")
+        try:
+            result = await auth_flow.submit_password(user_id=str(telegram_user_id), password=password)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="authorization_not_pending") from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=410, detail="authorization_expired") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_2fa_password") from exc
+        if result == "connected" and runtime is not None:
+            try:
+                await runtime.connect_user(str(telegram_user_id))
+            except Exception:
+                return {"status": "authorized"}
+        return {"status": result}
 
     @app.get("/v1/accounts/{telegram_user_id}/connect/status", dependencies=[Depends(require_core_auth)])
     async def connect_status(telegram_user_id: int):
