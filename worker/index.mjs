@@ -759,7 +759,7 @@ async function handleWebhook(request, env) {
 
 
 async function internalSessionStore(request, env) {
-  const match = new URL(request.url).pathname.match(/^\\/internal\\/session-store\\/([1-9][0-9]{0,15})$/);
+  const match = new URL(request.url).pathname.match(/^\/internal\/session-store\/([1-9][0-9]{0,15})$/);
   if (!match) return json({ error: "not_found" }, 404);
   if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({ error: "method_not_allowed" }, 405);
   if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) return json({ error: "storage_auth_not_configured" }, 503);
