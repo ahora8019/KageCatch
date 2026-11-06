@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
+import logging
 import hmac
 import os
 import re
@@ -40,6 +42,19 @@ class InMemoryNonceStore:
             return True
 
 
+
+def _configuration_presence(core_secret: str | None = None) -> dict[str, bool]:
+    """Return safe configuration presence flags without exposing secret values."""
+    secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
+    return {
+        "core_auth_configured": bool(secret),
+        "telegram_api_id_configured": bool(os.getenv("KAGECATCH_API_ID")),
+        "telegram_api_hash_configured": bool(os.getenv("KAGECATCH_API_HASH")),
+        "session_encryption_key_configured": bool(os.getenv("KAGECATCH_FERNET_KEY")),
+        "telethon_available": importlib.util.find_spec("telethon") is not None,
+    }
+
+
 def _configured_runtime():
     api_id = os.getenv("KAGECATCH_API_ID")
     api_hash = os.getenv("KAGECATCH_API_HASH")
@@ -70,6 +85,7 @@ def create_app(
     clock=time.time,
 ) -> FastAPI:
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
+    logging.getLogger("kagecatch.core").info("Core configuration presence: %s", _configuration_presence(secret))
     if secret and len(secret.encode("utf-8")) < 32:
         raise ValueError("KAGECATCH_CORE_SECRET must contain at least 32 bytes")
 
