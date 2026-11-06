@@ -333,3 +333,82 @@ test("member cannot invoke owner-only callbacks through the webhook", async () =
   assert.ok(calls.some((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true));
   assert.ok(!calls.some((call) => call.method === "editMessageText"));
 });
+
+
+test("owner broadcast collects a draft, previews it, and sends only to active members after confirmation", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  await post("/manage-user", { telegramUserId: 2002, action: "block" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+    OWNER_TELEGRAM_ID: "1001",
+    CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop();
+      const payload = JSON.parse(init.body);
+      calls.push({ method, payload });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const webhook = (update) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+  const callback = (id, data, messageId) => ({
+    update_id: id,
+    callback_query: { id: "callback-" + id, from: { id: 1001 }, message: { message_id: messageId, chat: { id: 1001, type: "private" } }, data },
+  });
+  assert.equal((await webhook(callback(301, "owner:broadcast", 1))).status, 200);
+  assert.ok(calls.some((c) => c.method === "editMessageText" && /متن پیام/.test(c.payload.text)));
+
+  calls.length = 0;
+  assert.equal((await webhook({ update_id: 302, message: { message_id: 2, from: { id: 1001 }, chat: { id: 1001, type: "private" }, text: "سلام اعضای KageCatch" } })).status, 200);
+  const preview = calls.find((c) => c.method === "sendMessage");
+  assert.match(preview.payload.text, /سلام اعضای KageCatch/);
+  assert.ok(preview.payload.reply_markup.inline_keyboard.flat().some((b) => b.callback_data === "owner:broadcast:confirm"));
+
+  calls.length = 0;
+  assert.equal((await webhook(callback(303, "owner:broadcast:confirm", 3))).status, 200);
+  const deliveries = calls.filter((c) => c.method === "sendMessage" && c.payload.chat_id !== 1001);
+  assert.deepEqual(deliveries.map((c) => c.payload.chat_id), [2001]);
+  assert.equal(deliveries[0].payload.text, "سلام اعضای KageCatch");
+  assert.ok(calls.some((c) => c.method === "sendMessage" && c.payload.chat_id === 1001 && /ارسال همگانی تمام شد/.test(c.payload.text)));
+});
+
+test("broadcast draft is available only to the owner and supports cancellation", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  const started = await post("/broadcast", { ownerTelegramId: 1001, action: "begin" });
+  assert.equal((await started.json()).status, "awaiting_text");
+  const saved = await post("/broadcast", { ownerTelegramId: 1001, action: "save", text: "test" });
+  assert.equal((await saved.json()).status, "awaiting_confirmation");
+  const cancelled = await post("/broadcast", { ownerTelegramId: 1001, action: "clear" });
+  assert.equal((await cancelled.json()).status, "cleared");
+  const current = await post("/broadcast", { ownerTelegramId: 1001, action: "get" });
+  assert.equal((await current.json()).draft, null);
+});
+
+test("broadcast rejects empty or oversized text", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (payload) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post({ ownerTelegramId: 1001, action: "begin" });
+  assert.equal((await post({ ownerTelegramId: 1001, action: "save", text: "   " })).status, 400);
+  assert.equal((await post({ ownerTelegramId: 1001, action: "save", text: "x".repeat(4097) })).status, 400);
+});
