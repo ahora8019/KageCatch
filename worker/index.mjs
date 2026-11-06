@@ -314,7 +314,7 @@ async function health(env) {
 
 function panelPage() {
   const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const html = \`<!doctype html><html lang="fa" dir="rtl"><head>
+  const html = `<!doctype html><html lang="fa" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#100e17"><title>KageCatch | Dashboard</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -383,7 +383,7 @@ document.querySelector("#account-disconnect").addEventListener("click",()=>confi
 document.querySelector("#account-revoke").addEventListener("click",()=>confirmAccountAction("/api/account/revoke","نشست ذخیره‌شده حذف و دسترسی این حساب لغو شود؟"));
 async function refresh(){const pill=document.querySelector("#health"),tag=document.querySelector("#worker-tag");try{const r=await fetch("/health",{cache:"no-store"});const s=await r.json();const ok=r.ok&&s.status==="webhook_ready";pill.textContent=ok?"● Control Plane فعال":"● نیازمند بررسی";pill.style.color=ok?"var(--green)":"var(--amber)";tag.textContent=ok?"فعال":"اختلال";tag.className="tag "+(ok?"ok":"wait");document.querySelector("#core").textContent=s.python_core==="connected"?"Online":"Offline";}catch{pill.textContent="● عدم دسترسی";tag.textContent="نامشخص";tag.className="tag off";document.querySelector("#core").textContent="Offline";}}
 authenticate();refresh();
-</script></body></html>\`;
+</script></body></html>`;
   return new Response(html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
     "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
