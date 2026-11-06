@@ -26,7 +26,63 @@ async function verifySecret(provided, expected) {
   return difference === 0;
 }
 
-async function telegramApi(env, method, payload = {}) {
+export async function verifyWebAppInitData(initData, botToken, nowSeconds = Math.floor(Date.now() / 1000)) {
+  if (typeof initData !== "string" || !initData || initData.length > 8192 || typeof botToken !== "string" || !botToken) return null;
+  const params = new URLSearchParams(initData);
+  const suppliedHash = params.get("hash");
+  if (!suppliedHash || !/^[a-f0-9]{64}$/i.test(suppliedHash)) return null;
+  const entries = [...params.entries()];
+  if (new Set(entries.map(([key]) => key)).size !== entries.length) return null;
+  const authDate = Number(params.get("auth_date"));
+  if (!Number.isSafeInteger(authDate) || authDate > nowSeconds + 30 || nowSeconds - authDate > 300) return null;
+  const checkString = entries
+    .filter(([key]) => key !== "hash")
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([key, value]) => key + "=" + value)
+    .join("\\n");
+  const encoder = new TextEncoder();
+  const sourceKey = await crypto.subtle.importKey("raw", encoder.encode("WebAppData"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const secretBytes = await crypto.subtle.sign("HMAC", sourceKey, encoder.encode(botToken));
+  const signingKey = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, encoder.encode(checkString)));
+  const expectedHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let difference = expectedHash.length ^ suppliedHash.length;
+  for (let i = 0; i < Math.min(expectedHash.length, suppliedHash.length); i += 1) {
+    difference |= expectedHash.charCodeAt(i) ^ suppliedHash.toLowerCase().charCodeAt(i);
+  }
+  if (difference !== 0) return null;
+  let user;
+  try { user = JSON.parse(params.get("user") || "null"); } catch { return null; }
+  if (!user || !Number.isSafeInteger(user.id) || user.id <= 0) return null;
+  return { user, authDate };
+}
+
+async function miniAppSession(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
+  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
+  if (!verified) return json({ error: "unauthorized" }, 401);
+  let actor;
+  try { actor = await getTelegramUser(env, verified.user.id); }
+  catch { return json({ error: "identity_service_unavailable" }, 503); }
+  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+  if (role === "BLOCKED" || role === "DENIED") return json({ error: "forbidden" }, 403);
+  return json({
+    authenticated: true,
+    user: {
+      id: verified.user.id,
+      first_name: typeof verified.user.first_name === "string" ? verified.user.first_name : "",
+      username: typeof verified.user.username === "string" ? verified.user.username : null,
+    },
+    role,
+    status: actor.status,
+    core_status: "not_connected",
+    account_status: "not_connected",
+  });
+}
+\nasync function telegramApi(env, method, payload = {}) {
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
   const requestFetch = env.FETCH || fetch;
   const response = await requestFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
@@ -198,8 +254,8 @@ footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;pa
 <div class="brand"><div class="logo">🌸</div><div><b>KAGECATCH</b><small>CONTROL CENTER</small></div></div>
 <div class="nav-label">WORKSPACE</div><nav class="nav" aria-label="بخش‌های پنل">
 <button class="active" data-view="overview">⌂　نمای کلی</button><button data-view="accounts">♙　حساب‌های متصل</button><button data-view="catcher">✧　تنظیمات Catch</button><button data-view="activity">◷　تاریخچه عملیات</button><button data-view="security">⬡　امنیت و نشست‌ها</button><button data-view="settings">⚙　تنظیمات</button></nav>
-<div class="nav-label">MANAGEMENT</div><nav class="nav"><button data-view="admin">♛　مدیریت سامانه</button></nav>
-<div class="profile">حساب تلگرام<br>احراز هویت امن Mini App در مرحله بعد متصل می‌شود</div></aside>
+<div class="nav-label">MANAGEMENT</div><nav class="nav"><button data-view="admin" id="admin-nav" hidden>♛　مدیریت سامانه</button></nav>
+<div class="profile"><b id="profile-name">حساب تلگرام</b><br><span id="profile-role">برای ورود از داخل بات باز کن</span></div></aside>
 <main><header class="top"><div><div class="eyebrow">KAGECATCH / DASHBOARD</div><h1 id="title">داشبورد کنترل</h1><p>مرکز مدیریت حساب‌ها و عملیات Catch</p></div><span class="pill" id="health">● در حال بررسی اتصال</span></header>
 <section class="view active" id="view-overview">
 <div class="hero"><div class="eyebrow">WELCOME TO KAGECATCH</div><h2>همه‌چیز برای شروع آماده می‌شود.</h2><p>حساب‌ها، مقصدهای Catch، عملکرد و امنیت نشست‌ها را از یک مرکز مدیریت کن. اتصال حساب و اجرای خودکار پس از راه‌اندازی امن Python Core فعال می‌شود.</p><div class="actions"><button class="primary" data-view="accounts">مدیریت حساب‌ها</button><button class="secondary" data-view="catcher">تنظیمات Catch</button></div></div>
@@ -227,11 +283,13 @@ footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;pa
 <nav class="mobile" aria-label="ناوبری موبایل"><button class="active" data-view="overview">⌂<span>خانه</span></button><button data-view="accounts">♙<span>حساب‌ها</span></button><button data-view="catcher">✧<span>Catch</span></button><button data-view="activity">◷<span>رویدادها</span></button><button data-view="security">⬡<span>امنیت</span></button></nav>
 <script>
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}
+let session=null;
 const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
-function showView(name){document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("[data-view]").forEach(x=>x.classList.toggle("active",x.dataset.view===name));document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:"smooth"});}
+function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("[data-view]").forEach(x=>x.classList.toggle("active",x.dataset.view===name));document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:"smooth"});}
 document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
+async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role");if(!tg?.initData){name.textContent="ورود از داخل تلگرام";role.textContent="پنل را از دکمه بات باز کن";return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok)throw new Error("auth");session=await response.json();name.textContent=session.user.first_name||"کاربر KageCatch";role.textContent=session.role==="OWNER"?"مالک سامانه":"عضو فعال";if(session.role==="OWNER")document.querySelector("#admin-nav").hidden=false;}catch{name.textContent="احراز هویت ناموفق";role.textContent="از /start در بات دوباره وارد شو";}}
 async function refresh(){const pill=document.querySelector("#health"),tag=document.querySelector("#worker-tag");try{const r=await fetch("/health",{cache:"no-store"});const s=await r.json();const ok=r.ok&&s.status==="webhook_ready";pill.textContent=ok?"● Control Plane فعال":"● نیازمند بررسی";pill.style.color=ok?"var(--green)":"var(--amber)";tag.textContent=ok?"فعال":"اختلال";tag.className="tag "+(ok?"ok":"wait");}catch{pill.textContent="● عدم دسترسی";tag.textContent="نامشخص";tag.className="tag off";}}
-refresh();
+authenticate();refresh();
 </script></body></html>\`;
   return new Response(html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
@@ -579,7 +637,7 @@ async function handleWebhook(request, env) {
 
 export default {
   async fetch(request, env) {    const url = new URL(request.url);
-    if (url.pathname === "/health" && request.method === "GET") return health(env);
+    if (url.pathname === "/health" && request.method === "GET") return health(env);\n    if (url.pathname === "/api/session") return miniAppSession(request, env);
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
     if (url.pathname.startsWith("/connect/")) return connectionLanding(request, env, decodeURIComponent(url.pathname.slice("/connect/".length)));
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
