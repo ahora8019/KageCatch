@@ -47,6 +47,9 @@ class FakeManager:
     def __init__(self):
         self.saved = []
 
+    async def load_session(self, user_id):
+        return None
+
     async def save_authorized_session(self, user_id, session_string):
         self.saved.append((user_id, session_string))
 
