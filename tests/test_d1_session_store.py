@@ -97,6 +97,39 @@ class D1SessionStoreTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.aclose()
 
+    async def test_pending_auth_challenge_uses_separate_signed_endpoint(self):
+        await self.store.put_pending("7135051954", self.ciphertext)
+        request, body = self.requests[-1]
+        self.assertEqual(request.method, "PUT")
+        self.assertEqual(request.url.path, "/internal/auth-challenge/7135051954")
+        self.assertEqual(json.loads(body), {"ciphertext": base64.b64encode(self.ciphertext).decode()})
+        self.assert_signed(request, body)
+
+    async def test_pending_auth_challenge_round_trip_and_delete(self):
+        stored = {}
+        async def handler(request):
+            body = await request.aread()
+            self.requests.append((request, body))
+            if request.method == "PUT":
+                stored["ciphertext"] = json.loads(body)["ciphertext"]
+                return httpx.Response(200, json={"status": "stored"})
+            if request.method == "GET" and stored:
+                return httpx.Response(200, json={"ciphertext": stored["ciphertext"]})
+            if request.method == "DELETE":
+                stored.clear()
+                return httpx.Response(200, json={"status": "deleted"})
+            return httpx.Response(404, json={"error": "challenge_not_found"})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        store = D1SessionStore("https://example.workers.dev", self.secret, client=client)
+        try:
+            await store.put_pending("7135051954", self.ciphertext)
+            self.assertEqual(await store.get_pending("7135051954"), self.ciphertext)
+            await store.delete_pending("7135051954")
+            self.assertIsNone(await store.get_pending("7135051954"))
+            self.assertTrue(all("/internal/auth-challenge/" in req.url.path for req, _ in self.requests[-4:]))
+        finally:
+            await client.aclose()
+
     async def test_rejects_short_secret(self):
         with self.assertRaises(ValueError):
             D1SessionStore("https://example.workers.dev", "short", client=self.client)

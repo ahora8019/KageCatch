@@ -63,8 +63,44 @@ class D1SessionStore:
 
     async def delete(self, user_id: str) -> None:
         self._validate_user(user_id)
+        await self._delete_from("session-store", user_id)
+
+    async def put_pending(self, user_id: str, encrypted_payload: bytes) -> None:
+        self._validate_user(user_id)
+        if not isinstance(encrypted_payload, bytes) or not encrypted_payload:
+            raise ValueError("encrypted_payload must be non-empty bytes")
+        await self._put_to("auth-challenge", user_id, encrypted_payload)
+
+    async def get_pending(self, user_id: str) -> bytes | None:
+        self._validate_user(user_id)
+        return await self._get_from("auth-challenge", user_id)
+
+    async def delete_pending(self, user_id: str) -> None:
+        self._validate_user(user_id)
+        await self._delete_from("auth-challenge", user_id)
+
+    async def _put_to(self, namespace: str, user_id: str, value: bytes) -> None:
+        payload = {"ciphertext": base64.b64encode(value).decode("ascii")}
+        await self._request("PUT", user_id, payload, namespace=namespace)
+
+    async def _get_from(self, namespace: str, user_id: str) -> bytes | None:
         try:
-            await self._request("DELETE", user_id)
+            result = await self._request("GET", user_id, namespace=namespace)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+        encoded = result.get("ciphertext") if isinstance(result, dict) else None
+        if not isinstance(encoded, str) or not encoded:
+            raise RuntimeError("session store returned an invalid response")
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise RuntimeError("session store returned invalid ciphertext") from exc
+
+    async def _delete_from(self, namespace: str, user_id: str) -> None:
+        try:
+            await self._request("DELETE", user_id, namespace=namespace)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code != 404:
                 raise
@@ -73,8 +109,13 @@ class D1SessionStore:
         if self._owns_client:
             await self._client.aclose()
 
-    async def _request(self, method: str, user_id: str, payload: dict | None = None) -> dict:
-        path = "/internal/session-store/" + quote(user_id, safe="")
+    async def _request(
+        self, method: str, user_id: str, payload: dict | None = None, *,
+        namespace: str = "session-store",
+    ) -> dict:
+        if namespace not in {"session-store", "auth-challenge"}:
+            raise ValueError("invalid session store namespace")
+        path = f"/internal/{namespace}/" + quote(user_id, safe="")
         body = b"" if payload is None else json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         timestamp = str(int(self._clock()))
         nonce_value = self._nonce_factory()

@@ -17,6 +17,22 @@ class SQLiteSessionStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await second.get("user-1"), b"encrypted-blob")
             await second.close()
 
+    async def test_pending_authorization_survives_store_reopen_and_is_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "sessions.sqlite3")
+            first = SQLiteSessionStore(path)
+            await first.put("user-1", b"authorized-session")
+            await first.put_pending("user-1", b"encrypted-pending-challenge")
+            await first.close()
+
+            second = SQLiteSessionStore(path)
+            self.assertEqual(await second.get("user-1"), b"authorized-session")
+            self.assertEqual(await second.get_pending("user-1"), b"encrypted-pending-challenge")
+            await second.delete_pending("user-1")
+            self.assertIsNone(await second.get_pending("user-1"))
+            self.assertEqual(await second.get("user-1"), b"authorized-session")
+            await second.close()
+
     async def test_put_replaces_existing_session(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteSessionStore(os.path.join(directory, "sessions.sqlite3"))
