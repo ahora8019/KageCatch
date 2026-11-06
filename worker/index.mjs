@@ -1,6 +1,6 @@
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
-const VERSION = "0.7.1";
+const VERSION = "0.8.0";
 const CONNECTION_LINK_TTL_SECONDS = 300;
 const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
 const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
@@ -420,7 +420,17 @@ export class ConnectionLinkStore {
       const { nonce, expiresAt } = body || {};
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
       const claimed = await this.state.storage.transaction(async (txn) => {
-        const key = 'internal-nonce:' + nonce;
+        const prefix = 'internal-nonce:';
+        const entries = await txn.list({ prefix, limit: 1000 });
+        let cleaned = 0;
+        for (const [storedKey, storedExpiry] of entries) {
+          if (storedExpiry <= Date.now()) {
+            await txn.delete(storedKey);
+            cleaned += 1;
+            if (cleaned >= 50) break;
+          }
+        }
+        const key = prefix + nonce;
         const existing = await txn.get(key);
         if (existing && existing > Date.now()) return false;
         await txn.put(key, expiresAt);
@@ -769,6 +779,8 @@ async function internalSessionStore(request, env) {
   let rawBody;
   try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
   if (rawBody.byteLength > 8192) return json({ error: "request_too_large" }, 413);
+  if (request.method === "PUT" && !(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  if (request.method !== "PUT" && rawBody.byteLength !== 0) return json({ error: "unexpected_request_body" }, 400);
   const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
   const nonce = request.headers.get("X-KageCatch-Nonce") || "";
   const supplied = request.headers.get("X-KageCatch-Signature") || "";
