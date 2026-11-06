@@ -53,9 +53,7 @@ class TelegramAuthorizationFlow:
             return self._client_factory(session_string)
         except TypeError:
             # Backward-compatible for injected test factories that take no args.
-            if session_string:
-                return self._client_factory()
-            raise
+            return self._client_factory()
 
     async def _persist(self, user_id: str, pending: _PendingAuthorization) -> None:
         session_string = pending.client.session.save()
