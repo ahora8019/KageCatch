@@ -137,9 +137,17 @@ def create_app(
         user_id = str(telegram_user_id)
         saved_session = await session_manager.load_session(user_id)
         client = await runtime.get_client(user_id) if runtime is not None else None
+        connection_error = None
+        if client is None and saved_session and runtime is not None:
+            try:
+                client = await runtime.connect_user(user_id)
+            except PermissionError:
+                connection_error = "reauth_required"
+            except Exception:
+                connection_error = "connection_error"
         connected = client is not None
         session_saved = bool(saved_session)
-        status = "connected" if connected else "authorized" if session_saved else "not_connected"
+        status = "connected" if connected else connection_error or ("authorized" if session_saved else "not_connected")
         return {
             "telegram_user_id": telegram_user_id,
             "status": status,
