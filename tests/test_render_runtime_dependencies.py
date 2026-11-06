@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 class RenderRuntimeDependencyTests(unittest.TestCase):
-    def test_api_extra_installs_telethon_used_by_the_qr_auth_flow(self):
+    def test_api_extra_installs_telethon_used_by_phone_auth_flow(self):
         project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
         api_dependencies = project["project"]["optional-dependencies"]["api"]
         self.assertTrue(
