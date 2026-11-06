@@ -80,12 +80,14 @@ class CatchEngine:
         confidence_threshold: float,
         quota: QuotaGate,
         deduplicator: Deduplicator,
+        enabled: bool = False,
     ) -> None:
         if not math.isfinite(confidence_threshold) or not 0.0 <= confidence_threshold <= 1.0:
             raise ValueError("confidence_threshold must be between 0 and 1")
         self.confidence_threshold = confidence_threshold
         self.quota = quota
         self.deduplicator = deduplicator
+        self.enabled = bool(enabled)
 
     async def handle_spawn(
         self,
@@ -95,6 +97,8 @@ class CatchEngine:
     ) -> CatchResult:
         if not user_id:
             raise ValueError("user_id is required")
+        if not self.enabled:
+            return CatchResult(status="disabled")
         if adapter.source != spawn.source:
             return CatchResult(status="adapter_mismatch")
         if adapter.media_kind != spawn.media_kind:

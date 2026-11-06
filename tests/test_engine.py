@@ -65,7 +65,18 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
             confidence_threshold=0.92,
             quota=self.quota,
             deduplicator=self.deduplicator,
+            enabled=True,
         )
+
+    async def test_engine_is_safe_by_default_and_does_not_send(self):
+        engine = CatchEngine(
+            confidence_threshold=0.92,
+            quota=self.quota,
+            deduplicator=self.deduplicator,
+        )
+        result = await engine.handle_spawn("user-1", sample_spawn(), self.adapter)
+        self.assertEqual(result.status, "disabled")
+        self.assertEqual(self.adapter.sent, [])
 
     async def test_high_confidence_spawn_is_caught_and_verified(self):
         result = await self.engine.handle_spawn("user-1", sample_spawn(), self.adapter)

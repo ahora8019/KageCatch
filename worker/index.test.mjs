@@ -6,7 +6,7 @@ test("panel explains login requirements and never leaves the connect button sile
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /اتصال پنل به تلگرام کامل نشده/);
+  assert.match(html, /هنوز نتونستیم ورودت رو تأیید کنیم/);
   assert.match(html, /if\(!session\)\{document\.querySelector\("#account-state"\)/);
   assert.match(html, /main\{padding-bottom:124px\}/);
 });
@@ -30,13 +30,13 @@ test("main menu is inline-first and exposes the agreed account controls", () => 
 
 test("connect callback never asks for a phone, login code, or 2FA password", () => {
   const result = resolveCallback("account:connect");
-  assert.match(result.text, /اتصال امن هنوز فعال نشده/);
-  assert.match(result.text, /کد ورود یا رمز دومرحله‌ای را اینجا ارسال نکن/);
+  assert.match(result.text, /کد ورود و رمز دومرحله‌ای فقط داخل فرم امن پنل وارد می‌شن/);
+  assert.match(result.text, /اینجا توی چت نفرستشون/);
   assert.doesNotMatch(result.text, /شماره تلفن خود را وارد کن|کد ورود را بفرست|رمز دومرحله‌ای را وارد کن/);
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /هسته اجرایی هنوز متصل نیست/);
+  assert.match(resolveCallback("account:list").text, /هنوز حسابی وصل نکردی/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
@@ -719,18 +719,18 @@ test("Telegram member menu is a native bot-first dashboard with Catch, bot targe
 });
 
 test("Telegram bot menus explain Catch and target bot readiness without claiming live execution", () => {
-  assert.match(resolveCallback("catch:open").text, /Catch هنوز فعال نیست/);
+  assert.match(resolveCallback("catch:open").text, /هنوز آمادهٔ شکار واقعی نیستیم/);
   const bots = resolveCallback("bots:open");
   assert.match(bots.text, /HentaCatcherBot/);
   assert.match(bots.text, /Character_Catcher_Bot/);
   assert.match(bots.text, /SenpaiCatcherBot/);
-  assert.match(bots.text, /هنوز عملیات زنده اجرا نمی‌شود/);
+  assert.match(bots.text, /هنوز تست واقعی نگرفتیم/);
 });
 
 test("settings callback is reachable and clearly separates unavailable controls", () => {
   const settings = resolveCallback("settings:open");
-  assert.match(settings.text, /تنظیمات Catch/);
-  assert.match(settings.text, /پس از راه‌اندازی هسته اجرایی فعال می‌شوند/);
+  assert.match(settings.text, /⚙️ تنظیمات/);
+  assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
 });
 
 test("/start opens the native role menu directly instead of a redundant landing menu", () => {
@@ -903,4 +903,13 @@ test("internal session store refuses invalid user identifiers and oversized payl
   const secret = "test-core-session-store-secret-with-32-bytes-minimum";
   const invalid = await worker.fetch(await makeSignedSessionStoreRequest("GET", "../100", undefined, secret), { CORE_API_SECRET: secret });
   assert.equal(invalid.status, 404);
+});
+
+
+test("Mini App account connection waits for Telegram authentication to finish", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
+  const html = await response.text();
+  assert.match(html, /let authPromise\s*=\s*null/);
+  assert.match(html, /if\(!session\s*&&\s*authPromise\)\s*await authPromise/);
+  assert.match(html, /authPromise\s*=\s*authenticate\(\)/);
 });
