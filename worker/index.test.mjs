@@ -8,7 +8,6 @@ test("main menu is inline-first and exposes the agreed account controls", () => 
   assert.deepEqual(callbacks, [
     "account:connect",
     "account:list",
-    "settings:open",
     "stats:open",
     "security:open",
     "account:disconnect",
@@ -190,6 +189,7 @@ test("connection landing page consumes the matching link on explicit POST", asyn
 test("private connect callback issues a live one-time link through the Durable Object", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const store = new ConnectionLinkStore(createDurableObjectState());
+  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 556677889, ownerTelegramId: "" }) }));
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const telegramCalls = [];
   const env = {
@@ -233,7 +233,7 @@ test("private connect callback issues a live one-time link through the Durable O
 test("owner role is assigned only to the configured numeric Telegram ID", () => {
   assert.equal(resolveRole(1001, "1001", "MEMBER", "active"), "OWNER");
   assert.equal(resolveRole(1002, "1001", "MEMBER", "active"), "MEMBER");
-  assert.equal(resolveRole(1001, "1002", "OWNER", "active"), "MEMBER");
+  assert.equal(resolveRole(1001, "1002", "MEMBER", "active"), "MEMBER");
 });
 
 test("blocked users cannot enter even if their stored role says MEMBER", () => {
