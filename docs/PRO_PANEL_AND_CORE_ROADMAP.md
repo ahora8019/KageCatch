@@ -64,3 +64,15 @@ The current Core API deliberately does not expose OTP or 2FA submission endpoint
 ## Deployment policy
 
 This branch is not deployed. The existing production Worker remains unchanged until the branch passes its checks and the owner explicitly approves a production deployment. No real broadcast or Catch test is performed as part of a UI deployment.
+
+
+## Hosting gate (zero-budget constraint)
+
+The Python Core requires a persistent process and durable storage for Telethon clients and encrypted sessions. Do not treat a sleeping serverless/free web service as production hosting:
+- Render's free web services spin down after 15 minutes without inbound traffic and use an ephemeral filesystem by default: https://render.com/docs/faq
+- Koyeb's free instance scales to zero after one hour, cannot use Volumes, and cannot be used as a Worker Service: https://www.koyeb.com/docs/reference/instances
+- Cloudflare Workers can make outbound TCP connections, but sockets cannot be created globally and shared across requests; this is not a persistent Telethon process host: https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/
+
+Oracle Cloud Always Free is a candidate for a single persistent VM and block storage, subject to account eligibility, card/phone verification, regional capacity, and idle-instance reclamation: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
+
+Until a suitable persistent host is available, the Core API and account flow remain development-only. Do not store real Telegram sessions on an ephemeral filesystem or enable production Catch.
