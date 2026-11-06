@@ -118,20 +118,24 @@ async function miniAppCoreProxy(request, env, action) {
   const requestSpec = action === "status"
     ? { method: "GET", path: accountPath }
     : action === "connect"
-      ? { method: "POST", path: accountPath + "/connect" }
-      : action === "connect-status"
-        ? { method: "GET", path: accountPath + "/connect/status" }
-        : action === "connect-cancel"
-          ? { method: "POST", path: accountPath + "/connect/cancel" }
-          : action === "reconnect"
-          ? { method: "POST", path: accountPath + "/reconnect" }
-          : action === "disconnect"
-            ? { method: "POST", path: accountPath + "/disconnect" }
-            : action === "revoke"
-              ? { method: "DELETE", path: accountPath }
-              : null;
+      ? { method: "POST", path: accountPath + "/connect", payload: { phone: body.phone } }
+      : action === "connect-code"
+        ? { method: "POST", path: accountPath + "/connect/code", payload: { code: body.code } }
+        : action === "connect-password"
+          ? { method: "POST", path: accountPath + "/connect/password", payload: { password: body.password } }
+          : action === "connect-status"
+            ? { method: "GET", path: accountPath + "/connect/status" }
+            : action === "connect-cancel"
+              ? { method: "POST", path: accountPath + "/connect/cancel" }
+              : action === "reconnect"
+                ? { method: "POST", path: accountPath + "/reconnect" }
+                : action === "disconnect"
+                  ? { method: "POST", path: accountPath + "/disconnect" }
+                  : action === "revoke"
+                    ? { method: "DELETE", path: accountPath }
+                    : null;
   if (!requestSpec) return json({ error: "unknown_account_action" }, 400);
-  const result = await coreRequest(env, requestSpec.method, requestSpec.path);
+  const result = await coreRequest(env, requestSpec.method, requestSpec.path, requestSpec.payload ?? null);
   return json(result.data, result.status);
 }
 
@@ -385,10 +389,10 @@ const titles={overview:"داشبورد کنترل",accounts:"حساب‌های �
 function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
 async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role");if(!tg?.initData){name.textContent="ورود از داخل تلگرام";role.textContent="پنل را از دکمه بات باز کن";return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok)throw new Error("auth");session=await response.json();name.textContent=session.user.first_name||"کاربر KageCatch";role.textContent=session.role==="OWNER"?"مالک سامانه":"عضو فعال";if(session.role==="OWNER"){document.querySelector("#admin-nav").hidden=false;document.querySelector("#admin-mobile").hidden=false;}refreshAccountStatus();}catch{name.textContent="احراز هویت ناموفق";role.textContent="از /start در بات دوباره وارد شو";}}
-async function accountApi(path){if(!tg?.initData)throw Object.assign(new Error("telegram_auth_required"),{status:401});const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});const data=await response.json().catch(()=>({error:"invalid_response"}));if(!response.ok)throw Object.assign(new Error(data.error||"core_error"),{status:response.status,data});return data;}
+async function accountApi(path,payload={}){if(!tg?.initData)throw Object.assign(new Error("telegram_auth_required"),{status:401});const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData,...payload}),cache:"no-store"});const data=await response.json().catch(()=>({error:"invalid_response"}));if(!response.ok)throw Object.assign(new Error(data.error||"core_error"),{status:response.status,data});return data;}
 async function refreshAccountStatus(){const state=document.querySelector("#account-state"),disconnect=document.querySelector("#account-disconnect"),reconnect=document.querySelector("#account-reconnect"),revoke=document.querySelector("#account-revoke");if(!session){state.textContent="برای مشاهده وضعیت، پنل را از داخل بات باز کن.";disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;return;}state.textContent="در حال بررسی وضعیت حساب…";try{const data=await accountApi("/api/account/status");state.textContent=data.status==="connected"?"حساب تلگرام متصل است":data.status==="authorized"?"نشست مجاز ذخیره شده؛ اتصال فعلی قطع است":data.status==="reauth_required"?"نشست نیازمند مجوزدهی دوباره است":"هنوز حسابی متصل نشده است";disconnect.disabled=!data.connected;reconnect.disabled=data.status!=="authorized";revoke.disabled=!data.session_saved;}catch(error){state.textContent=error.status===503?"Python Core هنوز به Worker متصل نشده است.":error.status===401?"احراز هویت پنل منقضی شده؛ دوباره از بات وارد شو.":"دریافت وضعیت حساب ناموفق بود.";disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;}}
 async function confirmAccountAction(path,message){const confirmed=await new Promise(resolve=>{if(tg?.showConfirm)tg.showConfirm(message,resolve);else resolve(window.confirm(message));});if(!confirmed)return;try{await accountApi(path);await refreshAccountStatus();}catch{await refreshAccountStatus();}}
-async function connectAccount(){const state=document.querySelector("#account-state"),link=document.querySelector("#account-login-link");link.hidden=true;state.textContent="در حال ساخت پیوند امن Telegram…";try{const result=await accountApi("/api/account/connect");if(result.status==="already_authorized"){await accountApi("/api/account/reconnect");state.textContent="حساب دوباره متصل شد.";await refreshAccountStatus();return;}if(result.status!=="pending"||!result.login_url)throw Object.assign(new Error("link_unavailable"),{status:502});link.href=result.login_url;link.hidden=false;state.textContent="پیوند یک‌بارمصرف آماده است. آن را باز کن و ورود را در برنامه رسمی Telegram تأیید کن.";for(let attempt=0;attempt<18;attempt+=1){await new Promise(resolve=>setTimeout(resolve,2500));const status=await accountApi("/api/account/connect/status");if(status.status==="connected"||status.status==="authorized"){state.textContent="حساب با موفقیت مجاز شد.";link.hidden=true;await refreshAccountStatus();return;}if(status.status==="two_factor_required"){state.textContent="Telegram به تأیید دومرحله‌ای نیاز دارد. KageCatch رمز 2FA را دریافت نمی‌کند؛ این اتصال در این مرحله متوقف شد.";link.hidden=true;return;}if(["expired","failed","cancelled"].includes(status.status)){state.textContent=status.status==="expired"?"پیوند منقضی شد؛ دوباره تلاش کن.":"فرآیند اتصال کامل نشد.";link.hidden=true;return;}}state.textContent="هنوز تأیید Telegram دریافت نشده؛ اگر پیوند منقضی شد دوباره تلاش کن.";}catch(error){state.textContent=error.status===503?"Python Core هنوز راه‌اندازی یا به Worker متصل نشده است.":error.status===401?"احراز هویت پنل منقضی شده؛ دوباره از بات وارد شو.":"ساخت پیوند اتصال ناموفق بود.";}}
+async function connectAccount(){const state=document.querySelector("#account-state"),link=document.querySelector("#account-login-link");link.hidden=true;const phone=window.prompt("شماره تلفن تلگرام را با کد کشور وارد کن (مثلاً +98912…):");if(!phone)return;state.textContent="در حال درخواست کد ورود از Telegram…";try{let result=await accountApi("/api/account/connect",{phone:phone.trim()});if(result.status==="already_authorized"){await accountApi("/api/account/reconnect");state.textContent="حساب دوباره متصل شد.";await refreshAccountStatus();return;}if(result.status!=="code_sent")throw Object.assign(new Error("code_request_failed"),{status:502});const code=window.prompt("کد ورود ارسال‌شده توسط Telegram را وارد کن:");if(!code){state.textContent="فرآیند ورود لغو شد؛ می‌توانی دوباره تلاش کنی.";return;}state.textContent="در حال بررسی کد ورود…";result=await accountApi("/api/account/connect/code",{code:code.trim()});if(result.status==="password_required"){const password=window.prompt("رمز دومرحله‌ای تلگرام را وارد کن:");if(!password){state.textContent="تأیید دومرحله‌ای لغو شد.";return;}state.textContent="در حال تأیید رمز دومرحله‌ای…";result=await accountApi("/api/account/connect/password",{password});}if(result.status==="connected"||result.status==="authorized"){state.textContent="حساب تلگرام با موفقیت متصل شد.";await refreshAccountStatus();return;}throw Object.assign(new Error("authorization_incomplete"),{status:502});}catch(error){state.textContent=error.status===503?"Python Core هنوز راه‌اندازی یا به Worker متصل نشده است.":error.status===401?"احراز هویت پنل منقضی شده؛ دوباره از بات وارد شو.":error.data?.error==="invalid_telegram_code"?"کد ورود نامعتبر است؛ دوباره تلاش کن.":error.data?.error==="invalid_2fa_password"?"رمز دومرحله‌ای نامعتبر است.":"اتصال حساب کامل نشد؛ کمی بعد دوباره تلاش کن.";}}
 document.querySelector("#account-connect").addEventListener("click",connectAccount);
 document.querySelector("#account-refresh").addEventListener("click",refreshAccountStatus);
 document.querySelector("#account-reconnect").addEventListener("click",()=>confirmAccountAction("/api/account/reconnect","حساب مجاز دوباره به Telegram متصل شود؟"));
@@ -620,10 +624,10 @@ async function handleCallback(callback, env) {
     }
   }
   if (callback.data === 'account:connect') {
-    try {
-      const link = await createConnectionLink(env, callback.from.id);
-      result = { text: 'لینک اختصاصی ساخته شد؛ فقط یک‌بار و تا ۵ دقیقه معتبر است. این مرحله فقط اعتبار لینک را بررسی می‌کند؛ ورود به حساب و ساخت Session هنوز فعال نشده است. هیچ کد ورود یا رمز دومرحله‌ای را در بات یا این صفحه وارد نکن.', keyboard: { inline_keyboard: [[{ text: 'باز کردن لینک اختصاصی', url: link }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] } };
-    } catch { result = { text: 'سرویس لینک هنوز پیکربندی نشده است؛ فعلاً امکان ساخت لینک وجود ندارد.', keyboard: BACK_MENU }; }
+    result = {
+      text: '🟢 برای اتصال امن حساب، پنل حرفه‌ای KageCatch را باز کن. شماره، کد ورود و در صورت نیاز رمز دومرحله‌ای فقط در پنل امن وارد می‌شوند؛ آن‌ها را در چت بات ارسال نکن.',
+      keyboard: { inline_keyboard: [[{ text: '🌸 باز کردن پنل اتصال', web_app: { url: PANEL_URL } }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] },
+    };
   }
   await telegramApi(env, "answerCallbackQuery", {
     callback_query_id: callback.id,
@@ -747,6 +751,8 @@ export default {
     if (url.pathname === "/api/session") return miniAppSession(request, env);
     if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
     if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
+    if (url.pathname === "/api/account/connect/code") return miniAppCoreProxy(request, env, "connect-code");
+    if (url.pathname === "/api/account/connect/password") return miniAppCoreProxy(request, env, "connect-password");
     if (url.pathname === "/api/account/connect/status") return miniAppCoreProxy(request, env, "connect-status");
     if (url.pathname === "/api/account/connect/cancel") return miniAppCoreProxy(request, env, "connect-cancel");
     if (url.pathname === "/api/account/reconnect") return miniAppCoreProxy(request, env, "reconnect");
