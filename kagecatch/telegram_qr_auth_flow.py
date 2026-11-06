@@ -60,6 +60,10 @@ class TelegramQrAuthorizationFlow:
             if current is not None and current.task is not None and not current.task.done():
                 current.task.cancel()
                 await asyncio.gather(current.task, return_exceptions=True)
+                try:
+                    await current.client.disconnect()
+                except Exception:
+                    pass
 
             existing = await self._session_manager.load_session(user_id)
             if existing:
@@ -124,6 +128,11 @@ class TelegramQrAuthorizationFlow:
                 pending.status = "expired"
                 if pending.task is not None and not pending.task.done():
                     pending.task.cancel()
+                    await asyncio.gather(pending.task, return_exceptions=True)
+                    try:
+                        await pending.client.disconnect()
+                    except Exception:
+                        pass
             return self._snapshot(pending)
 
     async def cancel(self, *, user_id: str) -> None:
@@ -136,6 +145,10 @@ class TelegramQrAuthorizationFlow:
             if pending.task is not None and not pending.task.done():
                 pending.task.cancel()
                 await asyncio.gather(pending.task, return_exceptions=True)
+                try:
+                    await pending.client.disconnect()
+                except Exception:
+                    pass
             else:
                 try:
                     await pending.client.disconnect()
