@@ -447,6 +447,19 @@ test("professional panel is responsive, Persian-first, and reports offline core 
 });
 
 
+test("dashboard provides accessible navigation, live status, and clear operational boundaries", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
+  const html = await response.text();
+  assert.match(html, /class="skip-link"/);
+  assert.match(html, /aria-live="polite"/);
+  assert.match(html, /aria-current="page"/);
+  assert.match(html, /id="core-tag"/);
+  assert.match(html, /prefers-reduced-motion/);
+  assert.match(html, /:focus-visible/);
+  assert.match(html, /عملیات Catch اجرا نمی‌کنند/);
+  assert.match(html, /تاریخچه عملیات/);
+});
+
 import { createHash, createHmac } from "node:crypto";
 
 function makeWebAppInitData(botToken, user, authDate = Math.floor(Date.now() / 1000)) {
