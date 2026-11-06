@@ -361,7 +361,7 @@ footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;pa
 <div class="stat"><label>Python Core</label><strong id="core">Offline</strong><small>اتصال در مرحله بعد</small></div></div>
 <div class="columns"><section class="card"><h3>وضعیت اجزای سامانه</h3>
 <div class="service"><div><b>Control Worker</b><small>درگاه کنترل تلگرام</small></div><span class="tag wait" id="worker-tag">در حال بررسی</span></div>
-<div class="service"><div><b>Python Core</b><small>مدیریت نشست و اجرای Catch</small></div><span class="tag off">متصل نیست</span></div>
+<div class="service"><div><b>Python Core</b><small>مدیریت نشست و اجرای Catch</small></div><span class="tag off" id="core-tag" role="status" aria-live="polite">متصل نیست</span></div>
 <div class="service"><div><b>Recognition Engine</b><small>تشخیص تصویر و ویدیو</small></div><span class="tag off">در انتظار توسعه</span></div>
 <div class="service"><div><b>Catch Engine</b><small>ارسال و تأیید عملیات</small></div><span class="tag wait">آماده‌سازی</span></div></section>
 <section class="card"><h3>بات‌های مقصد</h3>
