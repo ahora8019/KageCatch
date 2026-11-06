@@ -423,7 +423,7 @@ export class ConnectionLinkStore {
         const key = 'internal-nonce:' + nonce;
         const existing = await txn.get(key);
         if (existing && existing > Date.now()) return false;
-        await txn.put(key, expiresAt, { expiration: Math.ceil(expiresAt / 1000) });
+        await txn.put(key, expiresAt);
         return true;
       });
       return claimed ? json({ claimed: true }) : json({ error: 'request_replayed' }, 409);
