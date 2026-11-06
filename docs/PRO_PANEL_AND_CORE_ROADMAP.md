@@ -49,9 +49,10 @@ This branch introduces the first professional Mini App UI and its initial identi
 ### Phase D — Secure account authorization
 
 The current Core API deliberately does not expose OTP or 2FA submission endpoints. Account connection must use a Telegram-controlled authorization handoff, not a bot or browser form that collects login credentials.
-- Implement an official Telegram-controlled authorization handoff.
-- Persist only authorized, encrypted sessions.
-- Add session listing, revoke, disconnect, and access audit.
+- Implemented an official Telegram-controlled one-time `tg://login?token=...` deep-link flow; no QR image is rendered.
+- The Worker and Core expose signed connect/status/cancel endpoints. The Core stores a session only after Telethon confirms authorization, then encrypts it through SessionManager.
+- If Telethon reports `SessionPasswordNeededError`, the flow fails closed; it does not collect a 2FA password.
+- Account status, disconnect, explicit reconnect, and revoke endpoints are implemented; session listing and access audit remain to be completed.
 - Validate one real account with explicit user approval before enabling multi-user use.
 
 ### Phase E — Recognition and Catch
