@@ -31,6 +31,15 @@ class SQLiteSessionStore:
                     )
                     """
                 )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS telegram_auth_challenges (
+                        user_id TEXT PRIMARY KEY,
+                        encrypted_payload BLOB NOT NULL,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
         if self._path.exists():
             try:
                 os.chmod(self._path, 0o600)
@@ -70,6 +79,36 @@ class SQLiteSessionStore:
             with connection:
                 connection.execute(
                     "DELETE FROM telegram_sessions WHERE user_id = ?",
+                    (user_id,),
+                )
+
+    async def put_pending(self, user_id: str, encrypted_payload: bytes) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO telegram_auth_challenges(user_id, encrypted_payload, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        encrypted_payload=excluded.encrypted_payload,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (user_id, sqlite3.Binary(encrypted_payload)),
+                )
+
+    async def get_pending(self, user_id: str) -> bytes | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT encrypted_payload FROM telegram_auth_challenges WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return bytes(row[0]) if row is not None else None
+
+    async def delete_pending(self, user_id: str) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    "DELETE FROM telegram_auth_challenges WHERE user_id = ?",
                     (user_id,),
                 )
 

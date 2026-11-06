@@ -249,8 +249,9 @@ test("panel exposes the secure phone, code, and optional 2FA connection flow", a
   const html = await response.text();
   assert.match(html, /api\/account\/connect\/code/);
   assert.match(html, /api\/account\/connect\/password/);
-  assert.match(html, /در حال درخواست کد ورود از Telegram/);
-  assert.match(html, /رمز دومرحله‌ای تلگرام/);
+  assert.match(html, /ارسال کد/);
+  assert.match(html, /کد یک‌بارمصرف ارسال‌شده از طرف Telegram/);
+  assert.match(html, /رمز دومرحله‌ای/);
 });
 
 
@@ -639,16 +640,24 @@ test("Worker exposes the Telegram deep-link flow only to a verified Mini App use
   assert.equal(body.status, "pending");
 });
 
-test("Mini App account UI collects login challenges outside the bot chat", async () => {
+test("Mini App account UI uses accessible inline login steps instead of blocking browser prompts", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
   const html = await response.text();
   assert.match(html, /account-connect/);
   assert.ok(html.includes("/api/account/connect"));
   assert.ok(html.includes("/api/account/connect/code"));
   assert.ok(html.includes("/api/account/connect/password"));
-  assert.match(html, /window\.prompt\("کد ورود ارسال‌شده توسط Telegram را وارد کن:/);
-  assert.match(html, /رمز دومرحله‌ای تلگرام را وارد کن/);
+  assert.match(html, /id="login-dialog"/);
+  assert.match(html, /id="login-value"/);
+  assert.match(html, /one-time-code/);
+  assert.match(html, /current-password/);
+  assert.match(html, /aria-live="polite"/);
+  assert.equal(html.includes("window.prompt("), false);
+  assert.match(html, /@keyframes/);
   assert.doesNotMatch(html, /login_url/);
+  const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script, "Mini App script must be present");
+  assert.doesNotThrow(() => new Function(script), "Mini App script must parse before it is served");
 });
 
 
@@ -759,8 +768,8 @@ test("Mini App forwards phone login payloads only to the signed Python Core endp
 });
 
 
-async function makeSignedSessionStoreRequest(method, userId, payload, secret, nonce = crypto.randomUUID().replaceAll("-", "")) {
-  const path = "/internal/session-store/" + userId;
+async function makeSignedSessionStoreRequest(method, userId, payload, secret, nonce = crypto.randomUUID().replaceAll("-", ""), namespace = "session-store") {
+  const path = "/internal/" + namespace + "/" + userId;
   const body = payload === undefined ? "" : JSON.stringify(payload);
   const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -781,8 +790,10 @@ async function makeSignedSessionStoreRequest(method, userId, payload, secret, no
 
 function createFakeD1SessionDatabase() {
   const rows = new Map();
+  const challengeRows = new Map();
   return {
     rows,
+    challengeRows,
     prepare(sql) {
       return {
         bind(...values) {
@@ -796,12 +807,24 @@ function createFakeD1SessionDatabase() {
                 rows.delete(values[0]);
                 return { success: true };
               }
+              if (sql.startsWith("INSERT INTO telegram_auth_challenges")) {
+                challengeRows.set(values[0], values[1]);
+                return { success: true };
+              }
+              if (sql.startsWith("DELETE FROM telegram_auth_challenges")) {
+                challengeRows.delete(values[0]);
+                return { success: true };
+              }
               throw new Error("unexpected D1 statement");
             },
             async first() {
               if (sql.startsWith("SELECT encrypted_session FROM telegram_sessions")) {
                 const value = rows.get(values[0]);
                 return value === undefined ? null : { encrypted_session: value };
+              }
+              if (sql.startsWith("SELECT encrypted_payload FROM telegram_auth_challenges")) {
+                const value = challengeRows.get(values[0]);
+                return value === undefined ? null : { encrypted_payload: value };
               }
               throw new Error("unexpected D1 statement");
             },
@@ -829,6 +852,26 @@ test("signed internal session store persists, retrieves, and deletes encrypted c
   const remove = await worker.fetch(await makeSignedSessionStoreRequest("DELETE", "7135051954", undefined, secret), env);
   assert.equal(remove.status, 200);
   assert.equal(DB.rows.has("7135051954"), false);
+});
+
+test("signed auth challenge store persists, retrieves, and deletes encrypted payload separately", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const nonceStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const DB = createFakeD1SessionDatabase();
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: DB };
+  const ciphertext = "ZW5jcnlwdGVkLWF1dGgtY2hhbGxlbmdl";
+  const put = await worker.fetch(await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret, undefined, "auth-challenge"), env);
+  assert.equal(put.status, 200);
+  assert.equal(DB.challengeRows.get("7135051954"), ciphertext);
+  assert.equal(DB.rows.has("7135051954"), false);
+  const get = await worker.fetch(await makeSignedSessionStoreRequest("GET", "7135051954", undefined, secret, undefined, "auth-challenge"), env);
+  assert.equal(get.status, 200);
+  assert.deepEqual(await get.json(), { ciphertext });
+  const remove = await worker.fetch(await makeSignedSessionStoreRequest("DELETE", "7135051954", undefined, secret, undefined, "auth-challenge"), env);
+  assert.equal(remove.status, 200);
+  assert.equal(DB.challengeRows.has("7135051954"), false);
 });
 
 test("internal session store rejects unsigned requests and replays", async () => {

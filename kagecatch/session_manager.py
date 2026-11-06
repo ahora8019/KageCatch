@@ -5,6 +5,7 @@ commit it, log it, or send it to the control bot.
 """
 from __future__ import annotations
 
+import json
 from typing import Protocol
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -14,6 +15,9 @@ class SessionStore(Protocol):
     async def put(self, user_id: str, encrypted_session: bytes) -> None: ...
     async def get(self, user_id: str) -> bytes | None: ...
     async def delete(self, user_id: str) -> None: ...
+    async def put_pending(self, user_id: str, encrypted_payload: bytes) -> None: ...
+    async def get_pending(self, user_id: str) -> bytes | None: ...
+    async def delete_pending(self, user_id: str) -> None: ...
 
 
 class SessionManager:
@@ -42,6 +46,31 @@ class SessionManager:
             return self._fernet.decrypt(encrypted).decode("utf-8")
         except (InvalidToken, UnicodeDecodeError) as exc:
             raise ValueError("stored session cannot be decrypted") from exc
+
+    async def save_pending_authorization(self, user_id: str, payload: dict) -> None:
+        self._validate_user(user_id)
+        if not isinstance(payload, dict):
+            raise ValueError("pending authorization payload must be an object")
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        encrypted = self._fernet.encrypt(encoded)
+        await self._store.put_pending(user_id, encrypted)
+
+    async def load_pending_authorization(self, user_id: str) -> dict | None:
+        self._validate_user(user_id)
+        encrypted = await self._store.get_pending(user_id)
+        if encrypted is None:
+            return None
+        try:
+            payload = json.loads(self._fernet.decrypt(encrypted).decode("utf-8"))
+        except Exception as exc:
+            raise ValueError("stored authorization challenge cannot be decrypted") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("stored authorization challenge is invalid")
+        return payload
+
+    async def delete_pending_authorization(self, user_id: str) -> None:
+        self._validate_user(user_id)
+        await self._store.delete_pending(user_id)
 
     async def revoke_session(self, user_id: str) -> None:
         self._validate_user(user_id)

@@ -79,7 +79,7 @@ def _configured_runtime():
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
     runtime = SessionRuntime(session_manager=manager, client_factory=factory)
     from .telegram_auth_flow import TelegramAuthorizationFlow
-    auth_flow = TelegramAuthorizationFlow(client_factory=lambda: factory(""), session_manager=manager)
+    auth_flow = TelegramAuthorizationFlow(client_factory=lambda session_string="": factory(session_string), session_manager=manager)
     return manager, runtime, auth_flow
 
 

@@ -7,13 +7,16 @@ from kagecatch.telegram_auth_flow import TelegramAuthorizationFlow
 
 
 class FakeSession:
+    def __init__(self, value="partial-telethon-session"):
+        self.value = value
+
     def save(self):
-        return "encrypted-after-manager"
+        return self.value
 
 
 class FakeClient:
-    def __init__(self, password_required=False):
-        self.session = FakeSession()
+    def __init__(self, password_required=False, session_string="partial-telethon-session"):
+        self.session = FakeSession(session_string)
         self.password_required = password_required
         self.connected = False
         self.authorized = False
@@ -46,6 +49,16 @@ class FakeClient:
 class FakeManager:
     def __init__(self):
         self.saved = []
+        self.pending = {}
+
+    async def save_pending_authorization(self, user_id, payload):
+        self.pending[user_id] = dict(payload)
+
+    async def load_pending_authorization(self, user_id):
+        return self.pending.get(user_id)
+
+    async def delete_pending_authorization(self, user_id):
+        self.pending.pop(user_id, None)
 
     async def load_session(self, user_id):
         return None
@@ -81,7 +94,7 @@ class TelegramAuthorizationFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await flow.submit_code(user_id="tg-1", code="12345")
 
         self.assertEqual(result, "connected")
-        self.assertEqual(manager.saved, [("tg-1", "encrypted-after-manager")])
+        self.assertEqual(manager.saved, [("tg-1", "partial-telethon-session")])
         self.assertFalse(client.connected)
 
     async def test_two_factor_password_is_requested_as_a_separate_step(self):
@@ -159,6 +172,34 @@ class TelegramAuthorizationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(client.connected)
         with self.assertRaises(LookupError):
             await flow.submit_code(user_id="tg-1", code="12345")
+
+    async def test_pending_login_survives_flow_recreation(self):
+        manager = FakeManager()
+        first_client = FakeClient(password_required=True)
+        first = self.make_flow(first_client, manager)
+        await first.start(user_id="tg-1", phone="+10000000000")
+        self.assertIn("tg-1", manager.pending)
+        self.assertNotIn("12345", repr(manager.pending["tg-1"]))
+        self.assertNotIn("private-password", repr(manager.pending["tg-1"]))
+
+        resumed_client = FakeClient(password_required=True)
+        second = TelegramAuthorizationFlow(
+            client_factory=lambda: resumed_client,
+            session_manager=manager,
+        )
+        result = await second.submit_code(user_id="tg-1", code="12345")
+        self.assertEqual(result, "password_required")
+        result = await second.submit_password(user_id="tg-1", password="private-password")
+        self.assertEqual(result, "connected")
+        self.assertEqual(len(manager.saved), 1)
+        self.assertNotIn("tg-1", manager.pending)
+
+    async def test_cancel_removes_persisted_pending_login(self):
+        manager = FakeManager()
+        flow = self.make_flow(FakeClient(), manager)
+        await flow.start(user_id="tg-1", phone="+10000000000")
+        await flow.cancel(user_id="tg-1")
+        self.assertNotIn("tg-1", manager.pending)
 
 
 if __name__ == "__main__":
