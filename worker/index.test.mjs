@@ -447,7 +447,7 @@ test("professional panel is responsive, Persian-first, and reports offline core 
 });
 
 
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 function makeWebAppInitData(botToken, user, authDate = Math.floor(Date.now() / 1000)) {
   const params = new URLSearchParams({
@@ -556,7 +556,7 @@ test("Worker proxies account status to Core with an HMAC signature and trusted T
       coreRequest = { url, method: init.method, headers: init.headers };
       const timestamp = init.headers["X-KageCatch-Timestamp"];
       const nonce = init.headers["X-KageCatch-Nonce"];
-      const bodyHash = createHmac("sha256", "").update("").digest("hex");
+      const bodyHash = createHash("sha256").update("").digest("hex");
       const message = [timestamp, nonce, "GET", "/v1/accounts/2001", bodyHash].join("\\n");
       const expected = createHmac("sha256", coreSecret).update(message).digest("hex");
       assert.equal(init.headers["X-KageCatch-Signature"], expected);
