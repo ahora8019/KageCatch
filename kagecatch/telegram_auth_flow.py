@@ -7,6 +7,7 @@ best-effort basis. This module never persists phone codes or 2FA passwords.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -65,8 +66,10 @@ class TelegramAuthorizationFlow:
                 await self._discard(user_id)
 
             normalized_phone = phone.strip() if isinstance(phone, str) else ""
-            if not normalized_phone:
-                raise ValueError("phone number is required")
+            if not re.fullmatch(r"\+[1-9]\d{7,14}", normalized_phone):
+                raise ValueError("phone number must use E.164 format")
+            if await self._session_manager.load_session(user_id):
+                raise RuntimeError("already_authorized")
 
             client = self._client_factory()
             try:
@@ -93,8 +96,8 @@ class TelegramAuthorizationFlow:
         lock = await self._lock_for(user_id)
         async with lock:
             pending = await self._get_pending(user_id)
-            if not isinstance(code, str) or not code.strip():
-                raise ValueError("Telegram login code is required")
+            if not isinstance(code, str) or not re.fullmatch(r"\d{4,8}", code.strip()):
+                raise ValueError("Telegram login code must contain 4 to 8 digits")
             try:
                 await pending.client.sign_in(
                     phone=pending.phone,
@@ -112,7 +115,7 @@ class TelegramAuthorizationFlow:
         lock = await self._lock_for(user_id)
         async with lock:
             pending = await self._get_pending(user_id)
-            if not isinstance(password, str) or not password:
+            if not isinstance(password, str) or not password or len(password) > 256:
                 raise ValueError("Telegram 2FA password is required")
             try:
                 await pending.client.sign_in(password=password)
@@ -120,6 +123,21 @@ class TelegramAuthorizationFlow:
                 await self._record_failed_attempt(user_id, pending)
                 raise
             return await self._complete(user_id, pending)
+
+    async def get_status(self, *, user_id: str) -> dict:
+        lock = await self._lock_for(user_id)
+        async with lock:
+            pending = self._pending.get(user_id)
+            if pending is None:
+                return {"status": "not_pending"}
+            if self._clock() >= pending.expires_at:
+                await self._discard(user_id)
+                return {"status": "expired"}
+            return {
+                "status": "pending",
+                "expires_in": max(0, int(pending.expires_at - self._clock())),
+                "attempts_remaining": max(0, self._max_attempts - pending.attempts),
+            }
 
     async def cancel(self, *, user_id: str) -> None:
         lock = await self._lock_for(user_id)
