@@ -647,11 +647,11 @@ test("Mini App account UI uses accessible inline login steps instead of blocking
   assert.ok(html.includes("/api/account/connect/code"));
   assert.ok(html.includes("/api/account/connect/password"));
   assert.match(html, /id="login-dialog"/);
-  assert.match(html, /id="login-phone"/);
-  assert.match(html, /id="login-code"/);
-  assert.match(html, /id="login-password"/);
+  assert.match(html, /id="login-value"/);
+  assert.match(html, /one-time-code/);
+  assert.match(html, /current-password/);
   assert.match(html, /aria-live="polite"/);
-  assert.doesNotMatch(html, /window\\.prompt\\(/);
+  assert.equal(html.includes("window.prompt("), false);
   assert.match(html, /@keyframes/);
   assert.doesNotMatch(html, /login_url/);
 });
