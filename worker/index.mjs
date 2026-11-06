@@ -629,7 +629,7 @@ export class ConnectionLinkStore {
       const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
       const bytes = crypto.getRandomValues(new Uint8Array(32));
       let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      const sessionToken = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      const sessionToken = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
       const sessionDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sessionToken));
       const sessionKey = 'browser:' + Array.from(new Uint8Array(sessionDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
       const record = await this.state.storage.transaction(async (txn) => {
