@@ -681,3 +681,37 @@ test("dashboard labels the Core as degraded instead of offline when the bridge r
   assert.match(html, /دسترسی برقرار · نیازمند پیکربندی/);
   assert.match(html, /در دسترس · گزارش‌شده/);
 });
+
+
+test("Telegram member menu is a native bot-first dashboard with Catch, bot targets, and settings", () => {
+  const menu = buildRoleMenu("MEMBER");
+  const buttons = menu.inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.ok(callbacks.includes("catch:open"));
+  assert.ok(callbacks.includes("bots:open"));
+  assert.ok(callbacks.includes("settings:open"));
+  assert.equal(buttons.some((button) => button.web_app), false);
+});
+
+test("Telegram bot menus explain Catch and target bot readiness without claiming live execution", () => {
+  assert.match(resolveCallback("catch:open").text, /Catch هنوز فعال نیست/);
+  const bots = resolveCallback("bots:open");
+  assert.match(bots.text, /HentaCatcherBot/);
+  assert.match(bots.text, /Character_Catcher_Bot/);
+  assert.match(bots.text, /SenpaiCatcherBot/);
+  assert.match(bots.text, /هنوز عملیات زنده اجرا نمی‌شود/);
+});
+
+test("settings callback is reachable and clearly separates unavailable controls", () => {
+  const settings = resolveCallback("settings:open");
+  assert.match(settings.text, /تنظیمات Catch/);
+  assert.match(settings.text, /پس از راه‌اندازی هسته اجرایی فعال می‌شوند/);
+});
+
+test("/start opens the native role menu directly instead of a redundant landing menu", () => {
+  const start = commandReply("/start");
+  const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
+  assert.ok(callbacks.includes("catch:open"));
+  assert.ok(callbacks.includes("bots:open"));
+  assert.ok(callbacks.includes("account:connect"));
+});
