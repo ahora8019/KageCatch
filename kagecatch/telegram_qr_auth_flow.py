@@ -139,7 +139,7 @@ class TelegramQrAuthorizationFlow:
         lock = await self._lock_for(user_id)
         async with lock:
             pending = self._pending.get(user_id)
-            if pending is None:
+            if pending is None or pending.status != "pending":
                 return
             pending.status = "cancelled"
             if pending.task is not None and not pending.task.done():
