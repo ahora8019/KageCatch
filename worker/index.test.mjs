@@ -30,8 +30,8 @@ test("main menu is inline-first and exposes the agreed account controls", () => 
 
 test("connect callback never asks for a phone, login code, or 2FA password", () => {
   const result = resolveCallback("account:connect");
-  assert.match(result.text, /اتصال امن هنوز فعال نشده/);
-  assert.match(result.text, /کد ورود یا رمز دومرحله‌ای را اینجا ارسال نکن/);
+  assert.match(result.text, /کد ورود و رمز دومرحله‌ای فقط داخل فرم امن پنل وارد می‌شن/);
+  assert.match(result.text, /اینجا توی چت نفرستشون/);
   assert.doesNotMatch(result.text, /شماره تلفن خود را وارد کن|کد ورود را بفرست|رمز دومرحله‌ای را وارد کن/);
 });
 
@@ -719,18 +719,18 @@ test("Telegram member menu is a native bot-first dashboard with Catch, bot targe
 });
 
 test("Telegram bot menus explain Catch and target bot readiness without claiming live execution", () => {
-  assert.match(resolveCallback("catch:open").text, /Catch هنوز فعال نیست/);
+  assert.match(resolveCallback("catch:open").text, /هنوز آمادهٔ شکار واقعی نیستیم/);
   const bots = resolveCallback("bots:open");
   assert.match(bots.text, /HentaCatcherBot/);
   assert.match(bots.text, /Character_Catcher_Bot/);
   assert.match(bots.text, /SenpaiCatcherBot/);
-  assert.match(bots.text, /هنوز عملیات زنده اجرا نمی‌شود/);
+  assert.match(bots.text, /هنوز تست واقعی نگرفتیم/);
 });
 
 test("settings callback is reachable and clearly separates unavailable controls", () => {
   const settings = resolveCallback("settings:open");
   assert.match(settings.text, /تنظیمات Catch/);
-  assert.match(settings.text, /پس از راه‌اندازی هسته اجرایی فعال می‌شوند/);
+  assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
 });
 
 test("/start opens the native role menu directly instead of a redundant landing menu", () => {
