@@ -29,6 +29,7 @@ class FakeRuntime:
         self.clients = {"2001": object()}
         self.disconnected = []
         self.revoked = []
+        self.connect_calls = []
         self.session_manager = None
 
     @property
@@ -37,6 +38,11 @@ class FakeRuntime:
 
     async def get_client(self, user_id):
         return self.clients.get(user_id)
+
+    async def connect_user(self, user_id):
+        self.connect_calls.append(user_id)
+        self.clients[user_id] = object()
+        return self.clients[user_id]
 
     async def disconnect_user(self, user_id):
         self.disconnected.append(user_id)
@@ -133,7 +139,15 @@ class CoreApiTests(unittest.TestCase):
         })
         self.assertNotIn("do-not-return-this-session", response.text)
 
-    def test_disconnect_preserves_authorized_session(self):
+
+    def test_account_status_reconnects_a_saved_authorized_session(self):
+        self.runtime.clients.clear()
+        path = "/v1/accounts/2001"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "connected")
+        self.assertEqual(self.runtime.connect_calls, ["2001"])
+\n    def test_disconnect_preserves_authorized_session(self):
         path = "/v1/accounts/2001/disconnect"
         response = self.client.post(path, headers=signed_headers("POST", path))
         self.assertEqual(response.status_code, 200)
