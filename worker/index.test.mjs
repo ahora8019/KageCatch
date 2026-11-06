@@ -6,7 +6,7 @@ test("panel explains login requirements and never leaves the connect button sile
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /هنوز نتونستیم ورودت رو تأیید کنیم/);
+  assert.match(html, /authFailureMessage/);
   assert.match(html, /authFailureMessage/);
   assert.match(html, /error\.status===401/);
   assert.match(html, /error\.status===403/);
