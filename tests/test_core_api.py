@@ -70,12 +70,13 @@ class FakeSessionManager:
 class FakeAuthFlow:
     def __init__(self):
         self.cancelled = []
+        self.status = "pending"
 
     async def start(self, *, user_id):
         return {"status": "pending", "login_url": "tg://login?token=one-time", "expires_in": 30}
 
     async def get_status(self, *, user_id):
-        return {"status": "pending", "expires_in": 20, "login_url": "tg://login?token=one-time"}
+        return {"status": self.status, "expires_in": 20, "login_url": "tg://login?token=one-time"}
 
     async def cancel(self, *, user_id):
         self.cancelled.append(user_id)
@@ -182,7 +183,15 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "pending")
 
-    def test_connect_can_be_cancelled(self):
+
+    def test_successful_telegram_confirmation_starts_the_execution_client(self):
+        self.auth_flow.status = "connected"
+        path = "/v1/accounts/2001/connect/status"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "connected")
+        self.assertEqual(self.runtime.connect_calls, ["2001"])
+\n    def test_connect_can_be_cancelled(self):
         path = "/v1/accounts/2001/connect/cancel"
         response = self.client.post(path, headers=signed_headers("POST", path))
         self.assertEqual(response.status_code, 200)
