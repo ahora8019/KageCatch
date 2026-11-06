@@ -628,6 +628,6 @@ test("Mini App account UI offers a Telegram deep link and does not ask for OTP o
   const html = await response.text();
   assert.match(html, /account-connect/);
   assert.match(html, /tg:\/\/login/);
-  assert.match(html, /رمز دومرحله‌ای را دریافت نمی‌کند/);
+  assert.match(html, /رمز 2FA را دریافت نمی‌کند/);
   assert.doesNotMatch(html, /name=["'](?:otp|password|code)["']/i);
 });
