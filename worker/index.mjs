@@ -215,13 +215,28 @@ export class ConnectionLinkStore {
   }
 }
 
+async function createConnectionLink(env, telegramUserId) {
+  if (!env.CONNECT_LINKS) throw new Error('CONNECT_LINKS binding is not configured');
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName('connection-links-v1'));
+  const response = await stub.fetch('https://connect-links.internal/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ telegramUserId, ttlSeconds: CONNECTION_LINK_TTL_SECONDS }) });
+  if (!response.ok) throw new Error('Connection link service unavailable');
+  const result = await response.json();
+  return CONNECTION_LINK_BASE + '/connect/' + encodeURIComponent(result.token);
+}
+
 async function handleCallback(callback, env) {
   const chat = callback.message?.chat;
   if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id)) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "این بخش فقط در گفت‌وگوی خصوصی در دسترس است.", show_alert: true });
     return;
   }
-  const result = resolveCallback(callback.data);
+  let result = resolveCallback(callback.data);
+  if (callback.data === 'account:connect') {
+    try {
+      const link = await createConnectionLink(env, callback.from.id);
+      result = { text: 'لینک اختصاصی ساخته شد؛ فقط یک‌بار و تا ۵ دقیقه معتبر است. این مرحله فقط اعتبار لینک را بررسی می‌کند؛ ورود به حساب و ساخت Session هنوز فعال نشده است. هیچ کد ورود یا رمز دومرحله‌ای را در بات یا این صفحه وارد نکن.', keyboard: { inline_keyboard: [[{ text: 'باز کردن لینک اختصاصی', url: link }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] } };
+    } catch { result = { text: 'سرویس لینک هنوز پیکربندی نشده است؛ فعلاً امکان ساخت لینک وجود ندارد.', keyboard: BACK_MENU }; }
+  }
   await telegramApi(env, "answerCallbackQuery", {
     callback_query_id: callback.id,
     ...(result.alert ? { text: result.text, show_alert: true } : {}),
