@@ -6,7 +6,7 @@ test("panel explains login requirements and never leaves the connect button sile
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /اتصال پنل به تلگرام کامل نشده/);
+  assert.match(html, /هنوز نتونستیم ورودت رو تأیید کنیم/);
   assert.match(html, /if\(!session\)\{document\.querySelector\("#account-state"\)/);
   assert.match(html, /main\{padding-bottom:124px\}/);
 });
