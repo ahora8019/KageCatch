@@ -721,10 +721,10 @@ async function handleWebhook(request, env) {
         }
         try {
           const draft = await registryRequest(env, '/broadcast', { ownerTelegramId: message.from.id, action: 'save', text: message.text });
-          const preview = draft.text.length > 3500 ? draft.text.slice(0, 3500) + '\\n… (پیش‌نمایش کوتاه‌شده)' : draft.text;
+          const preview = draft.text.length > 3500 ? draft.text.slice(0, 3500) + '\n… (پیش‌نمایش کوتاه‌شده)' : draft.text;
           await telegramApi(env, 'sendMessage', {
             chat_id: message.chat.id,
-            text: '👀 پیش‌نمایش پیام همگانی:\\n\\n' + preview + '\\n\\nاین پیام برای اعضای فعال ارسال شود؟',
+            text: '👀 پیش‌نمایش پیام همگانی:\n\n' + preview + '\n\nاین پیام برای اعضای فعال ارسال شود؟',
             reply_markup: { inline_keyboard: [[
               { text: '✅ تأیید و ارسال', callback_data: 'owner:broadcast:confirm' },
               { text: '❌ لغو', callback_data: 'owner:broadcast:cancel' },
@@ -745,7 +745,7 @@ async function handleWebhook(request, env) {
       return new Response("OK", { status: 200 });
     }
     if (command === "/status" && role === "MEMBER") {
-      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "📊 وضعیت حساب شما در KageCatch\\n\\nنقش: MEMBER\\nدسترسی: فعال\\nمدیریت حساب‌ها و آمار شخصی از پنل در دسترس است.", reply_markup: buildRoleMenu("MEMBER") });
+      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "📊 وضعیت حساب شما در KageCatch\n\nنقش: MEMBER\nدسترسی: فعال\nمدیریت حساب‌ها و آمار شخصی از پنل در دسترس است.", reply_markup: buildRoleMenu("MEMBER") });
       return new Response("OK", { status: 200 });
     }
     const reply = commandReply(message.text);
@@ -772,12 +772,12 @@ async function internalSessionStore(request, env) {
   const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
   const nonce = request.headers.get("X-KageCatch-Nonce") || "";
   const supplied = request.headers.get("X-KageCatch-Signature") || "";
-  if (!/^\\d{10,12}$/.test(timestampRaw) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(supplied)) return json({ error: "invalid_auth_headers" }, 401);
+  if (!/^\d{10,12}$/.test(timestampRaw) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(supplied)) return json({ error: "invalid_auth_headers" }, 401);
   const timestamp = Number(timestampRaw);
   const now = Math.floor(Date.now() / 1000);
   if (Math.abs(now - timestamp) > 60) return json({ error: "request_expired" }, 401);
   const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const signingText = [timestampRaw, nonce, request.method, new URL(request.url).pathname, bodyHash].join("\\n");
+  const signingText = [timestampRaw, nonce, request.method, new URL(request.url).pathname, bodyHash].join("\n");
   const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, new TextEncoder().encode(signingText)));
   const expected = Array.from(expectedBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
