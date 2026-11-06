@@ -155,7 +155,7 @@ async function miniAppSession(request, env) {
       username: typeof verified.user.username === "string" ? verified.user.username : null,
     },
     role,
-    status: actor.status,
+    status: actor?.status ?? "active",
     core_status: "not_connected",
     account_status: "not_connected",
   });
