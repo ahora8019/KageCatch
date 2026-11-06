@@ -100,15 +100,17 @@ test("connection link store rejects expired links", async () => {
   const created = await store.fetch(new Request("https://do.internal/create", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 123456789, ttlSeconds: 1 }),
+    body: JSON.stringify({ telegramUserId: 123456789, ttlSeconds: 60 }),
   }));
   const { token } = await created.json();
-  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const originalNow = Date.now;
+  Date.now = () => originalNow() + 61_000;
   const response = await store.fetch(new Request("https://do.internal/consume", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ token }),
   }));
+  Date.now = originalNow;
   assert.equal(response.status, 410);
 });
 
