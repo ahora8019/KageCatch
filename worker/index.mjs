@@ -247,6 +247,37 @@ export class ConnectionLinkStore {
       await this.state.storage.put(key, record);
       return json(record);
     }
+    if (url.pathname === '/broadcast') {
+      const { ownerTelegramId, action, text } = body || {};
+      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      const key = 'broadcast:' + ownerTelegramId;
+      if (action === 'begin') {
+        await this.state.storage.put(key, { status: 'awaiting_text', text: null, updatedAt: Date.now() });
+        return json({ status: 'awaiting_text' });
+      }
+      if (action === 'get') return json({ draft: await this.state.storage.get(key) || null });
+      if (action === 'clear') {
+        await this.state.storage.delete(key);
+        return json({ status: 'cleared' });
+      }
+      if (action === 'save') {
+        if (typeof text !== 'string' || !text.trim() || text.length > 4096) return json({ error: 'invalid_broadcast_text' }, 400);
+        const current = await this.state.storage.get(key);
+        if (!current || current.status !== 'awaiting_text') return json({ error: 'no_broadcast_draft' }, 409);
+        const draft = { status: 'awaiting_confirmation', text, updatedAt: Date.now() };
+        await this.state.storage.put(key, draft);
+        return json(draft);
+      }
+      if (action === 'claim') {
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'awaiting_confirmation') return null;
+          await txn.put(key, { ...current, status: 'sending', updatedAt: Date.now() });
+          return current;
+        });
+        return draft ? json({ draft }) : json({ error: 'no_confirmable_broadcast' }, 409);
+      }
+    }
     if (url.pathname === '/create') {
       const { telegramUserId, ttlSeconds } = body || {};
       if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 600) return json({ error: 'invalid_request' }, 400);
@@ -301,7 +332,40 @@ async function handleOwnerCallback(callback, env) {
   const data = callback.data || '';
   if (data === 'owner:stats') return { text: '👑 نظارت کل سامانه\n\nنمای کلی کاربران و سرویس‌ها در حال آماده‌سازی است.', keyboard: BACK_MENU };
   if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
-  if (data === 'owner:broadcast') return { text: '📣 پیام همگانی\n\nارسال همگانی هنوز فعال نشده است.', keyboard: BACK_MENU };
+  if (data === 'owner:broadcast') {
+    await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'begin' });
+    return {
+      text: '📣 پیام همگانی\n\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.',
+      keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] },
+    };
+  }
+  if (data === 'owner:broadcast:cancel') {
+    await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
+    return { text: 'ارسال همگانی لغو شد.', keyboard: BACK_MENU };
+  }
+  if (data === 'owner:broadcast:confirm') {
+    const claimed = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'claim' });
+    const messageText = claimed.draft?.text;
+    if (typeof messageText !== 'string') return { text: 'پیش‌نویس معتبری برای ارسال وجود ندارد.', keyboard: BACK_MENU, alert: true };
+    const { users = [] } = await registryRequest(env, '/users', {});
+    const recipients = users.filter((user) => user.role === 'MEMBER' && user.status === 'active' && Number.isSafeInteger(user.telegramUserId));
+    let delivered = 0;
+    let failed = 0;
+    for (const recipient of recipients) {
+      try {
+        await telegramApi(env, 'sendMessage', { chat_id: recipient.telegramUserId, text: messageText });
+        delivered += 1;
+      } catch {
+        failed += 1;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
+    return {
+      text: '📣 ارسال همگانی تمام شد.\n\nموفق: ' + delivered + '\nناموفق: ' + failed + '\nمخاطبان فعال: ' + recipients.length,
+      keyboard: BACK_MENU,
+    };
+  }
   if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\n\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
   if (data === 'owner:members') {
     const result = await registryRequest(env, '/users', {});
@@ -432,6 +496,31 @@ async function handleWebhook(request, env) {
     if (role === 'BLOCKED' || role === 'DENIED') {
       await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⛔ ابتدا باید دسترسی شما توسط Owner فعال شود." });
       return new Response("OK", { status: 200 });
+    }
+    if (role === 'OWNER') {
+      const broadcastState = await registryRequest(env, '/broadcast', { ownerTelegramId: message.from.id, action: 'get' });
+      if (broadcastState.draft?.status === 'awaiting_text') {
+        if (command === '/cancel') {
+          await registryRequest(env, '/broadcast', { ownerTelegramId: message.from.id, action: 'clear' });
+          await telegramApi(env, 'sendMessage', { chat_id: message.chat.id, text: 'ارسال همگانی لغو شد.', reply_markup: BACK_MENU });
+          return new Response("OK", { status: 200 });
+        }
+        try {
+          const draft = await registryRequest(env, '/broadcast', { ownerTelegramId: message.from.id, action: 'save', text: message.text });
+          const preview = draft.text.length > 3500 ? draft.text.slice(0, 3500) + '\\n… (پیش‌نمایش کوتاه‌شده)' : draft.text;
+          await telegramApi(env, 'sendMessage', {
+            chat_id: message.chat.id,
+            text: '👀 پیش‌نمایش پیام همگانی:\\n\\n' + preview + '\\n\\nاین پیام برای اعضای فعال ارسال شود؟',
+            reply_markup: { inline_keyboard: [[
+              { text: '✅ تأیید و ارسال', callback_data: 'owner:broadcast:confirm' },
+              { text: '❌ لغو', callback_data: 'owner:broadcast:cancel' },
+            ]] },
+          });
+        } catch {
+          await telegramApi(env, 'sendMessage', { chat_id: message.chat.id, text: 'متن خالی یا بیش از ۴۰۹۶ کاراکتر است. یک متن معتبر بفرست یا /cancel را بزن.' });
+        }
+        return new Response("OK", { status: 200 });
+      }
     }
     if (command === "/admin" && role !== 'OWNER') {
       await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⛔ این بخش فقط برای Owner است." });
