@@ -137,17 +137,9 @@ def create_app(
         user_id = str(telegram_user_id)
         saved_session = await session_manager.load_session(user_id)
         client = await runtime.get_client(user_id) if runtime is not None else None
-        connection_error = None
-        if client is None and saved_session and runtime is not None:
-            try:
-                client = await runtime.connect_user(user_id)
-            except PermissionError:
-                connection_error = "reauth_required"
-            except Exception:
-                connection_error = "connection_error"
         connected = client is not None
         session_saved = bool(saved_session)
-        status = "connected" if connected else connection_error or ("authorized" if session_saved else "not_connected")
+        status = "connected" if connected else "authorized" if session_saved else "not_connected"
         return {
             "telegram_user_id": telegram_user_id,
             "status": status,
@@ -175,6 +167,11 @@ def create_app(
         if auth_flow is None:
             raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
         status = await auth_flow.get_status(user_id=str(telegram_user_id))
+        if status.get("status") == "connected" and runtime is not None:
+            try:
+                await runtime.connect_user(str(telegram_user_id))
+            except Exception:
+                return {"status": "authorized"}
         if status.get("status") == "not_pending" and session_manager is not None:
             saved = await session_manager.load_session(str(telegram_user_id))
             return {"status": "authorized" if saved else "not_connected"}
@@ -188,6 +185,22 @@ def create_app(
             raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
         await auth_flow.cancel(user_id=str(telegram_user_id))
         return {"status": "cancelled"}
+
+    @app.post("/v1/accounts/{telegram_user_id}/reconnect", dependencies=[Depends(require_core_auth)])
+    async def reconnect_account(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if session_manager is None or runtime is None:
+            raise HTTPException(status_code=503, detail="execution_runtime_not_configured")
+        if not await session_manager.load_session(str(telegram_user_id)):
+            raise HTTPException(status_code=404, detail="authorized_session_not_found")
+        try:
+            await runtime.connect_user(str(telegram_user_id))
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail="reauthorization_required") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="telegram_connection_failed") from exc
+        return {"telegram_user_id": telegram_user_id, "status": "connected"}
 
     @app.post("/v1/accounts/{telegram_user_id}/disconnect", dependencies=[Depends(require_core_auth)])
     async def disconnect_account(telegram_user_id: int):
