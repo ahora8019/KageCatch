@@ -140,14 +140,23 @@ class CoreApiTests(unittest.TestCase):
         self.assertNotIn("do-not-return-this-session", response.text)
 
 
-    def test_account_status_reconnects_a_saved_authorized_session(self):
+    def test_account_status_does_not_reconnect_a_saved_session_automatically(self):
         self.runtime.clients.clear()
         path = "/v1/accounts/2001"
         response = self.client.get(path, headers=signed_headers("GET", path))
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "authorized")
+        self.assertEqual(self.runtime.connect_calls, [])
+\n
+    def test_explicit_reconnect_activates_a_saved_session(self):
+        self.runtime.clients.clear()
+        path = "/v1/accounts/2001/reconnect"
+        response = self.client.post(path, headers=signed_headers("POST", path))
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "connected")
         self.assertEqual(self.runtime.connect_calls, ["2001"])
-\n    def test_disconnect_preserves_authorized_session(self):
+
+    def test_disconnect_preserves_authorized_session(self):
         path = "/v1/accounts/2001/disconnect"
         response = self.client.post(path, headers=signed_headers("POST", path))
         self.assertEqual(response.status_code, 200)
