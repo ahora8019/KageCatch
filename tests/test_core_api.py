@@ -72,8 +72,8 @@ class FakeAuthFlow:
         self.cancelled = []
         self.status = "pending"
 
-    async def start(self, *, user_id):
-        return {"status": "pending", "login_url": "tg://login?token=one-time", "expires_in": 30}
+    async def start(self, *, user_id, phone):
+        return "code_sent"
 
     async def get_status(self, *, user_id):
         return {"status": self.status, "expires_in": 20, "login_url": "tg://login?token=one-time"}
@@ -170,12 +170,12 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(self.runtime.connect_calls, [])
 
 
-    def test_connect_returns_a_telegram_deep_link_not_a_qr_image(self):
+    def test_connect_starts_phone_login_without_returning_credentials(self):
         path = "/v1/accounts/2001/connect"
-        response = self.client.post(path, headers=signed_headers("POST", path))
+        body = json.dumps({"phone": "+10000000000"}).encode()
+        response = self.client.post(path, content=body, headers=signed_headers("POST", path, body))
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["login_url"].startswith("tg://login?token="))
-        self.assertNotIn("qr_image", response.json())
+        self.assertEqual(response.json(), {"status": "code_sent"})
 
     def test_connect_status_is_available_to_worker(self):
         path = "/v1/accounts/2001/connect/status"
