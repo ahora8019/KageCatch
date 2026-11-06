@@ -36,7 +36,7 @@ test("connect callback never asks for a phone, login code, or 2FA password", () 
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /هسته اجرایی هنوز متصل نیست/);
+  assert.match(resolveCallback("account:list").text, /هنوز حسابی وصل نکردی/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
