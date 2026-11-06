@@ -412,3 +412,33 @@ test("broadcast rejects empty or oversized text", async () => {
   assert.equal((await post({ ownerTelegramId: 1001, action: "save", text: "   " })).status, 400);
   assert.equal((await post({ ownerTelegramId: 1001, action: "save", text: "x".repeat(4097) })).status, 400);
 });
+
+
+test("start menu exposes the professional Mini App without removing command shortcuts", () => {
+  const menu = buildStartMenu("MEMBER");
+  const buttons = menu.inline_keyboard.flat();
+  const app = buttons.find((button) => button.web_app?.url);
+  assert.equal(app?.text, "🌸 پنل حرفه‌ای");
+  assert.equal(app.web_app.url, "https://kagecatch-control.ahora-project.workers.dev/panel");
+});
+
+test("role menus expose the same Mini App to members and owners", () => {
+  for (const role of ["MEMBER", "OWNER"]) {
+    const buttons = buildRoleMenu(role).inline_keyboard.flat();
+    assert.ok(buttons.some((button) => button.web_app?.url === "https://kagecatch-control.ahora-project.workers.dev/panel"));
+  }
+});
+
+test("professional panel is responsive, Persian-first, and reports offline core honestly", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /text\/html/);
+  assert.match(response.headers.get("cache-control"), /no-store/);
+  const html = await response.text();
+  assert.match(html, /KageCatch/);
+  assert.match(html, /viewport/);
+  assert.match(html, /Python Core/);
+  assert.match(html, /متصل نیست/);
+  assert.match(html, /Telegram\.WebApp/);
+  assert.match(html, /aria-label/);
+});
