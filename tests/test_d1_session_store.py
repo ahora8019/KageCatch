@@ -6,8 +6,10 @@ import unittest
 from urllib.parse import quote
 
 import httpx
+from cryptography.fernet import Fernet
 
 from kagecatch.d1_session_store import D1SessionStore
+from kagecatch.session_manager import SessionManager
 
 
 class D1SessionStoreTests(unittest.IsolatedAsyncioTestCase):
@@ -98,6 +100,38 @@ class D1SessionStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_short_secret(self):
         with self.assertRaises(ValueError):
             D1SessionStore("https://example.workers.dev", "short", client=self.client)
+
+    async def test_session_manager_encrypts_before_d1_transport_and_decrypts_after_read(self):
+        stored = {}
+        observed_bodies = []
+
+        async def handler(request):
+            body = await request.aread()
+            if request.method == "PUT":
+                payload = json.loads(body)
+                observed_bodies.append(body)
+                stored["ciphertext"] = payload["ciphertext"]
+                return httpx.Response(200, json={"status": "stored"})
+            if request.method == "GET" and "ciphertext" in stored:
+                return httpx.Response(200, json={"ciphertext": stored["ciphertext"]})
+            if request.method == "DELETE":
+                stored.clear()
+                return httpx.Response(200, json={"status": "deleted"})
+            return httpx.Response(404, json={"error": "session_not_found"})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        store = D1SessionStore("https://example.workers.dev", self.secret, client=client)
+        manager = SessionManager(fernet_key=Fernet.generate_key(), store=store)
+        raw_session = "1AgAOMTQwLjQwLjAuMQB7SENSITIVE-TELEGRAM-SESSION"
+        try:
+            await manager.save_authorized_session("7135051954", raw_session)
+            self.assertNotIn(raw_session.encode(), observed_bodies[0])
+            self.assertNotEqual(stored["ciphertext"], base64.b64encode(raw_session.encode()).decode())
+            self.assertEqual(await manager.load_session("7135051954"), raw_session)
+            await manager.revoke_session("7135051954")
+            self.assertEqual(stored, {})
+        finally:
+            await client.aclose()
 
 
 if __name__ == "__main__":
