@@ -273,7 +273,7 @@ export function commandReply(text) {
   }
   if (command === "/help") {
     return {
-      text: "📖 راهنمای KageCatch\n\nدکمه‌های منوی اصلی برای کارهای روزمره هستند.\n/status — وضعیت سرویس\n/help — راهنما\n/admin — بخش مدیریت (تا زمان پیکربندی مالک غیرفعال است).",
+      text: "📖 راهنمای KageCatch\n\n🎯 کنترل Catch — وضعیت اجرای خودکار\n🤖 بات‌های مقصد — فهرست مقصدها و فرمان‌ها\n👤 حساب متصل — اتصال و امنیت حساب\n📊 آمار من — آمار تأییدشده\n⚙️ تنظیمات — تنظیمات حساب و Catch\n\n/status — وضعیت سرویس\n/help — راهنما\n/admin — مدیریت مالک.",
       reply_markup: buildMainMenu(),
     };
   }
