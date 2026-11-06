@@ -393,7 +393,7 @@ body{background:radial-gradient(ellipse at 78% -8%,#71365f55 0,transparent 42%),
 <nav class="mobile" aria-label="ناوبری موبایل"><button class="active" data-view="overview" aria-current="page">⌂<span>خانه</span></button><button data-view="accounts">♙<span>حساب‌ها</span></button><button data-view="catcher">✧<span>Catch</span></button><button data-view="activity">◷<span>رویدادها</span></button><button data-view="security">⬡<span>امنیت</span></button><button data-view="settings">⚙<span>تنظیمات</span></button><button data-view="admin" id="admin-mobile" hidden>♛<span>مدیریت</span></button></nav>
 <script nonce="${nonce}">
 const tg=window.Telegram?.WebApp;if(tg){tg.setHeaderColor("#100e17");tg.setBackgroundColor("#100e17");tg.ready();tg.expand();}
-let session=null;
+let session=null;let authPromise=null;
 const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
 function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
@@ -452,7 +452,7 @@ document.querySelector("#login-cancel").addEventListener("click",async()=>{
   try{if(session&&loginStage!=="phone")await accountApi("/api/account/connect/cancel");}catch{}
   document.querySelector("#login-dialog").close();
 });
-async function connectAccount(){if(!session){document.querySelector("#account-state").textContent="اتصال پنل به تلگرام کامل نشده؛ پنل رو یک بار ببند و دوباره از دکمهٔ داخل چت باز کن.";return;}openLoginDialog();document.querySelector("#login-feedback").textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم."; }
+async function connectAccount(){if(!session&&authPromise)await authPromise;if(!session){document.querySelector("#account-state").textContent="هنوز نتونستیم ورودت رو تأیید کنیم. یک بار پنل رو ببند و از داخل چت دوباره بازش کن.";return;}openLoginDialog();document.querySelector("#login-feedback").textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم."; }
 document.querySelector("#login-form").addEventListener("submit",async(event)=>{
   event.preventDefault();
   const input=document.querySelector("#login-value");
@@ -507,7 +507,7 @@ document.querySelector("#account-reconnect").addEventListener("click",()=>confir
 document.querySelector("#account-disconnect").addEventListener("click",()=>confirmAccountAction("/api/account/disconnect","اتصال فعال این حساب قطع شود؟"));
 document.querySelector("#account-revoke").addEventListener("click",()=>confirmAccountAction("/api/account/revoke","نشست ذخیره‌شده حذف و دسترسی این حساب لغو شود؟"));
 async function refresh(){const pill=document.querySelector("#health"),tag=document.querySelector("#worker-tag");try{const r=await fetch("/health",{cache:"no-store"});const s=await r.json();const ok=r.ok&&s.status==="webhook_ready";pill.textContent=ok?"● Control Plane فعال":"● نیازمند بررسی";pill.style.color=ok?"var(--green)":"var(--amber)";tag.textContent=ok?"فعال":"اختلال";tag.className="tag "+(ok?"ok":"wait");const coreState=s.python_core||"unreachable";document.querySelector("#core").textContent=coreState==="connected"?"Online":coreState==="degraded"?"Degraded":"Offline";const coreTag=document.querySelector("#core-tag");if(coreTag){coreTag.textContent=coreState==="connected"?"متصل":coreState==="degraded"?"دسترسی برقرار · نیازمند پیکربندی":"عدم دسترسی";coreTag.className="tag "+(coreState==="connected"?"ok":coreState==="degraded"?"wait":"off");}}catch{pill.textContent="● عدم دسترسی";tag.textContent="نامشخص";tag.className="tag off";document.querySelector("#core").textContent="Offline";}}
-authenticate();refresh();
+authPromise=authenticate();refresh();
 </script></body></html>`;
   return new Response(html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
