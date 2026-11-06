@@ -189,9 +189,9 @@ export function buildRoleMenu(role = "MEMBER") {
   if (role === "OWNER") return { inline_keyboard: [
     [{ text: "👑 نظارت کل سامانه", callback_data: "owner:stats" }],
     [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
-    [{ text: "⚙️ تنظیمات سراسری", callback_data: "owner:settings" }],
-    [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }],
-    [{ text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
+    [{ text: "⚙️ تنظیمات کل برنامه", callback_data: "owner:settings" }],
+    [{ text: "📣 پیام به همه", callback_data: "owner:broadcast" }],
+    [{ text: "🛑 توقف فوری", callback_data: "owner:emergency" }],
     ...memberRows,
   ] };
   return { inline_keyboard: memberRows };
@@ -215,28 +215,28 @@ export function resolveCallback(data) {
   switch (data) {
     case "account:connect":
       return {
-        text: "🟢 اتصال حساب\n\nاتصال امن هنوز فعال نشده است. برای محافظت از حساب، KageCatch کد ورود تلگرام یا رمز دومرحله‌ای را از طریق چت دریافت نمی‌کند.\n\nتا آماده‌شدن روش اتصال امن، هیچ کد ورود یا رمز دومرحله‌ای را اینجا ارسال نکن.",
+        text: "🟢 وصل کردن حساب\n\nبرای وصل کردن اکانتت، پنل رو باز کن و از بخش «حساب‌ها» روی اتصال بزن. کد ورود و رمز دومرحله‌ای فقط داخل فرم امن پنل وارد می‌شن؛ اینجا توی چت نفرستشون.",
         keyboard: BACK_MENU,
       };
     case "account:list":
-      return { text: "👤 حساب‌های متصل\n\nفعلاً حسابی ثبت نشده است؛ هسته اجرایی هنوز متصل نیست.", keyboard: BACK_MENU };
+      return { text: "👤 حساب‌های متصل\n\nهنوز حسابی وصل نکردی. از پنل می‌تونی حسابت رو اضافه کنی.", keyboard: BACK_MENU };
     case "catch:open":
       return {
-        text: "🎯 کنترل Catch\n\nCatch هنوز فعال نیست.\nتشخیص Spawn و اجرای خودکار هنوز به هسته اجرایی متصل نشده‌اند. تا تکمیل تست‌ها هیچ Catch زنده‌ای انجام نمی‌شود.",
+        text: "🎯 بخش Catch\n\nهنوز آمادهٔ شکار واقعی نیستیم 😅\nداریم بخش تشخیص و گرفتن کاراکترها رو تکمیل می‌کنیم. تا وقتی همه‌چیز تست نشه، چیزی به‌صورت خودکار اجرا نمی‌شه.",
         keyboard: { inline_keyboard: [[{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }], [{ text: "⚙️ تنظیمات Catch", callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] },
       };
     case "bots:open":
       return {
-        text: "🤖 بات‌های مقصد\n\n• HentaCatcherBot — تصویر · /catch — پیکربندی‌شده؛ تست زنده نشده\n• Character_Catcher_Bot — تصویر · /catch — پیکربندی‌شده؛ تست زنده نشده\n• SenpaiCatcherBot — ویدیو · /pick — وضعیت گزارش‌شده، نیازمند راستی‌آزمایی\n\nهنوز عملیات زنده اجرا نمی‌شود.",
+        text: "🤖 بات‌های مقصد\n\n• HentaCatcherBot — عکس · /catch\n• Character_Catcher_Bot — عکس · /catch\n• SenpaiCatcherBot — ویدیو · /pick (فعلاً غیرفعاله)\n\nهنوز تست واقعی نگرفتیم؛ پس فعلاً قول Catch موفق نمی‌دیم.",
         keyboard: { inline_keyboard: [[{ text: "🎯 کنترل Catch", callback_data: "catch:open" }], ...BACK_MENU.inline_keyboard] },
       };
     case "settings:open":
       return {
-        text: "⚙️ تنظیمات KageCatch\n\nتنظیمات Catch، محدودیت‌ها و رفتار تشخیص پس از راه‌اندازی هسته اجرایی فعال می‌شوند. فعلاً هیچ تنظیم عملیاتی قابل تغییر نیست.",
+        text: "⚙️ تنظیمات\n\nبعضی تنظیمات هنوز آماده نیستن. به‌محض اینکه بخش مربوطه کامل بشه، از همین‌جا می‌تونی تغییرشون بدی.",
         keyboard: BACK_MENU,
       };
     case "stats:open":
-      return { text: "📊 آمار و عملکرد\n\nهنوز داده‌ای برای نمایش وجود ندارد؛ اجرای Catch فعال نیست.", keyboard: BACK_MENU };
+      return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: BACK_MENU };
     case "security:open":
       return {
         text: "🔒 امنیت و نشست‌ها\n\nهیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود. نشست‌های ذخیره‌شده باید رمزنگاری شوند و امکان لغو دسترسی داشته باشند.\n\nحذف پیام فقط بهترین تلاش است و حذف کامل از زیرساخت تلگرام را تضمین نمی‌کند.",
@@ -246,11 +246,11 @@ export function resolveCallback(data) {
       return { text: "❌ حساب متصلی ثبت نشده است.", keyboard: BACK_MENU };
     case "help:open":
       return {
-        text: "❓ راهنمای KageCatch\n\n🎯 کنترل Catch — مشاهده وضعیت اجرای خودکار\n🤖 بات‌های مقصد — فهرست بات‌های پشتیبانی‌شده\n👤 حساب متصل — مدیریت اتصال حساب\n📊 آمار من — آمار تأییدشده\n⚙️ تنظیمات — تنظیمات حساب و Catch\n\nمیانبرها: /start منوی اصلی · /status وضعیت · /help راهنما · /admin مدیریت مالک.",
+        text: "❓ راهنمای کوچیک KageCatch\n\n🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌هایی که پشتیبانی می‌شن\n👤 حساب من — وصل و مدیریت حسابت\n📊 آمار من — نتیجهٔ Catchها\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
         keyboard: BACK_MENU,
       };
     case "menu:main":
-      return { text: "🌸 خوش آمدی به KageCatch\n\nاز گزینه‌های زیر یکی را انتخاب کن:", keyboard: buildStartMenu() };
+      return { text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز منو هرچی لازم داری انتخاب کن:", keyboard: buildStartMenu() };
     default:
       return { text: "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.", keyboard: BACK_MENU, alert: true };
   }
@@ -260,13 +260,13 @@ export function commandReply(text) {
   const command = (text || "").trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
   if (command === "/start") {
     return {
-      text: "🌸 خوش آمدی به KageCatch\n\nاز منوی زیر برای کنترل Catch، بات‌های مقصد و حساب تلگرامت استفاده کن:",
+      text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز این منو می‌تونی Catch، بات‌ها و حسابت رو مدیریت کنی:",
       reply_markup: buildStartMenu(),
     };
   }
   if (command === "/panel") {
     return {
-      text: "🧩 منوی اصلی KageCatch\n\nبخش موردنظرت را انتخاب کن:",
+      text: "🧩 اینم منوی KageCatch!\n\nبگو کدوم بخش رو می‌خوای:",
       reply_markup: buildMainMenu(),
     };
   }
