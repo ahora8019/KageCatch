@@ -632,3 +632,39 @@ test("Mini App account UI offers a Telegram deep link and does not ask for OTP o
   assert.match(html, /رمز 2FA را دریافت نمی‌کند/);
   assert.doesNotMatch(html, /name=["'](?:otp|password|code)["']/i);
 });
+
+
+test("health distinguishes a reachable but unconfigured Python Core from an unreachable Core", async () => {
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+    CORE_API_URL: "https://core.example.test",
+    CORE_API_SECRET: "kagecatch-core-test-secret-32-bytes",
+    FETCH: async (url, init) => {
+      calls.push(url);
+      if (url.endsWith("/getWebhookInfo")) {
+        return new Response(JSON.stringify({ ok: true, result: { url: "https://kagecatch-control.ahora-project.workers.dev/webhook", pending_update_count: 0 } }), { status: 200 });
+      }
+      if (url.endsWith("/getMe")) {
+        return new Response(JSON.stringify({ ok: true, result: { id: 1, username: "KageCatchBot", first_name: "KageCatch" } }), { status: 200 });
+      }
+      assert.equal(url, "https://core.example.test/v1/health");
+      return new Response(JSON.stringify({ service: "KageCatch Core", status: "degraded", execution_configured: false }), { status: 503 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/health"), env);
+  assert.equal(response.status, 200);
+  const health = await response.json();
+  assert.equal(health.status, "webhook_ready");
+  assert.equal(health.python_core, "degraded");
+  assert.equal(calls.length, 3);
+});
+
+test("dashboard labels the Core as degraded instead of offline when the bridge reaches it", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
+  const html = await response.text();
+  assert.match(html, /core-tag/);
+  assert.match(html, /دسترسی برقرار · نیازمند پیکربندی/);
+  assert.match(html, /در دسترس · گزارش‌شده/);
+});
