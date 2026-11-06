@@ -399,55 +399,111 @@ function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overvi
 document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
 async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role");if(!tg?.initData){name.textContent="ورود از داخل تلگرام";role.textContent="پنل را از دکمه بات باز کن";return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok)throw new Error("auth");session=await response.json();name.textContent=session.user.first_name||"کاربر KageCatch";role.textContent=session.role==="OWNER"?"مالک سامانه":"عضو فعال";if(session.role==="OWNER"){document.querySelector("#admin-nav").hidden=false;document.querySelector("#admin-mobile").hidden=false;}refreshAccountStatus();}catch{name.textContent="احراز هویت ناموفق";role.textContent="از /start در بات دوباره وارد شو";}}
 async function accountApi(path,payload={}){if(!tg?.initData)throw Object.assign(new Error("telegram_auth_required"),{status:401});const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData,...payload}),cache:"no-store"});const data=await response.json().catch(()=>({error:"invalid_response"}));if(!response.ok)throw Object.assign(new Error(data.error||"core_error"),{status:response.status,data});return data;}
-async function refreshAccountStatus(){const state=document.querySelector("#account-state"),disconnect=document.querySelector("#account-disconnect"),reconnect=document.querySelector("#account-reconnect"),revoke=document.querySelector("#account-revoke");if(!session){state.textContent="برای مشاهده وضعیت، پنل را از داخل بات باز کن.";disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;return;}state.textContent="در حال بررسی وضعیت حساب…";try{const data=await accountApi("/api/account/status");state.textContent=data.status==="connected"?"حساب تلگرام متصل است":data.status==="authorized"?"نشست مجاز ذخیره شده؛ اتصال فعلی قطع است":data.status==="reauth_required"?"نشست نیازمنlet loginStage="phone";
+async function refreshAccountStatus(){
+  const state=document.querySelector("#account-state");
+  const disconnect=document.querySelector("#account-disconnect");
+  const reconnect=document.querySelector("#account-reconnect");
+  const revoke=document.querySelector("#account-revoke");
+  if(!session){state.textContent="برای مشاهده وضعیت، پنل را از داخل بات باز کن.";disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;return;}
+  state.textContent="در حال بررسی وضعیت حساب…";
+  try{
+    const data=await accountApi("/api/account/status");
+    const connected=data.status==="connected";
+    const authorized=data.status==="authorized";
+    state.textContent=connected?"حساب تلگرام متصل است":authorized?"نشست مجاز ذخیره شده؛ اتصال فعلی قطع است":data.status==="reauth_required"?"نشست نیازمند ورود دوباره است.":"هنوز حسابی متصل نشده است.";
+    disconnect.disabled=!connected;
+    reconnect.disabled=!authorized;
+    revoke.disabled=!authorized&&!connected;
+  }catch(error){
+    state.textContent=error.status===503?"هستهٔ اجرایی هنوز آماده نیست.":error.status===401?"نشست Mini App منقضی شده؛ دوباره از بات بازش کن.":"بررسی وضعیت حساب ناموفق بود.";
+    disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;
+  }
+}
+async function confirmAccountAction(path,message){
+  if(!window.confirm(message))return;
+  try{
+    const result=await accountApi(path);
+    document.querySelector("#account-state").textContent=result.status==="revoked"?"دسترسی حساب لغو شد.":result.status==="disconnected"?"اتصال حساب قطع شد.":result.status==="connected"?"حساب دوباره متصل شد.":"عملیات انجام شد.";
+    await refreshAccountStatus();
+  }catch(error){
+    document.querySelector("#account-state").textContent=error.status===503?"هستهٔ اجرایی در دسترس نیست.":"عملیات حساب ناموفق بود.";
+  }
+}
+let loginStage="phone";
 function setLoginStage(stage,message=""){
   loginStage=stage;
   const input=document.querySelector("#login-value");
   const label=document.querySelector("#login-label");
   const submit=document.querySelector("#login-submit");
   const description=document.querySelector("#login-description");
-  const feedback=document.querySelector("#login-feedback");
-  input.value="";feedback.textContent=message;
+  document.querySelector("#login-feedback").textContent=message;
+  input.value="";
   if(stage==="phone"){label.textContent="شماره تلفن";input.type="tel";input.inputMode="tel";input.autocomplete="tel";input.placeholder="+98912…";submit.textContent="ارسال کد";description.textContent="شماره تلفن را همراه کد کشور وارد کن.";}
   if(stage==="code"){label.textContent="کد ورود تلگرام";input.type="text";input.inputMode="numeric";input.autocomplete="one-time-code";input.placeholder="کد ارسال‌شده";submit.textContent="تأیید کد";description.textContent="کد یک‌بارمصرف ارسال‌شده از طرف Telegram را وارد کن.";}
   if(stage==="password"){label.textContent="رمز دومرحله‌ای";input.type="password";input.inputMode="text";input.autocomplete="current-password";input.placeholder="رمز 2FA";submit.textContent="تأیید و اتصال";description.textContent="حساب تو رمز تأیید دومرحله‌ای دارد.";}
   input.focus();
 }
-function openLoginDialog(){const dialog=document.querySelector("#login-dialog");setLoginStage("phone");if(!dialog.open)dialog.showModal();}
-document.querySelector("#login-cancel").addEventListener("click",async()=>{try{if(session&&loginStage!=="phone")await accountApi("/api/account/connect/cancel");}catch{}document.querySelector("#login-dialog").close();});
-async function connectAccount(){
+function openLoginDialog(){
   const dialog=document.querySelector("#login-dialog");
+  setLoginStage("phone");
+  if(!dialog.open)dialog.showModal();
+}
+document.querySelector("#login-cancel").addEventListener("click",async()=>{
+  try{if(session&&loginStage!=="phone")await accountApi("/api/account/connect/cancel");}catch{}
+  document.querySelector("#login-dialog").close();
+});
+async function connectAccount(){
   if(!session){document.querySelector("#account-state").textContent="ابتدا Mini App را از داخل بات باز کن تا هویت تلگرام تأیید شود.";return;}
   openLoginDialog();
 }
 document.querySelector("#login-form").addEventListener("submit",async(event)=>{
   event.preventDefault();
-  const input=document.querySelector("#login-value"),feedback=document.querySelector("#login-feedback"),submit=document.querySelector("#login-submit");
-  const value=input.value.trim();if(!value)return;
-  submit.disabled=true;feedback.textContent="در حال ارتباط امن با Telegram…";
+  const input=document.querySelector("#login-value");
+  const feedback=document.querySelector("#login-feedback");
+  const submit=document.querySelector("#login-submit");
+  const value=input.value.trim();
+  if(!value)return;
+  submit.disabled=true;
+  feedback.textContent="در حال ارتباط امن با Telegram…";
   try{
     let result;
     if(loginStage==="phone"){
       if(!/^\\+[1-9]\\d{7,14}$/.test(value))throw Object.assign(new Error("invalid_phone"),{status:400});
       result=await accountApi("/api/account/connect",{phone:value});
-      if(result.status==="already_authorized"){await accountApi("/api/account/reconnect");document.querySelector("#login-dialog").close();document.querySelector("#account-state").textContent="حساب دوباره متصل شد.";await refreshAccountStatus();return;}
+      if(result.status==="already_authorized"){
+        await accountApi("/api/account/reconnect");
+        document.querySelector("#login-dialog").close();
+        await refreshAccountStatus();
+        return;
+      }
       if(result.status!=="code_sent")throw Object.assign(new Error("code_request_failed"),{status:502});
-      setLoginStage("code","کد ورود ارسال شد. کد را فقط همین‌جا وارد کن.");return;
+      setLoginStage("code","کد ورود ارسال شد. کد را فقط همین‌جا وارد کن.");
+      return;
     }
     if(loginStage==="code"){
       result=await accountApi("/api/account/connect/code",{code:value});
-      if(result.status==="password_required"){setLoginStage("password","کد تأیید شد؛ رمز دومرحله‌ای لازم است.");return;}
+      if(result.status==="password_required"){
+        setLoginStage("password","کد تأیید شد؛ رمز دومرحله‌ای لازم است.");
+        return;
+      }
     }else if(loginStage==="password"){
       result=await accountApi("/api/account/connect/password",{password:value});
     }
     if(result?.status==="connected"||result?.status==="authorized"){
-      document.querySelector("#login-dialog").close();document.querySelector("#account-state").textContent="حساب تلگرام با موفقیت متصل شد.";await refreshAccountStatus();return;
+      document.querySelector("#login-dialog").close();
+      document.querySelector("#account-state").textContent="حساب تلگرام با موفقیت متصل شد.";
+      await refreshAccountStatus();
+      return;
     }
     throw Object.assign(new Error("authorization_incomplete"),{status:502});
   }catch(error){
     feedback.textContent=error.data?.error==="invalid_telegram_code"?"کد ورود نادرست است. دوباره بررسی کن.":error.data?.error==="invalid_2fa_password"?"رمز دومرحله‌ای نادرست است.":error.message==="invalid_phone"?"شماره را با فرمت بین‌المللی وارد کن؛ مثل +98912…":error.status===503?"Python Core هنوز آماده نیست یا تنظیمات ورود آن کامل نشده است.":error.status===401?"نشست Mini App منقضی شده؛ دوباره از بات بازش کن.":"درخواست ورود ناموفق بود. اتصال Core و گزارش خطا باید بررسی شود.";
-  }finally{submit.disabled=false;input.focus();}
-});و شد.";return;}state.textContent="در حال تأیید رمز دومرحله‌ای…";result=await accountApi("/api/account/connect/password",{password});}if(result.status==="connected"||result.status==="authorized"){state.textContent="حساب تلگرام با موفقیت متصل شد.";await refreshAccountStatus();return;}throw Object.assign(new Error("authorization_incomplete"),{status:502});}catch(error){state.textContent=error.status===503?"Python Core هنوز راه‌اندازی یا به Worker متصل نشده است.":error.status===401?"احراز هویت پنل منقضی شده؛ دوباره از بات وارد شو.":error.data?.error==="invalid_telegram_code"?"کد ورود نامعتبر است؛ دوباره تلاش کن.":error.data?.error==="invalid_2fa_password"?"رمز دومرحله‌ای نامعتبر است.":"اتصال حساب کامل نشد؛ کمی بعد دوباره تلاش کن.";}}
+    if(loginStage==="password")input.value="";
+  }finally{
+    submit.disabled=false;
+    if(document.querySelector("#login-dialog").open)input.focus();
+  }
+});
 document.querySelector("#account-connect").addEventListener("click",connectAccount);
 document.querySelector("#account-refresh").addEventListener("click",refreshAccountStatus);
 document.querySelector("#account-reconnect").addEventListener("click",()=>confirmAccountAction("/api/account/reconnect","حساب مجاز دوباره به Telegram متصل شود؟"));
