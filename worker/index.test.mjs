@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
   const menu = buildMainMenu();
@@ -226,4 +226,32 @@ test("private connect callback issues a live one-time link through the Durable O
     body: JSON.stringify({ token }),
   }));
   assert.equal(consumed.status, 200);
+});
+
+
+test("owner role is assigned only to the configured numeric Telegram ID", () => {
+  assert.equal(resolveRole(1001, "1001", "MEMBER", "active"), "OWNER");
+  assert.equal(resolveRole(1002, "1001", "MEMBER", "active"), "MEMBER");
+  assert.equal(resolveRole(1001, "1002", "OWNER", "active"), "MEMBER");
+});
+
+test("blocked users cannot enter even if their stored role says MEMBER", () => {
+  assert.equal(resolveRole(1002, "1001", "MEMBER", "blocked"), "BLOCKED");
+});
+
+test("member menu contains only personal account and catch features", () => {
+  const callbacks = buildRoleMenu("MEMBER").inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("account:list"));
+  assert.ok(callbacks.includes("account:connect"));
+  assert.ok(!callbacks.includes("owner:members"));
+  assert.ok(!callbacks.includes("owner:settings"));
+  assert.ok(!callbacks.includes("owner:broadcast"));
+});
+
+test("owner menu includes global monitoring and member administration", () => {
+  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("owner:members"));
+  assert.ok(callbacks.includes("owner:stats"));
+  assert.ok(callbacks.includes("owner:settings"));
+  assert.ok(callbacks.includes("owner:broadcast"));
 });
