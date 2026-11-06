@@ -65,6 +65,7 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
             confidence_threshold=0.92,
             quota=self.quota,
             deduplicator=self.deduplicator,
+            enabled=True,
         )
 
     async def test_engine_is_safe_by_default_and_does_not_send(self):
