@@ -18,6 +18,15 @@ class MemoryStore:
     async def delete(self, user_id):
         self.values.pop(user_id, None)
 
+    async def put_pending(self, user_id, encrypted_payload):
+        self.values[("pending", user_id)] = encrypted_payload
+
+    async def get_pending(self, user_id):
+        return self.values.get(("pending", user_id))
+
+    async def delete_pending(self, user_id):
+        self.values.pop(("pending", user_id), None)
+
 
 class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -35,6 +44,23 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
         await self.manager.save_authorized_session("user-1", "session")
         await self.manager.revoke_session("user-1")
         self.assertIsNone(await self.manager.load_session("user-1"))
+
+    async def test_pending_authorization_payload_is_encrypted_and_round_trips(self):
+        payload = {
+            "version": 1,
+            "phone": "+10000000000",
+            "phone_code_hash": "private-phone-code-hash",
+            "session_string": "temporary-telethon-session",
+            "expires_at": 1_800_000_000,
+            "attempts": 0,
+        }
+        await self.manager.save_pending_authorization("user-1", payload)
+        encrypted = self.store.values[("pending", "user-1")]
+        self.assertNotIn(b"private-phone-code-hash", encrypted)
+        self.assertNotIn(b"temporary-telethon-session", encrypted)
+        self.assertEqual(await self.manager.load_pending_authorization("user-1"), payload)
+        await self.manager.delete_pending_authorization("user-1")
+        self.assertIsNone(await self.manager.load_pending_authorization("user-1"))
 
     async def test_wrong_key_fails_closed(self):
         await self.manager.save_authorized_session("user-1", "session")
