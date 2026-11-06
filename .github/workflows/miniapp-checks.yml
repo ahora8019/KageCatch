@@ -6,6 +6,7 @@ on:
       - feat/pro-dashboard-mini-app
   pull_request:
     branches:
+      - main
       - feat/catch-engine-foundation
 
 jobs:
