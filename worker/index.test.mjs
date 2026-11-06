@@ -184,3 +184,46 @@ test("connection landing page consumes the matching link on explicit POST", asyn
   }));
   assert.equal(replay.status, 410);
 });
+
+
+test("private connect callback issues a live one-time link through the Durable Object", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const telegramCalls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+    CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      telegramCalls.push({ method: url.split("/").pop(), payload: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const update = {
+    update_id: 42,
+    callback_query: {
+      id: "callback-42",
+      from: { id: 556677889 },
+      message: { message_id: 7, chat: { id: 556677889, type: "private" } },
+      data: "account:connect",
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+  assert.equal(response.status, 200);
+  const edit = telegramCalls.find((call) => call.method === "editMessageText");
+  assert.ok(edit);
+  const link = edit.payload.reply_markup.inline_keyboard[0][0].url;
+  assert.match(link, /^https:\/\/kagecatch-control\.ahora-project\.workers\.dev\/connect\/[A-Za-z0-9_-]{40,}$/);
+  const token = new URL(link).pathname.split("/").pop();
+  const consumed = await store.fetch(new Request("https://do.internal/consume", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  }));
+  assert.equal(consumed.status, 200);
+});
