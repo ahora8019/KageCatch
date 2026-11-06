@@ -508,3 +508,24 @@ test("Mini App session API rejects forged Telegram identity", async () => {
 });
 
 // Mini App authentication regression coverage.
+
+
+test("Mini App session role is read from the registry, not from client-supplied claims", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 2001, ownerTelegramId: "7135051954" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const token = "test-bot-token";
+  const initData = makeWebAppInitData(token, { id: 2001, first_name: "Member", role: "OWNER" });
+  const request = () => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ initData, role: "OWNER" }),
+  }), { TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
+  const memberResponse = await request();
+  assert.equal(memberResponse.status, 200);
+  assert.equal((await memberResponse.json()).role, "MEMBER");
+  await post("/manage-user", { telegramUserId: 2001, action: "block" });
+  assert.equal((await request()).status, 403);
+});
