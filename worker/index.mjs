@@ -941,10 +941,74 @@ async function internalSessionStore(request, env) {
   }
 }
 
+async function internalAuthChallengeStore(request, env) {
+  const match = new URL(request.url).pathname.match(/^\/internal\/session-store\/([1-9][0-9]{0,15})$/);
+  if (!match) return json({ error: "not_found" }, 404);
+  if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({ error: "method_not_allowed" }, 405);
+  if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) return json({ error: "storage_auth_not_configured" }, 503);
+  if (!env.KAGECATCH_DB || !env.CONNECT_LINKS) return json({ error: "storage_not_configured" }, 503);
+  const userId = match[1];
+  if (Number(userId) > (2 ** 52 - 1)) return json({ error: "invalid_user_id" }, 400);
+  let rawBody;
+  try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
+  if (rawBody.byteLength > 8192) return json({ error: "request_too_large" }, 413);
+  if (request.method === "PUT" && !(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  if (request.method !== "PUT" && rawBody.byteLength !== 0) return json({ error: "unexpected_request_body" }, 400);
+  const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
+  const nonce = request.headers.get("X-KageCatch-Nonce") || "";
+  const supplied = request.headers.get("X-KageCatch-Signature") || "";
+  if (!/^\d{10,12}$/.test(timestampRaw) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(supplied)) return json({ error: "invalid_auth_headers" }, 401);
+  const timestamp = Number(timestampRaw);
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - timestamp) > 60) return json({ error: "request_expired" }, 401);
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signingText = [timestampRaw, nonce, request.method, new URL(request.url).pathname, bodyHash].join("\n");
+  const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, new TextEncoder().encode(signingText)));
+  const expected = Array.from(expectedBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let difference = expected.length ^ supplied.length;
+  for (let index = 0; index < expected.length; index += 1) difference |= expected.charCodeAt(index) ^ supplied.charCodeAt(index);
+  if (difference !== 0) return json({ error: "invalid_signature" }, 401);
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const claim = await stub.fetch("https://connect-links.internal/claim-nonce", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nonce, expiresAt: Date.now() + 120000 }),
+  });
+  if (claim.status === 409) return json({ error: "request_replayed" }, 409);
+  if (!claim.ok) return json({ error: "replay_guard_unavailable" }, 503);
+  let payload = null;
+  if (rawBody.byteLength) {
+    try { payload = JSON.parse(new TextDecoder().decode(rawBody)); }
+    catch { return json({ error: "invalid_request" }, 400); }
+  }
+  try {
+    if (request.method === "PUT") {
+      const ciphertext = payload?.ciphertext;
+      if (typeof ciphertext !== "string" || ciphertext.length < 16 || ciphertext.length > 16384 || !/^[A-Za-z0-9+/]+={0,2}$/.test(ciphertext)) return json({ error: "invalid_ciphertext" }, 400);
+      await env.KAGECATCH_DB.prepare(
+        "INSERT INTO telegram_auth_challenges (user_id, encrypted_payload, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET encrypted_payload=excluded.encrypted_payload, updated_at=CURRENT_TIMESTAMP"
+      ).bind(userId, ciphertext).run();
+      return json({ status: "stored" });
+    }
+    if (request.method === "GET") {
+      const row = await env.KAGECATCH_DB.prepare("SELECT encrypted_payload FROM telegram_auth_challenges WHERE user_id = ?").bind(userId).first();
+      if (!row) return json({ error: "challenge_not_found" }, 404);
+      return json({ ciphertext: row.encrypted_payload });
+    }
+    await env.KAGECATCH_DB.prepare("DELETE FROM telegram_auth_challenges WHERE user_id = ?").bind(userId).run();
+    return json({ status: "deleted" });
+  } catch {
+    return json({ error: "auth_challenge_store_unavailable" }, 503);
+  }
+}
+
+
 export default {
   async fetch(request, env) {    const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
+    if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
     if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
     if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
