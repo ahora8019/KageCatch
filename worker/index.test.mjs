@@ -174,8 +174,9 @@ test("connection landing page consumes the matching link on explicit POST", asyn
   const form = new FormData();
   form.set("token", token);
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/" + token, { method: "POST", body: form }), { CONNECT_LINKS: binding });
-  assert.equal(response.status, 200);
-  assert.match(await response.text(), /این به معنی اتصال حساب تلگرام نیست/);
+  const responseBody = await response.text();
+  assert.equal(response.status, 200, responseBody);
+  assert.match(responseBody, /این به معنی اتصال حساب تلگرام نیست/);
   const replay = await store.fetch(new Request("https://do.internal/consume", {
     method: "POST",
     headers: { "content-type": "application/json" },
