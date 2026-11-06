@@ -45,7 +45,7 @@ def _configured_runtime():
     api_hash = os.getenv("KAGECATCH_API_HASH")
     fernet_key = os.getenv("KAGECATCH_FERNET_KEY")
     if not all((api_id, api_hash, fernet_key)):
-        return None, None
+        return None, None, None
 
     from .session_manager import SessionManager
     from .session_runtime import SessionRuntime, TelethonSessionClientFactory
