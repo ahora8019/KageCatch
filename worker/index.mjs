@@ -218,7 +218,7 @@ export function resolveCallback(data) {
       return { text: "👤 حساب‌های متصل\n\nفعلاً حسابی ثبت نشده است؛ هسته اجرایی هنوز متصل نیست.", keyboard: BACK_MENU };
     case "catch:open":
       return {
-        text: "🎯 کنترل Catch\n\nوضعیت: غیرفعال\nتشخیص Spawn و اجرای خودکار هنوز به هسته اجرایی متصل نشده‌اند. تا تکمیل تست‌ها هیچ Catch زنده‌ای انجام نمی‌شود.",
+        text: "🎯 کنترل Catch\n\nCatch هنوز فعال نیست.\nتشخیص Spawn و اجرای خودکار هنوز به هسته اجرایی متصل نشده‌اند. تا تکمیل تست‌ها هیچ Catch زنده‌ای انجام نمی‌شود.",
         keyboard: { inline_keyboard: [[{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }], [{ text: "⚙️ تنظیمات Catch", callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] },
       };
     case "bots:open":
@@ -228,7 +228,7 @@ export function resolveCallback(data) {
       };
     case "settings:open":
       return {
-        text: "⚙️ تنظیمات KageCatch\n\nتنظیمات Catch، محدودیت‌ها و رفتار تشخیص پس از راه‌اندازی و اتصال هسته اجرایی فعال می‌شوند. فعلاً هیچ تنظیم عملیاتی قابل تغییر نیست.",
+        text: "⚙️ تنظیمات KageCatch\n\nتنظیمات Catch، محدودیت‌ها و رفتار تشخیص پس از راه‌اندازی هسته اجرایی فعال می‌شوند. فعلاً هیچ تنظیم عملیاتی قابل تغییر نیست.",
         keyboard: BACK_MENU,
       };
     case "stats:open":
