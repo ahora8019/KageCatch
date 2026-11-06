@@ -718,3 +718,40 @@ test("/start opens the native role menu directly instead of a redundant landing 
   assert.ok(callbacks.includes("bots:open"));
   assert.ok(callbacks.includes("account:connect"));
 });
+
+
+test("Mini App forwards phone login payloads only to the signed Python Core endpoint", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  await store.fetch(new Request("https://do.internal/register", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 445566778, ownerTelegramId: "" }),
+  }));
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    CONNECT_LINKS: binding,
+    CORE_API_URL: "https://core.example",
+    CORE_API_SECRET: "test-core-secret-with-more-than-thirty-two-bytes",
+    FETCH: async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ status: "code_sent" }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const initData = makeWebAppInitData("test-bot-token", { id: 445566778, first_name: "Member" });
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/connect", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, phone: "+10000000000" }),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "code_sent" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://core.example/v1/accounts/445566778/connect");
+  const forwarded = JSON.parse(calls[0].init.body);
+  assert.deepEqual(forwarded, { phone: "+10000000000" });
+  assert.equal(Object.hasOwn(forwarded, "initData"), false);
+  assert.ok(calls[0].init.headers["X-KageCatch-Signature"]);
+});
