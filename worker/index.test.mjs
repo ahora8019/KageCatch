@@ -205,7 +205,7 @@ test("connection landing page consumes the matching link on explicit POST", asyn
 });
 
 
-test("private connect callback issues a live one-time link through the Durable Object", async () => {
+test("private connect callback launches the authenticated Telegram Mini App", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const store = new ConnectionLinkStore(createDurableObjectState());
   await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 556677889, ownerTelegramId: "" }) }));
@@ -237,15 +237,20 @@ test("private connect callback issues a live one-time link through the Durable O
   assert.equal(response.status, 200);
   const edit = telegramCalls.find((call) => call.method === "editMessageText");
   assert.ok(edit);
-  const link = edit.payload.reply_markup.inline_keyboard[0][0].url;
-  assert.match(link, /^https:\/\/kagecatch-control\.ahora-project\.workers\.dev\/connect\/[A-Za-z0-9_-]{40,}$/);
-  const token = new URL(link).pathname.split("/").pop();
-  const consumed = await store.fetch(new Request("https://do.internal/consume", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
-  }));
-  assert.equal(consumed.status, 200);
+  const button = edit.payload.reply_markup.inline_keyboard[0][0];
+  assert.equal(button.text, "🌸 باز کردن پنل اتصال");
+  assert.equal(button.web_app.url, "https://kagecatch-control.ahora-project.workers.dev/panel");
+  assert.equal(Object.hasOwn(button, "url"), false);
+});
+
+test("panel exposes the secure phone, code, and optional 2FA connection flow", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /api\/account\/connect\/code/);
+  assert.match(html, /api\/account\/connect\/password/);
+  assert.match(html, /در حال درخواست کد ورود از Telegram/);
+  assert.match(html, /رمز دومرحله‌ای تلگرام/);
 });
 
 
