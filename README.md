@@ -49,4 +49,6 @@ Python 3.11+ is required. Install the Telegram integration and run tests with:
 
 Before authorizing an account, configure these environment secrets: `KAGECATCH_API_ID`, `KAGECATCH_API_HASH`, `KAGECATCH_FERNET_KEY`, and `KAGECATCH_USER_ID`.
 
-Run the Python Core API with `uvicorn kagecatch.core_api:app --host 0.0.0.0 --port 8000` after configuring `KAGECATCH_CORE_SECRET`, `KAGECATCH_API_ID`, `KAGECATCH_API_HASH`, and `KAGECATCH_FERNET_KEY` as deployment secrets. Set `CORE_API_URL` and the matching `CORE_API_SECRET` in the Worker environment. The Worker signs every Core request with timestamp, nonce, method, path, and body hash. The initial replay guard is single-process; do not scale the Core API horizontally until a shared nonce store is configured.\n\nSee [Catch Engine and Session Runtime design](docs/CATCH_ENGINE.md) for security boundaries and remaining work.
+Run the Python Core API with `uvicorn kagecatch.core_api:app --host 0.0.0.0 --port 8000` after configuring `KAGECATCH_CORE_SECRET`, `KAGECATCH_API_ID`, `KAGECATCH_API_HASH`, and `KAGECATCH_FERNET_KEY` as deployment secrets. Set `CORE_API_URL` and the matching `CORE_API_SECRET` in the Worker environment. The Worker signs every Core request with timestamp, nonce, method, path, and body hash. The initial replay guard is single-process; do not scale the Core API horizontally until a shared nonce store is configured.
+
+See [Catch Engine and Session Runtime design](docs/CATCH_ENGINE.md) for security boundaries and remaining work.
