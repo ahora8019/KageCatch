@@ -96,6 +96,18 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.revoked, ["user-a"])
         self.assertIsNone(await runtime.get_client("user-a"))
 
+    async def test_active_user_count_tracks_connected_clients(self):
+        runtime = SessionRuntime(
+            session_manager=FakeSessionManager({"user-a": "session-a", "user-b": "session-b"}),
+            client_factory=lambda session: FakeClient(),
+        )
+        self.assertEqual(runtime.active_user_count, 0)
+        await runtime.connect_user("user-a")
+        await runtime.connect_user("user-b")
+        self.assertEqual(runtime.active_user_count, 2)
+        await runtime.disconnect_user("user-a")
+        self.assertEqual(runtime.active_user_count, 1)
+
     async def test_repeated_connect_reuses_same_client(self):
         calls = []
         runtime = SessionRuntime(
