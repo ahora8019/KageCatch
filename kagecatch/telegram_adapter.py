@@ -32,6 +32,7 @@ class TelethonCatchAdapter:
         if not target.enabled:
             raise RuntimeError("catch source is currently frozen")
         self.source = source
+        self.media_kind = target.media_kind
         self.target_username = target.username
         self._client = client
         self._response_verifier = response_verifier
