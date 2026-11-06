@@ -34,7 +34,7 @@ export async function verifyWebAppInitData(initData, botToken, nowSeconds = Math
   const entries = [...params.entries()];
   if (new Set(entries.map(([key]) => key)).size !== entries.length) return null;
   const authDate = Number(params.get("auth_date"));
-  if (!Number.isSafeInteger(authDate) || authDate > nowSeconds + 30 || nowSeconds - authDate > 300) return null;
+  if (!Number.isSafeInteger(authDate) || authDate > nowSeconds + 30 || nowSeconds - authDate > 86400) return null;
   const checkString = entries
     .filter(([key]) => key !== "hash")
     .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
@@ -452,7 +452,7 @@ document.querySelector("#login-cancel").addEventListener("click",async()=>{
   try{if(session&&loginStage!=="phone")await accountApi("/api/account/connect/cancel");}catch{}
   document.querySelector("#login-dialog").close();
 });
-async function connectAccount(){openLoginDialog();if(!session){document.querySelector("#login-feedback").textContent="برای وصل کردن حسابت، اول پنل رو از دکمهٔ داخل چت KageCatch باز کن.";return;}document.querySelector("#login-feedback").textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم.";}
+async function connectAccount(){if(!session){document.querySelector("#account-state").textContent="اتصال پنل به تلگرام کامل نشده؛ پنل رو یک بار ببند و دوباره از دکمهٔ داخل چت باز کن.";return;}openLoginDialog();document.querySelector("#login-feedback").textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم."; }
 document.querySelector("#login-form").addEventListener("submit",async(event)=>{
   event.preventDefault();
   const input=document.querySelector("#login-value");

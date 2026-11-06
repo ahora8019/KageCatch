@@ -6,8 +6,8 @@ test("panel explains login requirements and never leaves the connect button sile
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /برای وصل کردن حسابت، اول پنل رو از دکمهٔ داخل چت KageCatch باز کن/);
-  assert.match(html, /دوست KageCatch/);
+  assert.match(html, /اتصال پنل به تلگرام کامل نشده/);
+  assert.match(html, /if\(!session\)\{document\.querySelector\("#account-state"\)/);
   assert.match(html, /main\{padding-bottom:124px\}/);
 });
 
@@ -503,7 +503,9 @@ test("Mini App initData verification rejects tampering and expired signatures", 
   const initData = makeWebAppInitData("test-bot-token", user);
   const tampered = initData.replace("Member", "Attacker");
   assert.equal(await verifyWebAppInitData(tampered, "test-bot-token"), null);
-  const expired = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 600);
+  const olderThanFiveMinutes = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 600);
+  assert.ok(await verifyWebAppInitData(olderThanFiveMinutes, "test-bot-token"), "a still-open Mini App must remain authenticated after five minutes");
+  const expired = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 86401);
   assert.equal(await verifyWebAppInitData(expired, "test-bot-token"), null);
 });
 
