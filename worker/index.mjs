@@ -205,9 +205,12 @@ export class ConnectionLinkStore {
       if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(token)) return json({ error: 'invalid_link' }, 400);
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
       const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const record = await this.state.storage.get(key);
+      const record = await this.state.storage.transaction(async (txn) => {
+        const value = await txn.get(key);
+        if (value) await txn.delete(key);
+        return value;
+      });
       if (!record) return json({ error: 'invalid_or_used_link' }, 410);
-      await this.state.storage.delete(key);
       if (record.expiresAt <= Date.now()) return json({ error: 'expired_link' }, 410);
       return json({ valid: true }, 200);
     }
