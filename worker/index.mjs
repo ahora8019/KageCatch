@@ -414,7 +414,7 @@ function setLoginStage(stage,message=""){
   input.focus();
 }
 function openLoginDialog(){const dialog=document.querySelector("#login-dialog");setLoginStage("phone");if(!dialog.open)dialog.showModal();}
-document.querySelector("#login-cancel").addEventListener("click",()=>document.querySelector("#login-dialog").close());
+document.querySelector("#login-cancel").addEventListener("click",async()=>{try{if(session&&loginStage!=="phone")await accountApi("/api/account/connect/cancel");}catch{}document.querySelector("#login-dialog").close();});
 async function connectAccount(){
   const dialog=document.querySelector("#login-dialog");
   if(!session){document.querySelector("#account-state").textContent="ابتدا Mini App را از داخل بات باز کن تا هویت تلگرام تأیید شود.";return;}
