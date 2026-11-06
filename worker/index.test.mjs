@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildMainMenu, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, resolveCallback, commandReply } from "./index.mjs";
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
   const menu = buildMainMenu();
@@ -148,4 +148,38 @@ test("connection link store permits only one winner for concurrent consume attem
   }));
   const results = await Promise.all([consume(), consume()]);
   assert.deepEqual(results.map((response) => response.status).sort(), [200, 410]);
+});
+
+
+test("connection landing page does not request Telegram credentials", async () => {
+  const token = "A".repeat(43);
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/" + token), {});
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control"), /no-store/);
+  const html = await response.text();
+  assert.match(html, /کد ورود یا رمز دومرحله‌ای وارد نکن/);
+  assert.doesNotMatch(html, /name=phone|name=code|name=password/i);
+});
+
+test("connection landing page consumes the matching link on explicit POST", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 445566778, ttlSeconds: 300 }),
+  }));
+  const { token } = await created.json();
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: store.fetch.bind(store) }) };
+  const form = new FormData();
+  form.set("token", token);
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/" + token, { method: "POST", body: form }), { CONNECT_LINKS: binding });
+  assert.equal(response.status, 200);
+  assert.match(await response.text(), /این به معنی اتصال حساب تلگرام نیست/);
+  const replay = await store.fetch(new Request("https://do.internal/consume", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  }));
+  assert.equal(replay.status, 410);
 });
