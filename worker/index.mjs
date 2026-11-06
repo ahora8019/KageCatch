@@ -117,11 +117,17 @@ async function miniAppCoreProxy(request, env, action) {
   const accountPath = "/v1/accounts/" + userId;
   const requestSpec = action === "status"
     ? { method: "GET", path: accountPath }
-    : action === "disconnect"
-      ? { method: "POST", path: accountPath + "/disconnect" }
-      : action === "revoke"
-        ? { method: "DELETE", path: accountPath }
-        : null;
+    : action === "connect"
+      ? { method: "POST", path: accountPath + "/connect" }
+      : action === "connect-status"
+        ? { method: "GET", path: accountPath + "/connect/status" }
+        : action === "connect-cancel"
+          ? { method: "POST", path: accountPath + "/connect/cancel" }
+          : action === "disconnect"
+            ? { method: "POST", path: accountPath + "/disconnect" }
+            : action === "revoke"
+              ? { method: "DELETE", path: accountPath }
+              : null;
   if (!requestSpec) return json({ error: "unknown_account_action" }, 400);
   const result = await coreRequest(env, requestSpec.method, requestSpec.path);
   return json(result.data, result.status);
@@ -722,6 +728,9 @@ export default {
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
     if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
+    if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
+    if (url.pathname === "/api/account/connect/status") return miniAppCoreProxy(request, env, "connect-status");
+    if (url.pathname === "/api/account/connect/cancel") return miniAppCoreProxy(request, env, "connect-cancel");
     if (url.pathname === "/api/account/disconnect") return miniAppCoreProxy(request, env, "disconnect");
     if (url.pathname === "/api/account/revoke") return miniAppCoreProxy(request, env, "revoke");
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
