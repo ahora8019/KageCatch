@@ -638,7 +638,8 @@ async function handleWebhook(request, env) {
 
 export default {
   async fetch(request, env) {    const url = new URL(request.url);
-    if (url.pathname === "/health" && request.method === "GET") return health(env);\n    if (url.pathname === "/api/session") return miniAppSession(request, env);
+    if (url.pathname === "/health" && request.method === "GET") return health(env);
+    if (url.pathname === "/api/session") return miniAppSession(request, env);
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
     if (url.pathname.startsWith("/connect/")) return connectionLanding(request, env, decodeURIComponent(url.pathname.slice("/connect/".length)));
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
