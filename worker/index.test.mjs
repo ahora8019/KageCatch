@@ -2,6 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
+test("panel explains login requirements and never leaves the connect button silent", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /برای وصل کردن حسابت، اول پنل رو از دکمهٔ داخل چت KageCatch باز کن/);
+  assert.match(html, /دوست KageCatch/);
+  assert.match(html, /main\\{padding-bottom:124px\\}/);
+});
+
 test("main menu is inline-first and exposes the agreed account controls", () => {
   const menu = buildMainMenu();
   const callbacks = menu.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
