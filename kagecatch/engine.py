@@ -43,6 +43,7 @@ class CatchResult:
 
 class CatchAdapter(Protocol):
     source: str
+    media_kind: str
 
     async def send_catch(self, spawn: Spawn, character_name: str) -> CatchReceipt: ...
 
@@ -96,6 +97,8 @@ class CatchEngine:
             raise ValueError("user_id is required")
         if adapter.source != spawn.source:
             return CatchResult(status="adapter_mismatch")
+        if adapter.media_kind != spawn.media_kind:
+            return CatchResult(status="media_mismatch")
         if not spawn.candidates:
             return CatchResult(status="no_match")
 
