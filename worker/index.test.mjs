@@ -503,7 +503,9 @@ test("Mini App initData verification rejects tampering and expired signatures", 
   const initData = makeWebAppInitData("test-bot-token", user);
   const tampered = initData.replace("Member", "Attacker");
   assert.equal(await verifyWebAppInitData(tampered, "test-bot-token"), null);
-  const expired = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 600);
+  const olderThanFiveMinutes = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 600);
+  assert.ok(await verifyWebAppInitData(olderThanFiveMinutes, "test-bot-token"), "a still-open Mini App must remain authenticated after five minutes");
+  const expired = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 86401);
   assert.equal(await verifyWebAppInitData(expired, "test-bot-token"), null);
 });
 
