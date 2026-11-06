@@ -1,6 +1,6 @@
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const CONNECTION_LINK_TTL_SECONDS = 300;
 const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
 
