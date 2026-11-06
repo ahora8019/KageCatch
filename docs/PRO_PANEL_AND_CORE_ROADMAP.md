@@ -46,7 +46,7 @@ This branch introduces the first professional Mini App UI and its initial identi
 - Add durable job handoff; never hold long-running Telethon work inside a Worker request.
 - Deploy a persistent Python execution host and managed persistent storage.
 
-### Phase D — Secure account authorization
+### Phase D — Secure account authorization\n\nThe current Core API deliberately does not expose OTP or 2FA submission endpoints. Account connection must use a Telegram-controlled authorization handoff, not a bot or browser form that collects login credentials.
 - Implement an official Telegram-controlled authorization handoff.
 - Persist only authorized, encrypted sessions.
 - Add session listing, revoke, disconnect, and access audit.
