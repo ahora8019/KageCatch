@@ -639,14 +639,16 @@ test("Worker exposes the Telegram deep-link flow only to a verified Mini App use
   assert.equal(body.status, "pending");
 });
 
-test("Mini App account UI offers a Telegram deep link and does not ask for OTP or 2FA", async () => {
+test("Mini App account UI collects login challenges outside the bot chat", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
   const html = await response.text();
   assert.match(html, /account-connect/);
   assert.ok(html.includes("/api/account/connect"));
-  assert.match(html, /login_url/);
-  assert.match(html, /رمز 2FA را دریافت نمی‌کند/);
-  assert.doesNotMatch(html, /name=["'](?:otp|password|code)["']/i);
+  assert.ok(html.includes("/api/account/connect/code"));
+  assert.ok(html.includes("/api/account/connect/password"));
+  assert.match(html, /window\.prompt\("کد ورود ارسال‌شده توسط Telegram را وارد کن:/);
+  assert.match(html, /رمز دومرحله‌ای تلگرام را وارد کن/);
+  assert.doesNotMatch(html, /login_url/);
 });
 
 
