@@ -557,7 +557,7 @@ test("Worker proxies account status to Core with an HMAC signature and trusted T
       const timestamp = init.headers["X-KageCatch-Timestamp"];
       const nonce = init.headers["X-KageCatch-Nonce"];
       const bodyHash = createHash("sha256").update("").digest("hex");
-      const message = [timestamp, nonce, "GET", "/v1/accounts/2001", bodyHash].join("\\n");
+      const message = [timestamp, nonce, "GET", "/v1/accounts/2001", bodyHash].join("\n");
       const expected = createHmac("sha256", coreSecret).update(message).digest("hex");
       assert.equal(init.headers["X-KageCatch-Signature"], expected);
       return new Response(JSON.stringify({ telegram_user_id: 2001, status: "not_connected", session_saved: false, connected: false }), {
