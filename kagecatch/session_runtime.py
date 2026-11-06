@@ -33,6 +33,10 @@ class SessionRuntime:
         self._locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
 
+    @property
+    def active_user_count(self) -> int:
+        return len(self._clients)
+
     async def _user_lock(self, user_id: str) -> asyncio.Lock:
         if not user_id or len(user_id) > 128:
             raise ValueError("valid user_id is required")
