@@ -70,19 +70,20 @@ async function coreRequest(env, method, path, payload = null) {
   } catch {
     return { status: 503, data: { error: "invalid_core_url" } };
   }
+  const baseUrl = base.href.endsWith("/") ? base.href.slice(0, -1) : base.href;
   const body = payload === null ? "" : JSON.stringify(payload);
   const encoder = new TextEncoder();
   const bodyDigest = await crypto.subtle.digest("SHA-256", encoder.encode(body));
   const bodyHash = Array.from(new Uint8Array(bodyDigest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const timestamp = String(Math.floor(Date.now() / 1000));
   const nonce = crypto.randomUUID().replaceAll("-", "");
-  const signingText = [timestamp, nonce, method.toUpperCase(), path, bodyHash].join("\\n");
+  const signingText = [timestamp, nonce, method.toUpperCase(), path, bodyHash].join("\n");
   const signingKey = await crypto.subtle.importKey("raw", encoder.encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signatureBytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, encoder.encode(signingText)));
   const signature = Array.from(signatureBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   try {
     const requestFetch = env.FETCH || fetch;
-    const response = await requestFetch(base.toString().replace(/\\/$/, "") + path, {
+    const response = await requestFetch(baseUrl + path, {
       method: method.toUpperCase(),
       headers: {
         "X-KageCatch-Timestamp": timestamp,
