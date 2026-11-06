@@ -163,6 +163,10 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "disconnected")
         self.assertIn("2001", self.sessions.sessions)
         self.assertEqual(self.runtime.disconnected, ["2001"])
+        status_path = "/v1/accounts/2001"
+        status_response = self.client.get(status_path, headers=signed_headers("GET", status_path, nonce="status-after-disconnect-0001"))
+        self.assertEqual(status_response.json()["status"], "authorized")
+        self.assertEqual(self.runtime.connect_calls, [])
 
 
     def test_connect_returns_a_telegram_deep_link_not_a_qr_image(self):
