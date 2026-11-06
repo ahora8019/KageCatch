@@ -729,7 +729,7 @@ test("Telegram bot menus explain Catch and target bot readiness without claiming
 
 test("settings callback is reachable and clearly separates unavailable controls", () => {
   const settings = resolveCallback("settings:open");
-  assert.match(settings.text, /تنظیمات Catch/);
+  assert.match(settings.text, /⚙️ تنظیمات/);
   assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
 });
 
