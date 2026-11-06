@@ -382,7 +382,7 @@ test("owner broadcast collects a draft, previews it, and sends only to active me
   const deliveries = calls.filter((c) => c.method === "sendMessage" && c.payload.chat_id !== 1001);
   assert.deepEqual(deliveries.map((c) => c.payload.chat_id), [2001]);
   assert.equal(deliveries[0].payload.text, "سلام اعضای KageCatch");
-  assert.ok(calls.some((c) => c.method === "sendMessage" && c.payload.chat_id === 1001 && /ارسال همگانی تمام شد/.test(c.payload.text)));
+  assert.ok(calls.some((c) => c.method === "editMessageText" && c.payload.chat_id === 1001 && /ارسال همگانی تمام شد/.test(c.payload.text)));
 });
 
 test("broadcast draft is available only to the owner and supports cancellation", async () => {
