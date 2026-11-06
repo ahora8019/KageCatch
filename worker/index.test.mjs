@@ -589,3 +589,45 @@ test("Worker does not call Core for forged Mini App identity", async () => {
   assert.equal(response.status, 401);
   assert.equal(called, false);
 });
+
+
+test("Worker exposes the Telegram deep-link flow only to a verified Mini App user", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  await store.fetch(new Request("https://do.internal/register", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 2001, ownerTelegramId: "7135051954" }),
+  }));
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const botToken = "test-bot-token";
+  const coreSecret = "kagecatch-core-test-secret-32-bytes";
+  const initData = makeWebAppInitData(botToken, { id: 2001, first_name: "Member" });
+  let observed;
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/connect", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ initData }),
+  }), {
+    TELEGRAM_BOT_TOKEN: botToken, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding,
+    CORE_API_URL: "https://core.example.test", CORE_API_SECRET: coreSecret,
+    FETCH: async (url, init) => {
+      observed = { url, method: init.method };
+      return new Response(JSON.stringify({ status: "pending", login_url: "tg://login?token=one-time", expires_in: 30 }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(observed.url, "https://core.example.test/v1/accounts/2001/connect");
+  assert.equal(observed.method, "POST");
+  const body = await response.json();
+  assert.equal(body.login_url, "tg://login?token=one-time");
+  assert.equal(body.status, "pending");
+});
+
+test("Mini App account UI offers a Telegram deep link and does not ask for OTP or 2FA", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
+  const html = await response.text();
+  assert.match(html, /account-connect/);
+  assert.match(html, /tg:\/\/login/);
+  assert.match(html, /رمز دومرحله‌ای را دریافت نمی‌کند/);
+  assert.doesNotMatch(html, /name=["'](?:otp|password|code)["']/i);
+});
