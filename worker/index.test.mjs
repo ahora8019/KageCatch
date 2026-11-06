@@ -532,3 +532,60 @@ test("Mini App session role is read from the registry, not from client-supplied 
   await post("/manage-user", { telegramUserId: 2001, action: "block" });
   assert.equal((await request()).status, 403);
 });
+
+
+test("Worker proxies account status to Core with an HMAC signature and trusted Telegram ID", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  await store.fetch(new Request("https://do.internal/register", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 2001, ownerTelegramId: "7135051954" }),
+  }));
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const botToken = "test-bot-token";
+  const coreSecret = "kagecatch-core-test-secret-32-bytes";
+  const initData = makeWebAppInitData(botToken, { id: 2001, first_name: "Member" });
+  let coreRequest;
+  const env = {
+    TELEGRAM_BOT_TOKEN: botToken,
+    OWNER_TELEGRAM_ID: "7135051954",
+    CONNECT_LINKS: binding,
+    CORE_API_URL: "https://core.example.test",
+    CORE_API_SECRET: coreSecret,
+    FETCH: async (url, init) => {
+      coreRequest = { url, method: init.method, headers: init.headers };
+      const timestamp = init.headers["X-KageCatch-Timestamp"];
+      const nonce = init.headers["X-KageCatch-Nonce"];
+      const bodyHash = createHmac("sha256", "").update("").digest("hex");
+      const message = [timestamp, nonce, "GET", "/v1/accounts/2001", bodyHash].join("\\n");
+      const expected = createHmac("sha256", coreSecret).update(message).digest("hex");
+      assert.equal(init.headers["X-KageCatch-Signature"], expected);
+      return new Response(JSON.stringify({ telegram_user_id: 2001, status: "not_connected", session_saved: false, connected: false }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/status", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, telegram_user_id: 7135051954 }),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.equal(coreRequest.url, "https://core.example.test/v1/accounts/2001");
+  assert.equal(coreRequest.method, "GET");
+  assert.equal((await response.json()).status, "not_connected");
+});
+
+test("Worker does not call Core for forged Mini App identity", async () => {
+  let called = false;
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/status", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData: "user=%7B%22id%22%3A2001%7D&auth_date=1&hash=deadbeef" }),
+  }), {
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    CORE_API_URL: "https://core.example.test",
+    CORE_API_SECRET: "kagecatch-core-test-secret-32-bytes",
+    FETCH: async () => { called = true; return new Response("{}", { status: 200 }); },
+  });
+  assert.equal(response.status, 401);
+  assert.equal(called, false);
+});
