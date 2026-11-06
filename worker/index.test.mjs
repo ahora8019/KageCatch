@@ -170,7 +170,7 @@ test("connection landing page consumes the matching link on explicit POST", asyn
     body: JSON.stringify({ telegramUserId: 445566778, ttlSeconds: 300 }),
   }));
   const { token } = await created.json();
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: store.fetch.bind(store) }) };
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const form = new FormData();
   form.set("token", token);
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/" + token, { method: "POST", body: form }), { CONNECT_LINKS: binding });
