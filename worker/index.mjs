@@ -409,6 +409,14 @@ async function handleWebhook(request, env) {
       await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⛔ این بخش فقط برای Owner است." });
       return new Response("OK", { status: 200 });
     }
+    if (command === "/admin") {
+      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "👑 پنل مدیریت KageCatch", reply_markup: buildRoleMenu("OWNER") });
+      return new Response("OK", { status: 200 });
+    }
+    if (command === "/status" && role === "MEMBER") {
+      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "📊 وضعیت حساب شما در KageCatch\\n\\nنقش: MEMBER\\nدسترسی: فعال\\nمدیریت حساب‌ها و آمار شخصی از پنل در دسترس است.", reply_markup: buildRoleMenu("MEMBER") });
+      return new Response("OK", { status: 200 });
+    }
     const reply = commandReply(message.text);
     if (reply) {
       try { await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply, ...(command === "/status" || command === "/help" ? { reply_markup: buildRoleMenu(role) } : {}) }); }
