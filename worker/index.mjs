@@ -3,6 +3,7 @@ const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.6.0";
 const CONNECTION_LINK_TTL_SECONDS = 300;
 const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
+const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -40,6 +41,7 @@ async function telegramApi(env, method, payload = {}) {
 
 export function buildRoleMenu(role = "MEMBER") {
   const memberRows = [
+    [{ text: "🌸 پنل حرفه‌ای", web_app: { url: PANEL_URL } }],
     [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
     [{ text: "👤 حساب‌های متصل من", callback_data: "account:list" }],
     [{ text: "📊 آمار من", callback_data: "stats:open" }, { text: "🔒 امنیت حساب من", callback_data: "security:open" }],
@@ -61,6 +63,7 @@ export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
 
 export function buildStartMenu(role = "MEMBER") {
   const rows = [
+    [{ text: "🌸 پنل حرفه‌ای", web_app: { url: PANEL_URL } }],
     [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
     [{ text: "📊 وضعیت سرویس", callback_data: "home:status" }],
     [{ text: "❓ راهنما", callback_data: "home:help" }],
@@ -171,39 +174,70 @@ async function health(env) {
 }
 
 function panelPage() {
-  return new Response(`<!doctype html>
-<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#111018"><title>KageCatch Control</title>
+  const html = \`<!doctype html><html lang="fa" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#100e17"><title>KageCatch | Dashboard</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#111018;color:#f6f0fa}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 80% 0,#3b1837 0,transparent 45%),#111018}
-main{max-width:850px;margin:auto;padding:36px 20px}.brand{color:#f5a6d6;letter-spacing:.08em;font-size:13px}
-h1{font-size:clamp(28px,6vw,44px);margin:8px 0}.sub{color:#bcb4c5;margin:0 0 28px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
-.card{border:1px solid #3a3041;background:#1b1722;border-radius:16px;padding:20px}
-.label{color:#bcb4c5;font-size:13px}.value{font-size:19px;margin-top:8px;font-weight:650}
-.status{display:inline-block;width:9px;height:9px;border-radius:50%;background:#e9b75c;margin-left:8px}
-.note{margin-top:20px;padding:16px;border-right:3px solid #e78cc5;background:#211a28;border-radius:8px;color:#d7cddd;line-height:1.9}
-footer{margin-top:28px;color:#817889;font-size:12px}
-</style></head><body><main>
-<div class="brand">KAGECATCH / CONTROL PLANE</div><h1>پنل کنترل KageCatch</h1>
-<p class="sub">وضعیت سرویس کنترل تلگرام و هستهٔ اجرایی</p>
-<section class="grid">
-<div class="card"><div class="label">وضعیت Worker</div><div class="value" id="worker"><span class="status"></span>در حال بررسی…</div></div>
-<div class="card"><div class="label">اتصال Webhook</div><div class="value" id="webhook">در حال بررسی…</div></div>
-<div class="card"><div class="label">بات تلگرام</div><div class="value" id="bot">در حال بررسی…</div></div>
-<div class="card"><div class="label">Python Core</div><div class="value" id="core">هنوز متصل نیست</div></div>
-</section>
-<div class="note">این پنل فعلاً وضعیت Control Plane را نمایش می‌دهد. اجرای Catch و مدیریت نشست‌ها تا اتصال امن Python Core فعال نیست.</div>
-<footer>KageCatch · Worker v${VERSION}</footer></main>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#100e17;color:#f7f0fa;--panel:#1a1722;--line:#382e40;--pink:#ed9dcc;--muted:#a99db0;--green:#82d5ae;--amber:#e8bd75}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 80% 0,#48233e 0,transparent 40%),#100e17}
+button{font:inherit;color:inherit;cursor:pointer}.shell{max-width:1380px;margin:auto;padding:22px;display:grid;grid-template-columns:230px 1fr;gap:20px}
+aside{height:calc(100vh - 44px);min-height:600px;position:sticky;top:22px;background:#1a1722eF;border:1px solid var(--line);border-radius:22px;padding:20px 14px;display:flex;flex-direction:column}
+.brand{display:flex;gap:11px;align-items:center;padding:5px 7px 25px}.logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(140deg,#f2b5da,#a96d9e);display:grid;place-items:center;color:#261629;font-size:22px}.brand b{letter-spacing:.12em;font-size:15px}.brand small{display:block;color:var(--muted);font-size:9px;letter-spacing:.16em;margin-top:3px}
+.nav-label{color:#796f83;font-size:10px;letter-spacing:.13em;padding:12px}.nav{display:grid;gap:5px}.nav button{background:none;border:1px solid transparent;border-radius:12px;padding:12px;text-align:right;color:#b9adbf;font-size:12px}.nav button.active,.nav button:hover{background:#302438;border-color:#4a364c;color:#ffe4f3}.nav button.active{box-shadow:inset -2px 0 var(--pink)}.profile{margin-top:auto;border-top:1px solid var(--line);padding:16px 8px 0;color:var(--muted);font-size:10px;line-height:1.9}
+main{min-width:0}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:4px 0 24px}.eyebrow{font-size:10px;letter-spacing:.16em;color:var(--pink)}h1{font-size:clamp(23px,3vw,32px);margin:7px 0}p{color:var(--muted);font-size:12px;margin:0;line-height:1.9}.pill{border:1px solid #385646;background:#1b2b24;color:var(--green);border-radius:99px;padding:9px 12px;font-size:10px;white-space:nowrap}
+.view{display:none}.view.active{display:block}.hero{padding:24px;border:1px solid #583a51;border-radius:20px;background:linear-gradient(115deg,#38243a,#211b2b 75%);margin-bottom:15px;position:relative;overflow:hidden}.hero:after{content:"🌸";position:absolute;left:25px;top:5px;font-size:90px;opacity:.1}.hero h2{font-size:20px;margin:8px 0}.actions{display:flex;gap:9px;margin-top:15px;flex-wrap:wrap}.primary,.secondary{border-radius:11px;padding:10px 14px;font-size:11px;border:1px solid transparent}.primary{background:var(--pink);color:#291927;font-weight:700}.secondary{background:#ffffff08;border-color:#59455c}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:15px}.stat,.card{background:#1a1722;border:1px solid var(--line);border-radius:16px;padding:16px}.stat label{font-size:10px;color:var(--muted)}.stat strong{display:block;font-size:25px;margin:12px 0 3px}.stat small{font-size:9px;color:#8d8297}
+.columns{display:grid;grid-template-columns:1.2fr 1fr;gap:13px}.card h3{font-size:13px;margin:0 0 14px}.service,.target{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#15131c;border:1px solid #302938;border-radius:12px;padding:12px;margin-top:9px}.service b,.target b{display:block;font-size:11px}.service small,.target small{display:block;color:var(--muted);font-size:9px;margin-top:4px}.tag{font-size:9px;border-radius:99px;padding:6px 8px;white-space:nowrap}.ok{background:#1d3028;color:var(--green)}.wait{background:#352b20;color:var(--amber)}.off{background:#30232a;color:#d9a0ad}
+.empty{padding:34px 12px;text-align:center;color:var(--muted);font-size:11px;line-height:2}.empty b{display:block;color:#f2e4f4;font-size:13px;margin:8px}.notice{margin-top:13px;padding:13px;background:#241c2b;border:1px solid #4a394e;border-radius:12px;color:#cdbfd1;font-size:10px;line-height:1.9}
+footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;padding:20px 3px}.mobile{display:none}
+@media(max-width:850px){.shell{display:block;padding:15px}aside{display:none}.stats{grid-template-columns:repeat(2,1fr)}.columns{grid-template-columns:1fr}.mobile{display:flex;position:fixed;z-index:5;bottom:9px;left:9px;right:9px;justify-content:space-around;background:#211b2bf2;border:1px solid #4a394e;border-radius:16px;padding:8px;backdrop-filter:blur(16px)}.mobile button{border:0;background:none;color:#b9adbf;font-size:10px;display:grid;gap:3px}.mobile button.active{color:var(--pink)}main{padding-bottom:80px}}
+@media(max-width:480px){.shell{padding:12px}.top{margin:3px 0 15px}.top h1{font-size:22px}.hero{padding:18px}.hero h2{font-size:17px}.stat,.card{padding:13px}.stat strong{font-size:22px}.pill{font-size:9px;padding:8px}}
+</style></head><body>
+<div class="shell"><aside aria-label="ناوبری اصلی">
+<div class="brand"><div class="logo">🌸</div><div><b>KAGECATCH</b><small>CONTROL CENTER</small></div></div>
+<div class="nav-label">WORKSPACE</div><nav class="nav" aria-label="بخش‌های پنل">
+<button class="active" data-view="overview">⌂　نمای کلی</button><button data-view="accounts">♙　حساب‌های متصل</button><button data-view="catcher">✧　تنظیمات Catch</button><button data-view="activity">◷　تاریخچه عملیات</button><button data-view="security">⬡　امنیت و نشست‌ها</button><button data-view="settings">⚙　تنظیمات</button></nav>
+<div class="nav-label">MANAGEMENT</div><nav class="nav"><button data-view="admin">♛　مدیریت سامانه</button></nav>
+<div class="profile">حساب تلگرام<br>احراز هویت امن Mini App در مرحله بعد متصل می‌شود</div></aside>
+<main><header class="top"><div><div class="eyebrow">KAGECATCH / DASHBOARD</div><h1 id="title">داشبورد کنترل</h1><p>مرکز مدیریت حساب‌ها و عملیات Catch</p></div><span class="pill" id="health">● در حال بررسی اتصال</span></header>
+<section class="view active" id="view-overview">
+<div class="hero"><div class="eyebrow">WELCOME TO KAGECATCH</div><h2>همه‌چیز برای شروع آماده می‌شود.</h2><p>حساب‌ها، مقصدهای Catch، عملکرد و امنیت نشست‌ها را از یک مرکز مدیریت کن. اتصال حساب و اجرای خودکار پس از راه‌اندازی امن Python Core فعال می‌شود.</p><div class="actions"><button class="primary" data-view="accounts">مدیریت حساب‌ها</button><button class="secondary" data-view="catcher">تنظیمات Catch</button></div></div>
+<div class="stats">
+<div class="stat"><label>حساب‌های متصل</label><strong>—</strong><small>پس از اتصال Core</small></div>
+<div class="stat"><label>Catch امروز</label><strong>—</strong><small>هنوز عملیات زنده ثبت نشده</small></div>
+<div class="stat"><label>نرخ موفقیت</label><strong>—</strong><small>نیازمند داده تأییدشده</small></div>
+<div class="stat"><label>Python Core</label><strong id="core">Offline</strong><small>اتصال در مرحله بعد</small></div></div>
+<div class="columns"><section class="card"><h3>وضعیت اجزای سامانه</h3>
+<div class="service"><div><b>Control Worker</b><small>درگاه کنترل تلگرام</small></div><span class="tag wait" id="worker-tag">در حال بررسی</span></div>
+<div class="service"><div><b>Python Core</b><small>مدیریت نشست و اجرای Catch</small></div><span class="tag off">متصل نیست</span></div>
+<div class="service"><div><b>Recognition Engine</b><small>تشخیص تصویر و ویدیو</small></div><span class="tag off">در انتظار توسعه</span></div>
+<div class="service"><div><b>Catch Engine</b><small>ارسال و تأیید عملیات</small></div><span class="tag wait">آماده‌سازی</span></div></section>
+<section class="card"><h3>بات‌های مقصد</h3>
+<div class="target"><div><b>HentaCatcherBot</b><small>Image · /catch</small></div><span class="tag ok">پیکربندی‌شده</span></div>
+<div class="target"><div><b>Character_Catcher_Bot</b><small>Image · /catch</small></div><span class="tag ok">پیکربندی‌شده</span></div>
+<div class="target"><div><b>SenpaiCatcherBot</b><small>Video · /pick</small></div><span class="tag off">متوقف</span></div></section></div></section>
+<section class="view" id="view-accounts"><div class="card"><h3>حساب‌های تلگرام</h3><div class="empty">♙<b>هنوز حسابی متصل نشده است</b>اتصال امن پس از تکمیل handoff رسمی تلگرام و API هسته اجرایی فعال می‌شود.<br>کد ورود یا رمز دومرحله‌ای را در بات یا این صفحه وارد نکن.</div></div></section>
+<section class="view" id="view-catcher"><div class="card"><h3>تنظیمات Catch</h3><div class="service"><div><b>حداقل اطمینان تشخیص</b><small>Confidence threshold</small></div><span class="tag wait">قفل‌شده</span></div><div class="service"><div><b>محدودیت عملیات</b><small>Quota per account</small></div><span class="tag wait">قفل‌شده</span></div><div class="service"><div><b>جلوگیری از تکرار</b><small>Duplicate protection</small></div><span class="tag wait">در انتظار Core</span></div><div class="service"><div><b>تأیید نتیجه</b><small>Target response verifier</small></div><span class="tag wait">در انتظار Core</span></div><div class="notice">این تنظیمات تا اتصال Core فقط نمایشی‌اند و هیچ عملیات Catch اجرا نمی‌کنند.</div></div></section>
+<section class="view" id="view-activity"><div class="card"><h3>تاریخچه عملیات</h3><div class="empty">◷<b>هنوز رویدادی ثبت نشده است</b>پس از راه‌اندازی Core، نتیجه تأییدشده هر عملیات اینجا نمایش داده می‌شود.</div></div></section>
+<section class="view" id="view-security"><div class="card"><h3>امنیت و نشست‌ها</h3><div class="service"><div><b>رمزنگاری Session</b><small>Fernet encryption at rest</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>مدیریت نشست‌ها</b><small>قطع و لغو دسترسی</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>گزارش دسترسی</b><small>Audit trail</small></div><span class="tag wait">نیازمند Core</span></div><div class="notice">کد ورود، رمز دومرحله‌ای و StringSession از طریق چت بات دریافت نمی‌شوند.</div></div></section>
+<section class="view" id="view-settings"><div class="card"><h3>تنظیمات عمومی</h3><div class="empty">⚙<b>تنظیمات هنوز فعال نیستند</b>زبان، اعلان‌ها و ترجیحات Catch پس از احراز هویت Mini App فعال می‌شوند.</div></div></section>
+<section class="view" id="view-admin"><div class="card"><h3>مدیریت سامانه</h3><div class="empty">♛<b>بخش مدیریت محافظت شده است</b>نقش Owner باید از داده معتبر تلگرام و سمت سرور تعیین شود؛ احراز هویت Mini App در مرحله بعد متصل می‌شود.</div></div></section>
+<footer><span>KageCatch · Control Center</span><span>Worker v0.6.0 · UI foundation</span></footer></main></div>
+<nav class="mobile" aria-label="ناوبری موبایل"><button class="active" data-view="overview">⌂<span>خانه</span></button><button data-view="accounts">♙<span>حساب‌ها</span></button><button data-view="catcher">✧<span>Catch</span></button><button data-view="activity">◷<span>رویدادها</span></button><button data-view="security">⬡<span>امنیت</span></button></nav>
 <script>
-fetch('/health',{cache:'no-store'}).then(r=>r.json()).then(s=>{
-document.querySelector('#worker').textContent=s.status||'نامشخص';
-document.querySelector('#webhook').textContent=s.telegram_webhook||'نامشخص';
-document.querySelector('#bot').textContent=s.bot?.username?'@'+s.bot.username:'نامشخص';
-document.querySelector('#core').textContent=s.python_core==='connected'?'متصل':'هنوز متصل نیست';
-}).catch(()=>{document.querySelector('#worker').textContent='عدم دسترسی';});
-</script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" } });
+const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}
+const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
+function showView(name){document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("[data-view]").forEach(x=>x.classList.toggle("active",x.dataset.view===name));document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:"smooth"});}
+document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
+async function refresh(){const pill=document.querySelector("#health"),tag=document.querySelector("#worker-tag");try{const r=await fetch("/health",{cache:"no-store"});const s=await r.json();const ok=r.ok&&s.status==="webhook_ready";pill.textContent=ok?"● Control Plane فعال":"● نیازمند بررسی";pill.style.color=ok?"var(--green)":"var(--amber)";tag.textContent=ok?"فعال":"اختلال";tag.className="tag "+(ok?"ok":"wait");}catch{pill.textContent="● عدم دسترسی";tag.textContent="نامشخص";tag.className="tag off";}}
+refresh();
+</script></body></html>\`;
+  return new Response(html, { headers: {
+    "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+    "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org",
+  }});
 }
 
 export class ConnectionLinkStore {
