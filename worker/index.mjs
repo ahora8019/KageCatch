@@ -176,11 +176,10 @@ async function telegramApi(env, method, payload = {}) {
 
 export function buildRoleMenu(role = "MEMBER") {
   const memberRows = [
-    [{ text: "🌸 پنل حرفه‌ای", web_app: { url: PANEL_URL } }],
-    [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
-    [{ text: "👤 حساب‌های متصل من", callback_data: "account:list" }],
-    [{ text: "📊 آمار من", callback_data: "stats:open" }, { text: "🔒 امنیت حساب من", callback_data: "security:open" }],
-    [{ text: "❌ قطع اتصال حساب من", callback_data: "account:disconnect" }],
+    [{ text: "🎯 کنترل Catch", callback_data: "catch:open" }, { text: "🤖 بات‌های مقصد", callback_data: "bots:open" }],
+    [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }, { text: "👤 حساب متصل من", callback_data: "account:list" }],
+    [{ text: "📊 آمار من", callback_data: "stats:open" }, { text: "⚙️ تنظیمات", callback_data: "settings:open" }],
+    [{ text: "🔒 امنیت حساب", callback_data: "security:open" }, { text: "❌ قطع اتصال", callback_data: "account:disconnect" }],
     [{ text: "❓ راهنما", callback_data: "help:open" }],
   ];
   if (role === "OWNER") return { inline_keyboard: [
@@ -197,14 +196,7 @@ export function buildRoleMenu(role = "MEMBER") {
 export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
 
 export function buildStartMenu(role = "MEMBER") {
-  const rows = [
-    [{ text: "🌸 پنل حرفه‌ای", web_app: { url: PANEL_URL } }],
-    [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
-    [{ text: "📊 وضعیت سرویس", callback_data: "home:status" }],
-    [{ text: "❓ راهنما", callback_data: "home:help" }],
-  ];
-  if (role === "OWNER") rows.unshift([{ text: "👑 پنل مدیریت", callback_data: "home:admin" }]);
-  return { inline_keyboard: rows };
+  return buildRoleMenu(role);
 }
 
 export function resolveRole(userId, ownerTelegramId, storedRole = "MEMBER", status = "active") {
@@ -224,9 +216,19 @@ export function resolveCallback(data) {
       };
     case "account:list":
       return { text: "👤 حساب‌های متصل\n\nفعلاً حسابی ثبت نشده است؛ هسته اجرایی هنوز متصل نیست.", keyboard: BACK_MENU };
+    case "catch:open":
+      return {
+        text: "🎯 کنترل Catch\n\nوضعیت: غیرفعال\nتشخیص Spawn و اجرای خودکار هنوز به هسته اجرایی متصل نشده‌اند. تا تکمیل تست‌ها هیچ Catch زنده‌ای انجام نمی‌شود.",
+        keyboard: { inline_keyboard: [[{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }], [{ text: "⚙️ تنظیمات Catch", callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] },
+      };
+    case "bots:open":
+      return {
+        text: "🤖 بات‌های مقصد\n\n• HentaCatcherBot — تصویر · /catch — پیکربندی‌شده؛ تست زنده نشده\n• Character_Catcher_Bot — تصویر · /catch — پیکربندی‌شده؛ تست زنده نشده\n• SenpaiCatcherBot — ویدیو · /pick — وضعیت گزارش‌شده، نیازمند راستی‌آزمایی\n\nهنوز عملیات زنده اجرا نمی‌شود.",
+        keyboard: { inline_keyboard: [[{ text: "🎯 کنترل Catch", callback_data: "catch:open" }], ...BACK_MENU.inline_keyboard] },
+      };
     case "settings:open":
       return {
-        text: "⚙️ تنظیمات\n\nتنظیمات حساب و Catch پس از اتصال هسته اجرایی فعال می‌شوند.",
+        text: "⚙️ تنظیمات KageCatch\n\nتنظیمات Catch، محدودیت‌ها و رفتار تشخیص پس از راه‌اندازی و اتصال هسته اجرایی فعال می‌شوند. فعلاً هیچ تنظیم عملیاتی قابل تغییر نیست.",
         keyboard: BACK_MENU,
       };
     case "stats:open":
@@ -240,7 +242,7 @@ export function resolveCallback(data) {
       return { text: "❌ حساب متصلی ثبت نشده است.", keyboard: BACK_MENU };
     case "help:open":
       return {
-        text: "❓ راهنمای KageCatch\n\nاز دکمه‌های منوی اصلی برای مدیریت حساب، تنظیمات، آمار و امنیت استفاده کن.\nدستورهای /status و /help هم به‌عنوان میانبر در دسترس‌اند.",
+        text: "❓ راهنمای KageCatch\n\n🎯 کنترل Catch — مشاهده وضعیت اجرای خودکار\n🤖 بات‌های مقصد — فهرست بات‌های پشتیبانی‌شده\n👤 حساب متصل — مدیریت اتصال حساب\n📊 آمار من — آمار تأییدشده\n⚙️ تنظیمات — تنظیمات حساب و Catch\n\nمیانبرها: /start منوی اصلی · /status وضعیت · /help راهنما · /admin مدیریت مالک.",
         keyboard: BACK_MENU,
       };
     case "menu:main":
@@ -254,13 +256,13 @@ export function commandReply(text) {
   const command = (text || "").trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
   if (command === "/start") {
     return {
-      text: "🌸 خوش آمدی به KageCatch\n\nبرای ادامه یکی از گزینه‌ها را انتخاب کن:",
+      text: "🌸 خوش آمدی به KageCatch\n\nاز منوی زیر برای کنترل Catch، بات‌های مقصد و حساب تلگرامت استفاده کن:",
       reply_markup: buildStartMenu(),
     };
   }
   if (command === "/panel") {
     return {
-      text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:",
+      text: "🧩 منوی اصلی KageCatch\n\nبخش موردنظرت را انتخاب کن:",
       reply_markup: buildMainMenu(),
     };
   }
