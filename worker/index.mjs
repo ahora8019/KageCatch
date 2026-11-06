@@ -1,6 +1,6 @@
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const CONNECTION_LINK_TTL_SECONDS = 300;
 const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
 
@@ -59,6 +59,16 @@ export function buildRoleMenu(role = "MEMBER") {
 
 export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
 
+export function buildStartMenu(role = "MEMBER") {
+  const rows = [
+    [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
+    [{ text: "📊 وضعیت سرویس", callback_data: "home:status" }],
+    [{ text: "❓ راهنما", callback_data: "home:help" }],
+  ];
+  if (role === "OWNER") rows.unshift([{ text: "👑 پنل مدیریت", callback_data: "home:admin" }]);
+  return { inline_keyboard: rows };
+}
+
 export function resolveRole(userId, ownerTelegramId, storedRole = "MEMBER", status = "active") {
   if (status === "blocked") return "BLOCKED";
   if (!Number.isSafeInteger(userId)) return "DENIED";
@@ -96,7 +106,7 @@ export function resolveCallback(data) {
         keyboard: BACK_MENU,
       };
     case "menu:main":
-      return { text: "🌸 پنل کنترل KageCatch\n\nیک بخش را انتخاب کن:", keyboard: buildMainMenu() };
+      return { text: "🌸 خوش آمدی به KageCatch\n\nاز گزینه‌های زیر یکی را انتخاب کن:", keyboard: buildStartMenu() };
     default:
       return { text: "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.", keyboard: BACK_MENU, alert: true };
   }
@@ -104,9 +114,15 @@ export function resolveCallback(data) {
 
 export function commandReply(text) {
   const command = (text || "").trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
-  if (command === "/start" || command === "/panel") {
+  if (command === "/start") {
     return {
-      text: "🌸 پنل کنترل KageCatch\n\nیک بخش را انتخاب کن:",
+      text: "🌸 خوش آمدی به KageCatch\n\nبرای ادامه یکی از گزینه‌ها را انتخاب کن:",
+      reply_markup: buildStartMenu(),
+    };
+  }
+  if (command === "/panel") {
+    return {
+      text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:",
       reply_markup: buildMainMenu(),
     };
   }
@@ -266,8 +282,7 @@ async function createConnectionLink(env, telegramUserId) {
   const response = await stub.fetch('https://connect-links.internal/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ telegramUserId, ttlSeconds: CONNECTION_LINK_TTL_SECONDS }) });
   if (!response.ok) throw new Error('Connection link service unavailable');
   const result = await response.json();
-  return CONNECTION_LINK_BASE + '/connect/' + encodeURIComponent(result.token);
-}
+  return CONNECTION_LINK_BASE + '/connect/' + encodeURIComponent(result.token);}
 
 async function registryRequest(env, path, payload) {
   if (!env.CONNECT_LINKS) throw new Error('User registry unavailable');
@@ -325,9 +340,23 @@ async function handleCallback(callback, env) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ این بخش فقط برای Owner است.", show_alert: true });
     return;
   }
-  let result = callback.data?.startsWith('owner:')
-    ? await handleOwnerCallback(callback, env)
-    : resolveCallback(callback.data);
+  let result;
+  if (callback.data === "home:panel") {
+    result = { text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:", keyboard: buildRoleMenu(role) };
+  } else if (callback.data === "home:admin" && role === "OWNER") {
+    result = { text: "👑 پنل مدیریت KageCatch\n\nبخش مدیریتی موردنظرت را انتخاب کن:", keyboard: buildRoleMenu("OWNER") };
+  } else if (callback.data === "home:status") {
+    result = { text: "📊 وضعیت KageCatch\n\nControl Worker: فعال\nPython Core: متصل نیست\nاتصال حساب: هنوز فعال نشده\nاجرای Catch: غیرفعال", keyboard: { inline_keyboard: [[{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
+  } else if (callback.data === "home:help") {
+    result = { text: "❓ راهنمای KageCatch\n\nبرای ورود به امکانات، پنل کاربری را انتخاب کن. دستورهای /panel و /status هم میانبر هستند.", keyboard: { inline_keyboard: [[{ text: "🧩 پنل کاربری", callback_data: "home:panel" }], [{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
+  } else if (callback.data?.startsWith("owner:")) {
+    result = await handleOwnerCallback(callback, env);
+  } else {
+    result = resolveCallback(callback.data);
+    if (callback.data === "menu:main") {
+      result = { text: "🌸 خوش آمدی به KageCatch\n\nبرای ادامه یکی از گزینه‌ها را انتخاب کن:", keyboard: buildStartMenu(role) };
+    }
+  }
   if (callback.data === 'account:connect') {
     try {
       const link = await createConnectionLink(env, callback.from.id);
@@ -393,7 +422,7 @@ async function handleWebhook(request, env) {
         const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, registered.role, registered.status);
         const reply = role === 'BLOCKED' || role === 'DENIED'
           ? { text: "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." }
-          : { text: role === 'OWNER' ? "👑 پنل مدیریت KageCatch\n\nخوش آمدی Owner؛ از اینجا کل سامانه را نظارت کن." : "🌸 پنل عضو KageCatch\n\nبه حساب و امکانات شخصی خودت دسترسی داری.", reply_markup: buildRoleMenu(role) };
+          : { text: role === 'OWNER' ? "🌸 خوش آمدی Owner؛ از منوی شروع بخش موردنظرت را انتخاب کن." : "🌸 خوش آمدی به KageCatch؛ برای ادامه یکی از گزینه‌ها را انتخاب کن.", reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role) };
         await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
       } catch { return new Response("User registry unavailable", { status: 503 }); }
       return new Response("OK", { status: 200 });
@@ -426,8 +455,7 @@ async function handleWebhook(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
+  async fetch(request, env) {    const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
     if (url.pathname.startsWith("/connect/")) return connectionLanding(request, env, decodeURIComponent(url.pathname.slice("/connect/".length)));
