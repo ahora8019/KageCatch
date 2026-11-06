@@ -281,7 +281,7 @@ footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;pa
 <section class="view" id="view-admin"><div class="card"><h3>مدیریت سامانه</h3><div class="empty">♛<b>بخش مدیریت محافظت شده است</b>نقش Owner باید از داده معتبر تلگرام و سمت سرور تعیین شود؛ احراز هویت Mini App در مرحله بعد متصل می‌شود.</div></div></section>
 <footer><span>KageCatch · Control Center</span><span>Worker v0.6.0 · UI foundation</span></footer></main></div>
 <nav class="mobile" aria-label="ناوبری موبایل"><button class="active" data-view="overview">⌂<span>خانه</span></button><button data-view="accounts">♙<span>حساب‌ها</span></button><button data-view="catcher">✧<span>Catch</span></button><button data-view="activity">◷<span>رویدادها</span></button><button data-view="security">⬡<span>امنیت</span></button></nav>
-<script>
+<script nonce="${nonce}">
 const tg=window.Telegram?.WebApp;if(tg){tg.ready();tg.expand();}
 let session=null;
 const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
@@ -294,7 +294,7 @@ authenticate();refresh();
   return new Response(html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
     "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
-    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org",
+    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org",
   }});
 }
 
