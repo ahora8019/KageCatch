@@ -10,6 +10,7 @@ from kagecatch.engine import (
 
 class FakeAdapter:
     source = "henta_catcher"
+    media_kind = "image"
 
     def __init__(self, verified=True):
         self.sent = []
@@ -92,6 +93,18 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
         self.adapter.verified = False
         result = await self.engine.handle_spawn("user-1", sample_spawn(), self.adapter)
         self.assertEqual(result.status, "unverified")
+
+    async def test_wrong_media_kind_is_rejected_before_quota_or_send(self):
+        spawn = Spawn(
+            source="henta_catcher",
+            chat_id=100,
+            message_id=201,
+            media_kind="video",
+            candidates=(Candidate("Sakura", 0.99),),
+        )
+        result = await self.engine.handle_spawn("user-1", spawn, self.adapter)
+        self.assertEqual(result.status, "media_mismatch")
+        self.assertEqual(self.adapter.sent, [])
 
     async def test_wrong_adapter_is_rejected(self):
         spawn = sample_spawn()
