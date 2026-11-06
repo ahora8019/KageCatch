@@ -12,7 +12,7 @@ from kagecatch.core_api import InMemoryNonceStore, create_app
 SECRET = "core-test-secret-0123456789abcdef"
 
 
-def signed_headers(method, path, body=b"", *, timestamp=None, nonce="test-nonce-0001", secret=SECRET):
+def signed_headers(method, path, body=b"", *, timestamp=None, nonce="test-nonce-00000001", secret=SECRET):
     timestamp = int(time.time()) if timestamp is None else timestamp
     body_hash = hashlib.sha256(body).hexdigest()
     message = f"{timestamp}\n{nonce}\n{method.upper()}\n{path}\n{body_hash}".encode()
@@ -101,7 +101,7 @@ class CoreApiTests(unittest.TestCase):
 
     def test_replayed_nonce_is_rejected(self):
         path = "/v1/health"
-        headers = signed_headers("GET", path, nonce="replay-me")
+        headers = signed_headers("GET", path, nonce="replay-me-00000001")
         self.assertEqual(self.client.get(path, headers=headers).status_code, 200)
         self.assertEqual(self.client.get(path, headers=headers).status_code, 409)
 
