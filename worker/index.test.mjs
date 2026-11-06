@@ -6,9 +6,12 @@ test("main menu is inline-first and exposes the agreed account controls", () => 
   const menu = buildMainMenu();
   const callbacks = menu.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.deepEqual(callbacks, [
+    "catch:open",
+    "bots:open",
     "account:connect",
     "account:list",
     "stats:open",
+    "settings:open",
     "security:open",
     "account:disconnect",
     "help:open",
@@ -33,12 +36,12 @@ test("unknown callback is rejected safely", () => {
   assert.equal(resolveCallback("account:unknown").alert, true);
 });
 
-test("/start opens a separate welcome menu instead of dropping users into the panel", () => {
+test("/start opens the native member dashboard directly", () => {
   const start = commandReply("/start");
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.deepEqual(callbacks, ["home:panel", "home:status", "home:help"]);
-  assert.equal(callbacks.includes("account:connect"), false);
-  assert.equal(callbacks.includes("owner:members"), false);
+  assert.ok(callbacks.includes("catch:open"));
+  assert.ok(callbacks.includes("bots:open"));
+  assert.ok(callbacks.includes("account:connect"));
 });
 
 test("/panel opens the member feature menu directly as an explicit choice", () => {
@@ -48,14 +51,17 @@ test("/panel opens the member feature menu directly as an explicit choice", () =
   assert.ok(callbacks.includes("account:list"));
 });
 
-test("owner start menu separates admin entry from member panel entry", () => {
+test("owner start menu combines owner controls with the native member dashboard", () => {
   const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.deepEqual(callbacks, ["home:admin", "home:panel", "home:status", "home:help"]);
+  assert.ok(callbacks.includes("owner:stats"));
+  assert.ok(callbacks.includes("owner:members"));
+  assert.ok(callbacks.includes("catch:open"));
+  assert.ok(callbacks.includes("bots:open"));
 });
 
 test("status and help remain available as slash-command shortcuts", () => {
   assert.match(commandReply("/status").text, /Python Core: متصل نیست/);
-  assert.match(commandReply("/help").text, /دکمه‌های منوی اصلی/);
+  assert.match(commandReply("/help").text, /کنترل Catch/);
 });
 
 
@@ -414,18 +420,10 @@ test("broadcast rejects empty or oversized text", async () => {
 });
 
 
-test("start menu exposes the professional Mini App without removing command shortcuts", () => {
-  const menu = buildStartMenu("MEMBER");
-  const buttons = menu.inline_keyboard.flat();
-  const app = buttons.find((button) => button.web_app?.url);
-  assert.equal(app?.text, "🌸 پنل حرفه‌ای");
-  assert.equal(app.web_app.url, "https://kagecatch-control.ahora-project.workers.dev/panel");
-});
-
-test("role menus expose the same Mini App to members and owners", () => {
+test("Telegram menus stay native and do not redirect members into the Mini App", () => {
   for (const role of ["MEMBER", "OWNER"]) {
     const buttons = buildRoleMenu(role).inline_keyboard.flat();
-    assert.ok(buttons.some((button) => button.web_app?.url === "https://kagecatch-control.ahora-project.workers.dev/panel"));
+    assert.equal(buttons.some((button) => button.web_app), false);
   }
 });
 
