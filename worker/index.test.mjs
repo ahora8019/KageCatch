@@ -249,8 +249,9 @@ test("panel exposes the secure phone, code, and optional 2FA connection flow", a
   const html = await response.text();
   assert.match(html, /api\/account\/connect\/code/);
   assert.match(html, /api\/account\/connect\/password/);
-  assert.match(html, /در حال درخواست کد ورود از Telegram/);
-  assert.match(html, /رمز دومرحله‌ای تلگرام/);
+  assert.match(html, /ارسال کد/);
+  assert.match(html, /کد یک‌بارمصرف ارسال‌شده از طرف Telegram/);
+  assert.match(html, /رمز دومرحله‌ای/);
 });
 
 
