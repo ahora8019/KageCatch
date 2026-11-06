@@ -230,6 +230,7 @@ async function health(env) {
 }
 
 function panelPage() {
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const html = \`<!doctype html><html lang="fa" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#100e17"><title>KageCatch | Dashboard</title>
