@@ -654,6 +654,9 @@ test("Mini App account UI uses accessible inline login steps instead of blocking
   assert.equal(html.includes("window.prompt("), false);
   assert.match(html, /@keyframes/);
   assert.doesNotMatch(html, /login_url/);
+  const script = html.match(/<script nonce="[^"]+">([\\s\\S]*?)<\\/script>/)?.[1];
+  assert.ok(script, "Mini App script must be present");
+  assert.doesNotThrow(() => new Function(script), "Mini App script must parse before it is served");
 });
 
 
