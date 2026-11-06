@@ -1,6 +1,6 @@
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
-const VERSION = "0.7.0";
+const VERSION = "0.7.1";
 const CONNECTION_LINK_TTL_SECONDS = 300;
 const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
 const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
@@ -304,7 +304,7 @@ async function health(env) {
       bot: { id: bot.id, username: bot.username, first_name: bot.first_name },
       pending_updates: webhook.pending_update_count ?? 0,
       last_telegram_error: webhook.last_error_message ?? null,
-      python_core: core.status === 200 && core.data?.status === "ready" ? "connected" : "not_connected",
+      python_core: core.status === 200 && core.data?.status === "ready" ? "connected" : core.status === 503 && core.data?.status === "degraded" ? "degraded" : "unreachable",
       version: VERSION,
     });
   } catch {
@@ -356,7 +356,7 @@ footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;pa
 <section class="card"><h3>بات‌های مقصد</h3>
 <div class="target"><div><b>HentaCatcherBot</b><small>Image · /catch</small></div><span class="tag ok">پیکربندی‌شده</span></div>
 <div class="target"><div><b>Character_Catcher_Bot</b><small>Image · /catch</small></div><span class="tag ok">پیکربندی‌شده</span></div>
-<div class="target"><div><b>SenpaiCatcherBot</b><small>Video · /pick</small></div><span class="tag off">متوقف</span></div></section></div></section>
+<div class="target"><div><b>SenpaiCatcherBot</b><small>Video · /pick</small></div><span class="tag wait">در دسترس · گزارش‌شده</span></div></section></div></section>
 <section class="view" id="view-accounts"><div class="card"><h3>حساب‌های تلگرام</h3><div class="empty" id="account-state">وضعیت حساب پس از احراز هویت و اتصال Core نمایش داده می‌شود.</div><div class="actions"><button class="primary" id="account-refresh">بررسی وضعیت</button><button class="secondary" id="account-disconnect" disabled>قطع اتصال</button><button class="secondary" id="account-reconnect" disabled>اتصال مجدد</button><button class="secondary" id="account-revoke" disabled>لغو دسترسی</button><button class="secondary" id="account-connect">اتصال حساب با لینک Telegram</button></div><a id="account-login-link" hidden rel="noreferrer" target="_top">باز کردن تلگرام برای تأیید</a><div class="notice">اتصال با پیوند رسمی یک‌بارمصرف Telegram انجام می‌شود؛ هیچ کد ورود یا رمز دومرحله‌ای در بات یا پنل دریافت نمی‌شود. کد ورود یا رمز دومرحله‌ای را در بات یا این صفحه وارد نکن.</div></div></section>
 <section class="view" id="view-catcher"><div class="card"><h3>تنظیمات Catch</h3><div class="service"><div><b>حداقل اطمینان تشخیص</b><small>Confidence threshold</small></div><span class="tag wait">قفل‌شده</span></div><div class="service"><div><b>محدودیت عملیات</b><small>Quota per account</small></div><span class="tag wait">قفل‌شده</span></div><div class="service"><div><b>جلوگیری از تکرار</b><small>Duplicate protection</small></div><span class="tag wait">در انتظار Core</span></div><div class="service"><div><b>تأیید نتیجه</b><small>Target response verifier</small></div><span class="tag wait">در انتظار Core</span></div><div class="notice">این تنظیمات تا اتصال Core فقط نمایشی‌اند و هیچ عملیات Catch اجرا نمی‌کنند.</div></div></section>
 <section class="view" id="view-activity"><div class="card"><h3>تاریخچه عملیات</h3><div class="empty">◷<b>هنوز رویدادی ثبت نشده است</b>پس از راه‌اندازی Core، نتیجه تأییدشده هر عملیات اینجا نمایش داده می‌شود.</div></div></section>
@@ -381,7 +381,7 @@ document.querySelector("#account-refresh").addEventListener("click",refreshAccou
 document.querySelector("#account-reconnect").addEventListener("click",()=>confirmAccountAction("/api/account/reconnect","حساب مجاز دوباره به Telegram متصل شود؟"));
 document.querySelector("#account-disconnect").addEventListener("click",()=>confirmAccountAction("/api/account/disconnect","اتصال فعال این حساب قطع شود؟"));
 document.querySelector("#account-revoke").addEventListener("click",()=>confirmAccountAction("/api/account/revoke","نشست ذخیره‌شده حذف و دسترسی این حساب لغو شود؟"));
-async function refresh(){const pill=document.querySelector("#health"),tag=document.querySelector("#worker-tag");try{const r=await fetch("/health",{cache:"no-store"});const s=await r.json();const ok=r.ok&&s.status==="webhook_ready";pill.textContent=ok?"● Control Plane فعال":"● نیازمند بررسی";pill.style.color=ok?"var(--green)":"var(--amber)";tag.textContent=ok?"فعال":"اختلال";tag.className="tag "+(ok?"ok":"wait");document.querySelector("#core").textContent=s.python_core==="connected"?"Online":"Offline";}catch{pill.textContent="● عدم دسترسی";tag.textContent="نامشخص";tag.className="tag off";document.querySelector("#core").textContent="Offline";}}
+async function refresh(){const pill=document.querySelector("#health"),tag=document.querySelector("#worker-tag");try{const r=await fetch("/health",{cache:"no-store"});const s=await r.json();const ok=r.ok&&s.status==="webhook_ready";pill.textContent=ok?"● Control Plane فعال":"● نیازمند بررسی";pill.style.color=ok?"var(--green)":"var(--amber)";tag.textContent=ok?"فعال":"اختلال";tag.className="tag "+(ok?"ok":"wait");const coreState=s.python_core||"unreachable";document.querySelector("#core").textContent=coreState==="connected"?"Online":coreState==="degraded"?"Degraded":"Offline";const coreTag=document.querySelector("#core-tag");if(coreTag){coreTag.textContent=coreState==="connected"?"متصل":coreState==="degraded"?"دسترسی برقرار · نیازمند پیکربندی":"عدم دسترسی";coreTag.className="tag "+(coreState==="connected"?"ok":coreState==="degraded"?"wait":"off");}}catch{pill.textContent="● عدم دسترسی";tag.textContent="نامشخص";tag.className="tag off";document.querySelector("#core").textContent="Offline";}}
 authenticate();refresh();
 </script></body></html>`;
   return new Response(html, { headers: {
