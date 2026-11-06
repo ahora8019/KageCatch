@@ -58,3 +58,12 @@ No real Telegram account has been authorized or tested. The bot-driven flow has 
 - Add live Telegram response listeners and verifiers for each target bot.
 - Add spawn ingestion and recognition (image/video frame extraction, catalog lookup, confidence calibration).
 - Add an authenticated, retry-safe Worker-to-Python queue contract and a deployed execution process.
+
+
+## Current implementation checkpoint
+
+- `CatchEngine` is disabled by default. It returns `disabled` without sending any command until an explicit enable flag is supplied by the execution layer.
+- `TelethonCatchAdapter` dispatches the configured `/catch {name}` command through an already-authorized user session. It rejects source/media mismatches and frozen targets.
+- Dispatch and success verification are separate. Without a target-specific response verifier, the adapter always reports the receipt as unverified; a sent command is never presented as a successful catch.
+- Target-specific response formats have not yet been validated against live bot replies. No catch command has been sent to a real target during this implementation.
+- Spawn ingestion and visual recognition are still separate remaining work; the engine currently receives normalized candidate names and confidence values.
