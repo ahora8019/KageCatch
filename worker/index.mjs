@@ -348,7 +348,7 @@ footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;pa
 #health{display:inline-flex;align-items:center;gap:7px}
 #health::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px #ffffff0a}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
-@media(max-width:850px){.shell{display:block;padding:15px}aside{display:none}.stats{grid-template-columns:repeat(2,1fr)}.columns{grid-template-columns:1fr}.mobile{display:flex;position:fixed;z-index:5;bottom:calc(9px + env(safe-area-inset-bottom));left:9px;right:9px;justify-content:flex-start;gap:4px;overflow-x:auto;background:#211b2bf2;border:1px solid #4a394e;border-radius:16px;padding:8px;backdrop-filter:blur(16px);scrollbar-width:none}.mobile::-webkit-scrollbar{display:none}.mobile button{flex:1 0 58px;min-width:58px;border:0;background:none;color:#b9adbf;font-size:10px;display:grid;justify-items:center;align-content:center;gap:3px;border-radius:10px;padding:7px 3px}.mobile button.active{color:var(--pink);background:#39283a}main{padding-bottom:92px}}
+@media(max-width:850px){.shell{display:block;padding:15px}aside{display:none}.stats{grid-template-columns:repeat(2,1fr)}.columns{grid-template-columns:1fr}.mobile{display:flex;position:fixed;z-index:5;bottom:calc(9px + env(safe-area-inset-bottom));left:9px;right:9px;justify-content:flex-start;gap:4px;overflow-x:auto;background:#211b2bf2;border:1px solid #4a394e;border-radius:16px;padding:8px;backdrop-filter:blur(16px);scrollbar-width:none}.mobile::-webkit-scrollbar{display:none}.mobile button{flex:1 0 58px;min-width:58px;border:0;background:none;color:#b9adbf;font-size:10px;display:grid;justify-items:center;align-content:center;gap:3px;border-radius:10px;padding:7px 3px}.mobile button.active{color:var(--pink);background:#39283a}main{padding-bottom:124px}}
 @media(max-width:480px){.shell{padding:12px}.top{margin:3px 0 15px}.top h1{font-size:22px}.hero{padding:18px}.hero h2{font-size:17px}.stat,.card{padding:13px}.stat strong{font-size:22px}.pill{font-size:9px;padding:8px}}
 
 /* Sakura motion system and secure login dialog */
@@ -397,8 +397,8 @@ let session=null;
 const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
 function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
-async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role");if(!tg?.initData){name.textContent="ورود از داخل تلگرام";role.textContent="پنل را از دکمه بات باز کن";return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok)throw new Error("auth");session=await response.json();name.textContent=session.user.first_name||"کاربر KageCatch";role.textContent=session.role==="OWNER"?"مالک سامانه":"عضو فعال";if(session.role==="OWNER"){document.querySelector("#admin-nav").hidden=false;document.querySelector("#admin-mobile").hidden=false;}refreshAccountStatus();}catch{name.textContent="احراز هویت ناموفق";role.textContent="از /start در بات دوباره وارد شو";}}
-async function accountApi(path,payload={}){if(!tg?.initData)throw Object.assign(new Error("telegram_auth_required"),{status:401});const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData,...payload}),cache:"no-store"});const data=await response.json().catch(()=>({error:"invalid_response"}));if(!response.ok)throw Object.assign(new Error(data.error||"core_error"),{status:response.status,data});return data;}
+async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role"),state=document.querySelector("#account-state");if(!tg?.initData){name.textContent="خوش اومدی!";role.textContent="برای اتصال حساب، پنل رو از داخل بات باز کن.";state.textContent="برای شروع، KageCatch رو از دکمهٔ داخل بات باز کن؛ بعدش می‌تونی حسابت رو وصل کنی.";return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok)throw new Error("auth");session=await response.json();name.textContent=session.user.first_name||"دوست KageCatch";role.textContent=session.role==="OWNER"?"مدیر KageCatch":"عضو KageCatch";if(session.role==="OWNER"){document.querySelector("#admin-nav").hidden=false;document.querySelector("#admin-mobile").hidden=false;}refreshAccountStatus();}catch{name.textContent="یه مشکلی پیش اومد";role.textContent="لطفاً پنل رو دوباره از داخل بات باز کن.";state.textContent="نتونستیم ورودت رو تأیید کنیم. از چت بات دوباره وارد پنل شو.";}}
+async function accountApi(path,payload={}){if(!tg?.initData||!session)throw Object.assign(new Error("telegram_auth_required"),{status:401});const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData,...payload}),cache:"no-store"});const data=await response.json().catch(()=>({error:"invalid_response"}));if(!response.ok)throw Object.assign(new Error(data.error||"core_error"),{status:response.status,data});return data;}
 async function refreshAccountStatus(){
   const state=document.querySelector("#account-state");
   const disconnect=document.querySelector("#account-disconnect");
@@ -415,7 +415,7 @@ async function refreshAccountStatus(){
     reconnect.disabled=!authorized;
     revoke.disabled=!authorized&&!connected;
   }catch(error){
-    state.textContent=error.status===503?"هستهٔ اجرایی هنوز آماده نیست.":error.status===401?"نشست Mini App منقضی شده؛ دوباره از بات بازش کن.":"بررسی وضعیت حساب ناموفق بود.";
+    state.textContent=error.status===503?"الان امکان اتصال نیست؛ یکم بعد دوباره امتحان کن.":error.status===401?"برای ادامه، پنل رو دوباره از داخل بات باز کن.":"نتونستیم وضعیت حسابت رو بگیریم؛ دوباره امتحان کن.";
     disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;
   }
 }
@@ -438,9 +438,9 @@ function setLoginStage(stage,message=""){
   const description=document.querySelector("#login-description");
   document.querySelector("#login-feedback").textContent=message;
   input.value="";
-  if(stage==="phone"){label.textContent="شماره تلفن";input.type="tel";input.inputMode="tel";input.autocomplete="tel";input.placeholder="+98912…";submit.textContent="ارسال کد";description.textContent="شماره تلفن را همراه کد کشور وارد کن.";}
-  if(stage==="code"){label.textContent="کد ورود تلگرام";input.type="text";input.inputMode="numeric";input.autocomplete="one-time-code";input.placeholder="کد ارسال‌شده";submit.textContent="تأیید کد";description.textContent="کد یک‌بارمصرف ارسال‌شده از طرف Telegram را وارد کن.";}
-  if(stage==="password"){label.textContent="رمز دومرحله‌ای";input.type="password";input.inputMode="text";input.autocomplete="current-password";input.placeholder="رمز 2FA";submit.textContent="تأیید و اتصال";description.textContent="حساب تو رمز تأیید دومرحله‌ای دارد.";}
+  if(stage==="phone"){label.textContent="شماره موبایلت";input.type="tel";input.inputMode="tel";input.autocomplete="tel";input.placeholder="+98912…";submit.textContent="ارسال کد";description.textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم.";}
+  if(stage==="code"){label.textContent="کد ورود تلگرام";input.type="text";input.inputMode="numeric";input.autocomplete="one-time-code";input.placeholder="کد ارسال‌شده";submit.textContent="تأیید کد";description.textContent="کدی که تلگرام برات فرستاده رو همین‌جا بنویس.";}
+  if(stage==="password"){label.textContent="رمز دومرحله‌ای";input.type="password";input.inputMode="text";input.autocomplete="current-password";input.placeholder="رمز 2FA";submit.textContent="تأیید و اتصال";description.textContent="حسابت رمز دومرحله‌ای داره؛ اینجا واردش کن.";}
   input.focus();
 }
 function openLoginDialog(){
@@ -452,10 +452,7 @@ document.querySelector("#login-cancel").addEventListener("click",async()=>{
   try{if(session&&loginStage!=="phone")await accountApi("/api/account/connect/cancel");}catch{}
   document.querySelector("#login-dialog").close();
 });
-async function connectAccount(){
-  if(!session){document.querySelector("#account-state").textContent="ابتدا Mini App را از داخل بات باز کن تا هویت تلگرام تأیید شود.";return;}
-  openLoginDialog();
-}
+async function connectAccount(){openLoginDialog();if(!session){document.querySelector("#login-feedback").textContent="برای وصل کردن حسابت، اول پنل رو از دکمهٔ داخل چت KageCatch باز کن.";return;}document.querySelector("#login-feedback").textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم.";}
 document.querySelector("#login-form").addEventListener("submit",async(event)=>{
   event.preventDefault();
   const input=document.querySelector("#login-value");
@@ -464,7 +461,7 @@ document.querySelector("#login-form").addEventListener("submit",async(event)=>{
   const value=input.value.trim();
   if(!value)return;
   submit.disabled=true;
-  feedback.textContent="در حال ارتباط امن با Telegram…";
+  feedback.textContent="داریم آماده‌اش می‌کنیم…";
   try{
     let result;
     if(loginStage==="phone"){
@@ -491,13 +488,13 @@ document.querySelector("#login-form").addEventListener("submit",async(event)=>{
     }
     if(result?.status==="connected"||result?.status==="authorized"){
       document.querySelector("#login-dialog").close();
-      document.querySelector("#account-state").textContent="حساب تلگرام با موفقیت متصل شد.";
+      document.querySelector("#account-state").textContent="حسابت با موفقیت وصل شد! 🎉";
       await refreshAccountStatus();
       return;
     }
     throw Object.assign(new Error("authorization_incomplete"),{status:502});
   }catch(error){
-    feedback.textContent=error.data?.error==="invalid_telegram_code"?"کد ورود نادرست است. دوباره بررسی کن.":error.data?.error==="invalid_2fa_password"?"رمز دومرحله‌ای نادرست است.":error.message==="invalid_phone"?"شماره را با فرمت بین‌المللی وارد کن؛ مثل +98912…":error.status===503?"Python Core هنوز آماده نیست یا تنظیمات ورود آن کامل نشده است.":error.status===401?"نشست Mini App منقضی شده؛ دوباره از بات بازش کن.":"درخواست ورود ناموفق بود. اتصال Core و گزارش خطا باید بررسی شود.";
+    feedback.textContent=error.data?.error==="invalid_telegram_code"?"کدی که وارد کردی درست نیست؛ دوباره چکش کن.":error.data?.error==="invalid_2fa_password"?"رمز دومرحله‌ای درست نیست؛ دوباره امتحان کن.":error.message==="invalid_phone"?"شماره رو با کد کشور وارد کن؛ مثل +98912…":error.status===503?"الان امکان اتصال نیست؛ کمی بعد دوباره امتحان کن.":error.status===401?"پنل رو از داخل چت KageCatch باز کن و دوباره تلاش کن.":"اتصال انجام نشد؛ یک بار دیگه امتحان کن.";
     if(loginStage==="password")input.value="";
   }finally{
     submit.disabled=false;
