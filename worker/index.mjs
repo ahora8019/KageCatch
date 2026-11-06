@@ -39,7 +39,7 @@ export async function verifyWebAppInitData(initData, botToken, nowSeconds = Math
     .filter(([key]) => key !== "hash")
     .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
     .map(([key, value]) => key + "=" + value)
-    .join("\\n");
+    .join("\n");
   const encoder = new TextEncoder();
   const sourceKey = await crypto.subtle.importKey("raw", encoder.encode("WebAppData"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const secretBytes = await crypto.subtle.sign("HMAC", sourceKey, encoder.encode(botToken));
