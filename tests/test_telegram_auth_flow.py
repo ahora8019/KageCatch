@@ -94,7 +94,7 @@ class TelegramAuthorizationFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await flow.submit_code(user_id="tg-1", code="12345")
 
         self.assertEqual(result, "connected")
-        self.assertEqual(manager.saved, [("tg-1", "encrypted-after-manager")])
+        self.assertEqual(manager.saved, [("tg-1", "partial-telethon-session")])
         self.assertFalse(client.connected)
 
     async def test_two_factor_password_is_requested_as_a_separate_step(self):
