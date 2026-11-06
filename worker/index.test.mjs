@@ -757,3 +757,96 @@ test("Mini App forwards phone login payloads only to the signed Python Core endp
   assert.equal(Object.hasOwn(forwarded, "initData"), false);
   assert.ok(calls[0].init.headers["X-KageCatch-Signature"]);
 });
+
+
+async function makeSignedSessionStoreRequest(method, userId, payload, secret, nonce = crypto.randomUUID().replaceAll("-", "")) {
+  const path = "/internal/session-store/" + userId;
+  const body = payload === undefined ? "" : JSON.stringify(payload);
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signingText = [timestamp, nonce, method, path, bodyHash].join("\\n");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return new Request("https://kagecatch-control.ahora-project.workers.dev" + path, {
+    method,
+    headers: {
+      "X-KageCatch-Timestamp": timestamp,
+      "X-KageCatch-Nonce": nonce,
+      "X-KageCatch-Signature": signature,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    ...(body ? { body } : {}),
+  });
+}
+
+function createFakeD1SessionDatabase() {
+  const rows = new Map();
+  return {
+    rows,
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            async run() {
+              if (sql.startsWith("INSERT INTO telegram_sessions")) {
+                rows.set(values[0], values[1]);
+                return { success: true };
+              }
+              if (sql.startsWith("DELETE FROM telegram_sessions")) {
+                rows.delete(values[0]);
+                return { success: true };
+              }
+              throw new Error("unexpected D1 statement");
+            },
+            async first() {
+              if (sql.startsWith("SELECT encrypted_session FROM telegram_sessions")) {
+                const value = rows.get(values[0]);
+                return value === undefined ? null : { encrypted_session: value };
+              }
+              throw new Error("unexpected D1 statement");
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+test("signed internal session store persists, retrieves, and deletes encrypted ciphertext through D1", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const nonceStore = new ConnectionLinkStore(state);
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const DB = createFakeD1SessionDatabase();
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: DB };
+  const put = await worker.fetch(await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext: "ZW5jcnlwdGVkLWJsb2I=" }, secret), env);
+  assert.equal(put.status, 200);
+  assert.equal(DB.rows.get("7135051954"), "ZW5jcnlwdGVkLWJsb2I=");
+  const get = await worker.fetch(await makeSignedSessionStoreRequest("GET", "7135051954", undefined, secret), env);
+  assert.equal(get.status, 200);
+  assert.deepEqual(await get.json(), { ciphertext: "ZW5jcnlwdGVkLWJsb2I=" });
+  const remove = await worker.fetch(await makeSignedSessionStoreRequest("DELETE", "7135051954", undefined, secret), env);
+  assert.equal(remove.status, 200);
+  assert.equal(DB.rows.has("7135051954"), false);
+});
+
+test("internal session store rejects unsigned requests and replays", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const nonceStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: createFakeD1SessionDatabase() };
+  const unsigned = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/internal/session-store/7135051954", { method: "GET" }), env);
+  assert.equal(unsigned.status, 401);
+  const request = await makeSignedSessionStoreRequest("GET", "7135051954", undefined, secret, "b".repeat(32));
+  assert.equal((await worker.fetch(request, env)).status, 404);
+  const replay = await makeSignedSessionStoreRequest("GET", "7135051954", undefined, secret, "b".repeat(32));
+  assert.equal((await worker.fetch(replay, env)).status, 409);
+});
+
+test("internal session store refuses invalid user identifiers and oversized payloads", async () => {
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const invalid = await worker.fetch(await makeSignedSessionStoreRequest("GET", "../100", undefined, secret), { CORE_API_SECRET: secret });
+  assert.equal(invalid.status, 404);
+});
