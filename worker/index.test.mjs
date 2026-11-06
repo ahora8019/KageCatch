@@ -506,3 +506,5 @@ test("Mini App session API rejects forged Telegram identity", async () => {
   }), { TELEGRAM_BOT_TOKEN: "test-bot-token" });
   assert.equal(response.status, 401);
 });
+
+// Mini App authentication regression coverage.
