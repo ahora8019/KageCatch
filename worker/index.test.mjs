@@ -627,7 +627,8 @@ test("Mini App account UI offers a Telegram deep link and does not ask for OTP o
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
   const html = await response.text();
   assert.match(html, /account-connect/);
-  assert.match(html, /tg:\/\/login/);
+  assert.match(html, /api\\/account\\/connect/);
+  assert.match(html, /login_url/);
   assert.match(html, /رمز 2FA را دریافت نمی‌کند/);
   assert.doesNotMatch(html, /name=["'](?:otp|password|code)["']/i);
 });
