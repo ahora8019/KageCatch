@@ -54,7 +54,10 @@ def _configured_runtime():
     store = SQLiteSessionStore(os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3"))
     manager = SessionManager(fernet_key=fernet_key, store=store)
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
-    return manager, SessionRuntime(session_manager=manager, client_factory=factory)
+    runtime = SessionRuntime(session_manager=manager, client_factory=factory)
+    from .telegram_qr_auth_flow import TelegramQrAuthorizationFlow
+    auth_flow = TelegramQrAuthorizationFlow(client_factory=lambda: factory(""), session_manager=manager)
+    return manager, runtime, auth_flow
 
 
 def create_app(
@@ -62,6 +65,7 @@ def create_app(
     core_secret: str | None = None,
     runtime=None,
     session_manager=None,
+    auth_flow=None,
     nonce_store: NonceStore | None = None,
     clock=time.time,
 ) -> FastAPI:
@@ -70,9 +74,10 @@ def create_app(
         raise ValueError("KAGECATCH_CORE_SECRET must contain at least 32 bytes")
 
     if runtime is None and session_manager is None:
-        configured_manager, configured_runtime = _configured_runtime()
+        configured_manager, configured_runtime, configured_auth_flow = _configured_runtime()
         session_manager = configured_manager
         runtime = configured_runtime
+        auth_flow = configured_auth_flow
     elif session_manager is None and runtime is not None:
         session_manager = getattr(runtime, "_session_manager", None)
 
@@ -141,6 +146,40 @@ def create_app(
             "session_saved": session_saved,
             "connected": connected,
         }
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect", dependencies=[Depends(require_core_auth)])
+    async def connect_account(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        try:
+            return await auth_flow.start(user_id=str(telegram_user_id))
+        except RuntimeError as exc:
+            if "already_authorized" in str(exc):
+                return {"status": "already_authorized"}
+            raise HTTPException(status_code=409, detail="authorization_already_pending") from exc
+
+    @app.get("/v1/accounts/{telegram_user_id}/connect/status", dependencies=[Depends(require_core_auth)])
+    async def connect_status(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        status = await auth_flow.get_status(user_id=str(telegram_user_id))
+        if status.get("status") == "not_pending" and session_manager is not None:
+            saved = await session_manager.load_session(str(telegram_user_id))
+            return {"status": "authorized" if saved else "not_connected"}
+        return status
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect/cancel", dependencies=[Depends(require_core_auth)])
+    async def cancel_connect(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        await auth_flow.cancel(user_id=str(telegram_user_id))
+        return {"status": "cancelled"}
 
     @app.post("/v1/accounts/{telegram_user_id}/disconnect", dependencies=[Depends(require_core_auth)])
     async def disconnect_account(telegram_user_id: int):
