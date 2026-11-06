@@ -38,22 +38,32 @@ async function telegramApi(env, method, payload = {}) {
   return result.result;
 }
 
-export function buildMainMenu() {
-  return {
-    inline_keyboard: [
-      [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
-      [{ text: "👤 حساب‌های متصل", callback_data: "account:list" }],
-      [
-        { text: "⚙️ تنظیمات", callback_data: "settings:open" },
-        { text: "📊 آمار و عملکرد", callback_data: "stats:open" },
-      ],
-      [
-        { text: "🔒 امنیت و نشست‌ها", callback_data: "security:open" },
-        { text: "❌ قطع اتصال", callback_data: "account:disconnect" },
-      ],
-      [{ text: "❓ راهنما", callback_data: "help:open" }],
-    ],
-  };
+export function buildRoleMenu(role = "MEMBER") {
+  const memberRows = [
+    [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
+    [{ text: "👤 حساب‌های متصل من", callback_data: "account:list" }],
+    [{ text: "📊 آمار من", callback_data: "stats:open" }, { text: "🔒 امنیت حساب من", callback_data: "security:open" }],
+    [{ text: "❌ قطع اتصال حساب من", callback_data: "account:disconnect" }],
+    [{ text: "❓ راهنما", callback_data: "help:open" }],
+  ];
+  if (role === "OWNER") return { inline_keyboard: [
+    [{ text: "👑 نظارت کل سامانه", callback_data: "owner:stats" }],
+    [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
+    [{ text: "⚙️ تنظیمات سراسری", callback_data: "owner:settings" }],
+    [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }],
+    [{ text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
+    ...memberRows,
+  ] };
+  return { inline_keyboard: memberRows };
+}
+
+export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
+
+export function resolveRole(userId, ownerTelegramId, storedRole = "MEMBER", status = "active") {
+  if (status === "blocked") return "BLOCKED";
+  if (!Number.isSafeInteger(userId) || !/^\d+$/.test(String(ownerTelegramId || ""))) return "DENIED";
+  if (String(userId) === String(ownerTelegramId)) return "OWNER";
+  return storedRole === "MEMBER" ? "MEMBER" : "DENIED";
 }
 
 const BACK_MENU = { inline_keyboard: [[{ text: "⬅️ منوی اصلی", callback_data: "menu:main" }]] };
@@ -189,6 +199,39 @@ export class ConnectionLinkStore {
     let body;
     try { if (!(request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) throw new Error('content type'); body = await request.json(); }
     catch { return json({ error: 'invalid_request' }, 400); }
+    if (url.pathname === '/register') {
+      const { telegramUserId, ownerTelegramId } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return json({ error: 'invalid_request' }, 400);
+      const key = 'user:' + telegramUserId;
+      const existing = await this.state.storage.get(key);
+      const isOwner = /^\d+$/.test(String(ownerTelegramId || '')) && String(telegramUserId) === String(ownerTelegramId);
+      const record = existing?.status === 'blocked' && !isOwner
+        ? existing
+        : { telegramUserId, role: isOwner ? 'OWNER' : 'MEMBER', status: 'active', createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() };
+      await this.state.storage.put(key, record);
+      return json(record);
+    }
+    if (url.pathname === '/user') {
+      const id = body?.telegramUserId;
+      if (!Number.isSafeInteger(id) || id <= 0) return json({ error: 'invalid_request' }, 400);
+      return json({ user: await this.state.storage.get('user:' + id) || null });
+    }
+    if (url.pathname === '/users') {
+      const entries = await this.state.storage.list({ prefix: 'user:' });
+      return json({ users: Array.from(entries.values()) });
+    }
+    if (url.pathname === '/manage-user') {
+      const { telegramUserId, action } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !['block','unblock'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      const key = 'user:' + telegramUserId;
+      const record = await this.state.storage.get(key);
+      if (!record) return json({ error: 'not_found' }, 404);
+      if (record.role === 'OWNER') return json({ error: 'owner_protected' }, 403);
+      record.status = action === 'block' ? 'blocked' : 'active';
+      record.updatedAt = Date.now();
+      await this.state.storage.put(key, record);
+      return json(record);
+    }
     if (url.pathname === '/create') {
       const { telegramUserId, ttlSeconds } = body || {};
       if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 600) return json({ error: 'invalid_request' }, 400);
@@ -227,13 +270,48 @@ async function createConnectionLink(env, telegramUserId) {
   return CONNECTION_LINK_BASE + '/connect/' + encodeURIComponent(result.token);
 }
 
+async function registryRequest(env, path, payload) {
+  if (!env.CONNECT_LINKS) throw new Error('User registry unavailable');
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName('connection-links-v1'));
+  const response = await stub.fetch('https://connect-links.internal' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  if (!response.ok) throw new Error('User registry unavailable');
+  return response.json();
+}
+
+async function getTelegramUser(env, userId) {
+  const result = await registryRequest(env, '/user', { telegramUserId: userId });
+  return result.user;
+}
+
+async function handleOwnerCallback(callback, env) {
+  const data = callback.data || '';
+  if (data === 'owner:stats') return { text: '👑 نظارت کل سامانه\n\nنمای کلی کاربران و سرویس‌ها در حال آماده‌سازی است.', keyboard: BACK_MENU };
+  if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
+  if (data === 'owner:broadcast') return { text: '📣 پیام همگانی\n\nارسال همگانی هنوز فعال نشده است.', keyboard: BACK_MENU };
+  if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\n\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
+  if (data === 'owner:members') {
+    const result = await registryRequest(env, '/users', {});
+    const lines = (result.users || []).map((u) => '• ' + u.telegramUserId + ' — ' + u.role + ' — ' + u.status);
+    return { text: '👥 اعضای KageCatch\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: BACK_MENU };
+  }
+  return { text: 'گزینه مدیریتی نامعتبر است.', keyboard: BACK_MENU, alert: true };
+}
+
 async function handleCallback(callback, env) {
   const chat = callback.message?.chat;
   if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id)) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "این بخش فقط در گفت‌وگوی خصوصی در دسترس است.", show_alert: true });
     return;
   }
-  let result = resolveCallback(callback.data);
+  const actor = await getTelegramUser(env, callback.from.id);
+  const role = resolveRole(callback.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+  if (role === 'BLOCKED' || role === 'DENIED') {
+    await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ دسترسی شما مجاز نیست.", show_alert: true });
+    return;
+  }
+  let result = callback.data?.startsWith('owner:')
+    ? (role === 'OWNER' ? await handleOwnerCallback(callback, env) : { text: "⛔ دسترسی غیرمجاز.", keyboard: BACK_MENU, alert: true })
+    : resolveCallback(callback.data);
   if (callback.data === 'account:connect') {
     try {
       const link = await createConnectionLink(env, callback.from.id);
@@ -291,14 +369,33 @@ async function handleWebhook(request, env) {
   }
 
   const message = update.message;
-  if (message && message.chat?.type === "private" && Number.isSafeInteger(message.chat.id) && typeof message.text === "string") {
+  if (message && message.chat?.type === "private" && Number.isSafeInteger(message.chat.id) && typeof message.text === "string" && Number.isSafeInteger(message.from?.id)) {
+    const command = message.text.trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
+    if (command === "/start" || command === "/panel") {
+      try {
+        const registered = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID || "" });
+        const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, registered.role, registered.status);
+        const reply = role === 'BLOCKED' || role === 'DENIED'
+          ? { text: "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." }
+          : { text: role === 'OWNER' ? "👑 پنل مدیریت KageCatch\n\nخوش آمدی Owner؛ از اینجا کل سامانه را نظارت کن." : "🌸 پنل عضو KageCatch\n\nبه حساب و امکانات شخصی خودت دسترسی داری.", reply_markup: buildRoleMenu(role) };
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
+      } catch { return new Response("User registry unavailable", { status: 503 }); }
+      return new Response("OK", { status: 200 });
+    }
+    const actor = await getTelegramUser(env, message.from.id);
+    const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+    if (role === 'BLOCKED' || role === 'DENIED') {
+      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⛔ ابتدا باید دسترسی شما توسط Owner فعال شود." });
+      return new Response("OK", { status: 200 });
+    }
+    if (command === "/admin" && role !== 'OWNER') {
+      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⛔ این بخش فقط برای Owner است." });
+      return new Response("OK", { status: 200 });
+    }
     const reply = commandReply(message.text);
     if (reply) {
-      try {
-        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
-      } catch {
-        return new Response("Telegram delivery failed", { status: 502 });
-      }
+      try { await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply, ...(command === "/status" || command === "/help" ? { reply_markup: buildRoleMenu(role) } : {}) }); }
+      catch { return new Response("Telegram delivery failed", { status: 502 }); }
     }
   }
   return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
