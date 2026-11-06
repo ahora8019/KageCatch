@@ -57,6 +57,75 @@ export async function verifyWebAppInitData(initData, botToken, nowSeconds = Math
   return { user, authDate };
 }
 
+async function coreRequest(env, method, path, payload = null) {
+  if (!env.CORE_API_URL || !env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) {
+    return { status: 503, data: { error: "core_not_configured" } };
+  }
+  let base;
+  try {
+    base = new URL(env.CORE_API_URL);
+    if (base.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(base.hostname)) {
+      return { status: 503, data: { error: "invalid_core_url" } };
+    }
+  } catch {
+    return { status: 503, data: { error: "invalid_core_url" } };
+  }
+  const body = payload === null ? "" : JSON.stringify(payload);
+  const encoder = new TextEncoder();
+  const bodyDigest = await crypto.subtle.digest("SHA-256", encoder.encode(body));
+  const bodyHash = Array.from(new Uint8Array(bodyDigest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const signingText = [timestamp, nonce, method.toUpperCase(), path, bodyHash].join("\\n");
+  const signingKey = await crypto.subtle.importKey("raw", encoder.encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signatureBytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, encoder.encode(signingText)));
+  const signature = Array.from(signatureBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  try {
+    const requestFetch = env.FETCH || fetch;
+    const response = await requestFetch(base.toString().replace(/\\/$/, "") + path, {
+      method: method.toUpperCase(),
+      headers: {
+        "X-KageCatch-Timestamp": timestamp,
+        "X-KageCatch-Nonce": nonce,
+        "X-KageCatch-Signature": signature,
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      ...(body ? { body } : {}),
+    });
+    let data;
+    try { data = await response.json(); } catch { data = { error: "invalid_core_response" }; }
+    return { status: response.status, data };
+  } catch {
+    return { status: 502, data: { error: "core_unavailable" } };
+  }
+}
+
+async function miniAppCoreProxy(request, env, action) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
+  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
+  if (!verified) return json({ error: "unauthorized" }, 401);
+  let actor;
+  try { actor = await getTelegramUser(env, verified.user.id); }
+  catch { return json({ error: "identity_service_unavailable" }, 503); }
+  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+  if (role === "BLOCKED" || role === "DENIED") return json({ error: "forbidden" }, 403);
+  const userId = verified.user.id;
+  const accountPath = "/v1/accounts/" + userId;
+  const requestSpec = action === "status"
+    ? { method: "GET", path: accountPath }
+    : action === "disconnect"
+      ? { method: "POST", path: accountPath + "/disconnect" }
+      : action === "revoke"
+        ? { method: "DELETE", path: accountPath }
+        : null;
+  if (!requestSpec) return json({ error: "unknown_account_action" }, 400);
+  const result = await coreRequest(env, requestSpec.method, requestSpec.path);
+  return json(result.data, result.status);
+}
+
 async function miniAppSession(request, env) {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
@@ -209,9 +278,13 @@ async function health(env) {
     return json({ service: "KageCatch Control", status: "degraded", webhook_auth: Boolean(env.TELEGRAM_WEBHOOK_SECRET), version: VERSION }, 503);
   }
   try {
-    const [webhook, bot] = await Promise.all([
+    const corePromise = env.CORE_API_URL && env.CORE_API_SECRET
+      ? coreRequest(env, "GET", "/v1/health")
+      : Promise.resolve({ status: 503, data: { status: "not_connected" } });
+    const [webhook, bot, core] = await Promise.all([
       telegramApi(env, "getWebhookInfo"),
       telegramApi(env, "getMe"),
+      corePromise,
     ]);
     const expectedUrl = new URL(WEBHOOK_PATH, "https://kagecatch-control.ahora-project.workers.dev").toString();
     return json({
@@ -222,7 +295,7 @@ async function health(env) {
       bot: { id: bot.id, username: bot.username, first_name: bot.first_name },
       pending_updates: webhook.pending_update_count ?? 0,
       last_telegram_error: webhook.last_error_message ?? null,
-      python_core: "not_connected",
+      python_core: core.status === 200 && core.data?.status === "ready" ? "connected" : "not_connected",
       version: VERSION,
     });
   } catch {
@@ -641,6 +714,9 @@ export default {
   async fetch(request, env) {    const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
+    if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
+    if (url.pathname === "/api/account/disconnect") return miniAppCoreProxy(request, env, "disconnect");
+    if (url.pathname === "/api/account/revoke") return miniAppCoreProxy(request, env, "revoke");
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
     if (url.pathname.startsWith("/connect/")) return connectionLanding(request, env, decodeURIComponent(url.pathname.slice("/connect/".length)));
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
