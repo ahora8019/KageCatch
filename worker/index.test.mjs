@@ -452,7 +452,7 @@ function makeWebAppInitData(botToken, user, authDate = Math.floor(Date.now() / 1
     query_id: "AAHdF6IQAAAAAN0XohDhrOrc",
     user: JSON.stringify(user),
   });
-  const check = [...params.entries()].sort(([a],[b]) => a.localeCompare(b)).map(([key,value]) => key + "=" + value).join("\\n");
+  const check = [...params.entries()].sort(([a],[b]) => a.localeCompare(b)).map(([key,value]) => key + "=" + value).join("\n");
   const secret = createHmac("sha256", "WebAppData").update(botToken).digest();
   const hash = createHmac("sha256", secret).update(check).digest("hex");
   params.set("hash", hash);
