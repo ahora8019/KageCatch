@@ -225,6 +225,38 @@ test("standalone connection page exchanges its one-time link without rendering i
 });
 
 
+test("standalone connect API rejects missing browser sessions and binds requests to the link owner", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 445566778, ttlSeconds: 300 }),
+  }));
+  const { token } = await created.json();
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const denied = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/api", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start", phone: "+989121234567" }),
+  }), { CONNECT_LINKS: binding });
+  assert.equal(denied.status, 401);
+  const exchanged = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/exchange", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
+  }), { CONNECT_LINKS: binding });
+  const { sessionToken } = await exchanged.json();
+  let captured;
+  const env = {
+    CONNECT_LINKS: binding, CORE_API_URL: "https://core.example", CORE_API_SECRET: "x".repeat(40),
+    FETCH: async (url, init) => { captured = { url, init }; return new Response(JSON.stringify({ status: "code_sent" }), { status: 200 }); },
+  };
+  const allowed = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/api", {
+    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + sessionToken },
+    body: JSON.stringify({ action: "start", phone: "+989121234567" }),
+  }), env);
+  assert.equal(allowed.status, 200);
+  assert.equal(captured.url, "https://core.example/v1/accounts/445566778/connect");
+  assert.deepEqual(JSON.parse(captured.init.body), { phone: "+989121234567" });
+  assert.ok(captured.init.headers["X-KageCatch-Signature"]);
+});
+
 test("private connect callback launches the standalone secure login page", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const store = new ConnectionLinkStore(createDurableObjectState());
