@@ -442,3 +442,67 @@ test("professional panel is responsive, Persian-first, and reports offline core 
   assert.match(html, /Telegram/);
   assert.match(html, /aria-label/);
 });
+
+
+import { createHmac } from "node:crypto";
+
+function makeWebAppInitData(botToken, user, authDate = Math.floor(Date.now() / 1000)) {
+  const params = new URLSearchParams({
+    auth_date: String(authDate),
+    query_id: "AAHdF6IQAAAAAN0XohDhrOrc",
+    user: JSON.stringify(user),
+  });
+  const check = [...params.entries()].sort(([a],[b]) => a.localeCompare(b)).map(([key,value]) => key + "=" + value).join("\\n");
+  const secret = createHmac("sha256", "WebAppData").update(botToken).digest();
+  const hash = createHmac("sha256", secret).update(check).digest("hex");
+  params.set("hash", hash);
+  return params.toString();
+}
+
+test("Mini App initData verification accepts a fresh Telegram signature", async () => {
+  const { verifyWebAppInitData } = await import("./index.mjs");
+  const user = { id: 7135051954, first_name: "Ahura", username: "ahora_8019" };
+  const initData = makeWebAppInitData("test-bot-token", user);
+  const verified = await verifyWebAppInitData(initData, "test-bot-token");
+  assert.equal(verified.user.id, user.id);
+  assert.equal(verified.user.username, user.username);
+});
+
+test("Mini App initData verification rejects tampering and expired signatures", async () => {
+  const { verifyWebAppInitData } = await import("./index.mjs");
+  const user = { id: 2001, first_name: "Member" };
+  const initData = makeWebAppInitData("test-bot-token", user);
+  const tampered = initData.replace("Member", "Attacker");
+  assert.equal(await verifyWebAppInitData(tampered, "test-bot-token"), null);
+  const expired = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 600);
+  assert.equal(await verifyWebAppInitData(expired, "test-bot-token"), null);
+});
+
+test("Mini App session API trusts only signed Telegram identity and server-side role", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  await store.fetch(new Request("https://do.internal/register", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 7135051954, ownerTelegramId: "7135051954" }),
+  }));
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const token = "test-bot-token";
+  const initData = makeWebAppInitData(token, { id: 7135051954, first_name: "Ahura" });
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData }),
+  }), { TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.role, "OWNER");
+  assert.equal(body.user.id, 7135051954);
+  assert.equal(body.core_status, "not_connected");
+});
+
+test("Mini App session API rejects forged Telegram identity", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData: "user=%7B%22id%22%3A7135051954%7D&auth_date=1&hash=deadbeef" }),
+  }), { TELEGRAM_BOT_TOKEN: "test-bot-token" });
+  assert.equal(response.status, 401);
+});
