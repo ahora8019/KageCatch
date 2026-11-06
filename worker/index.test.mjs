@@ -639,15 +639,20 @@ test("Worker exposes the Telegram deep-link flow only to a verified Mini App use
   assert.equal(body.status, "pending");
 });
 
-test("Mini App account UI collects login challenges outside the bot chat", async () => {
+test("Mini App account UI uses accessible inline login steps instead of blocking browser prompts", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
   const html = await response.text();
   assert.match(html, /account-connect/);
   assert.ok(html.includes("/api/account/connect"));
   assert.ok(html.includes("/api/account/connect/code"));
   assert.ok(html.includes("/api/account/connect/password"));
-  assert.match(html, /window\.prompt\("کد ورود ارسال‌شده توسط Telegram را وارد کن:/);
-  assert.match(html, /رمز دومرحله‌ای تلگرام را وارد کن/);
+  assert.match(html, /id="login-dialog"/);
+  assert.match(html, /id="login-phone"/);
+  assert.match(html, /id="login-code"/);
+  assert.match(html, /id="login-password"/);
+  assert.match(html, /aria-live="polite"/);
+  assert.doesNotMatch(html, /window\\.prompt\\(/);
+  assert.match(html, /@keyframes/);
   assert.doesNotMatch(html, /login_url/);
 });
 
