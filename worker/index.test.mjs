@@ -45,3 +45,81 @@ test("status and help remain available as slash-command shortcuts", () => {
   assert.match(commandReply("/status").text, /Python Core: متصل نیست/);
   assert.match(commandReply("/help").text, /دکمه‌های منوی اصلی/);
 });
+
+
+function createDurableObjectState() {
+  const values = new Map();
+  return {
+    storage: {
+      async get(key) { return values.get(key); },
+      async put(key, value) { values.set(key, value); },
+      async delete(key) { return values.delete(key); },
+    },
+  };
+}
+
+test("connection link store creates an opaque, short-lived token bound to one Telegram user", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const response = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 123456789, ttlSeconds: 300 }),
+  }));
+  assert.equal(response.status, 201);
+  const result = await response.json();
+  assert.match(result.token, /^[A-Za-z0-9_-]{40,}$/);
+  assert.equal(result.expiresIn, 300);
+  assert.equal(Object.hasOwn(result, "telegramUserId"), false);
+});
+
+test("connection link store consumes a token exactly once", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 987654321, ttlSeconds: 300 }),
+  }));
+  const { token } = await created.json();
+  const consume = () => store.fetch(new Request("https://do.internal/consume", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  }));
+  const first = await consume();
+  assert.equal(first.status, 200);
+  assert.deepEqual(await first.json(), { valid: true });
+  const replay = await consume();
+  assert.equal(replay.status, 410);
+});
+
+test("connection link store rejects expired links", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 123456789, ttlSeconds: 1 }),
+  }));
+  const { token } = await created.json();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const response = await store.fetch(new Request("https://do.internal/consume", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  }));
+  assert.equal(response.status, 410);
+});
+
+test("connection link store rejects malformed requests and unsupported methods", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  assert.equal((await store.fetch(new Request("https://do.internal/create"))).status, 405);
+  const invalid = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: "not-a-number", ttlSeconds: 300 }),
+  }));
+  assert.equal(invalid.status, 400);
+});
