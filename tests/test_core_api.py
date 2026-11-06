@@ -148,7 +148,7 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "authorized")
         self.assertEqual(self.runtime.connect_calls, [])
-\n
+
     def test_explicit_reconnect_activates_a_saved_session(self):
         self.runtime.clients.clear()
         path = "/v1/accounts/2001/reconnect"
