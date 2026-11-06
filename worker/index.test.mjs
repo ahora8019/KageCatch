@@ -441,6 +441,9 @@ test("professional panel is responsive, Persian-first, and reports offline core 
   assert.match(html, /متصل نیست/);
   assert.match(html, /Telegram/);
   assert.match(html, /aria-label/);
+  const nonce = html.match(/<script nonce="([^"]+)">/)?.[1];
+  assert.ok(nonce);
+  assert.match(response.headers.get("content-security-policy"), new RegExp("nonce-" + nonce));
 });
 
 
