@@ -34,7 +34,7 @@ SQLiteSessionStore persists ciphertext (not raw StringSessions) in a local SQLit
 
 The transport-independent, bot-driven authorization state machine is in kagecatch/telegram_auth_flow.py. It supports one pending login per KageCatch user, a five-minute default expiry, a three-attempt limit, explicit cancellation, optional 2FA, and persistence only after Telegram confirms authorization. Phone codes and 2FA passwords are held only as method arguments during the request; they are not stored in the pending state or database.
 
-The Cloudflare Control Worker must accept authorization input only from the user's private chat, map the Telegram sender ID to the KageCatch user ID, and call a separately hosted Python execution API over authenticated HTTPS. It must never log update bodies, phone codes, 2FA passwords, API credentials, or session strings. Secret-bearing Telegram messages should be deleted on a best-effort basis after processing; deletion is not a guarantee that Telegram or a client has erased all copies. The Worker-to-Python API adapter, backend deployment, and production wiring are not implemented yet.
+The Control Worker issues a five-minute, one-time opaque link from the private bot chat. A Durable Object stores only the SHA-256 token hash, the Telegram sender ID, and the expiry; consumption is transactional and replay-resistant. The landing page only validates possession of the link. It does not authorize a Telegram account or create a Telethon session. No phone code or 2FA password is accepted by the bot or landing page. A separate user-controlled MTProto authorization handoff and authenticated Worker-to-Python execution API are still required.
 
 For local development only, the explicit authorization helper and CLI remain available in kagecatch/telegram_authorization.py and scripts/authorize_telegram.py. The CLI collects verification material in a private terminal.
 
@@ -50,7 +50,7 @@ No real Telegram account has been authorized or tested. The bot-driven flow has 
 - Key rotation, access auditing, a managed production database, and deployment integration remain incomplete.
 - No real Telegram account was connected and no catch command was sent during this development phase.
 
-## Control bot interface\n\nThe menu exposes account connection, connected accounts, settings, statistics, security/session controls, disconnect, and help. These are honest status screens only; they do not imply that the Python core or account management is operational. `/status` and `/help` remain shortcuts. `/admin` is disabled until an owner ID and explicit authorization policy are configured. Worker unit tests run with `node --test worker/index.test.mjs`.\n\n## Remaining integration work
+## Control bot interface\n\nThe menu exposes account connection, connected accounts, settings, statistics, security/session controls, disconnect, and help. Account connection creates a one-time link; link validation does not imply that the Python core or Telegram account authorization is operational. `/status` and `/help` remain shortcuts. `/admin` is disabled until an owner ID and explicit authorization policy are configured. Worker unit tests run with `node --test worker/index.test.mjs`.\n\n## Remaining integration work
 
 - Design and review a secure local authorization handoff that does not transmit OTPs, 2FA passwords, or StringSessions through the bot chat.
 - Add key rotation and session access/revocation auditing.
