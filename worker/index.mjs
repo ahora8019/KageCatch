@@ -249,6 +249,21 @@ async function handleCallback(callback, env) {
   });
 }
 
+async function connectionLanding(request, env, token) {
+  if (!/^[A-Za-z0-9_-]{40,}$/.test(token)) return new Response("Invalid link", { status: 404 });
+  if (request.method === "GET") {
+    const html = "<!doctype html><html lang=fa dir=rtl><meta charset=utf-8><title>KageCatch</title><body><h1>اتصال KageCatch</h1><p>این لینک یک‌بارمصرف است. این مرحله فقط اعتبار لینک را بررسی می‌کند؛ ورود و ساخت Session هنوز فعال نیست. کد ورود یا رمز دومرحله‌ای وارد نکن.</p><form method=post><input type=hidden name=token value=" + token + "><button>بررسی لینک</button></form></body></html>";
+    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" } });
+  }
+  if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+  const form = await request.formData();
+  if (form.get("token") !== token || !env.CONNECT_LINKS) return new Response("Invalid link", { status: 410 });
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const response = await stub.fetch("https://connect-links.internal/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+  if (!response.ok) return new Response("لینک منقضی شده یا قبلاً مصرف شده است.", { status: 410, headers: { "cache-control": "no-store" } });
+  return new Response("لینک تأیید شد. این به معنی اتصال حساب تلگرام نیست؛ احراز هویت و ساخت Session هنوز فعال نشده است.", { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+}
+
 async function handleWebhook(request, env) {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
   if (!env.TELEGRAM_WEBHOOK_SECRET) return new Response("Webhook secret missing", { status: 503 });
@@ -291,6 +306,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
+    if (url.pathname.startsWith("/connect/")) return connectionLanding(request, env, decodeURIComponent(url.pathname.slice("/connect/".length)));
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
     return json({ error: "not_found" }, 404);
   },
