@@ -755,7 +755,7 @@ async function handleCallback(callback, env) {
   }
   if (callback.data === 'account:connect') {
     result = {
-      text: '🟢 برای اتصال امن حساب، پنل حرفه‌ای KageCatch را باز کن. شماره، کد ورود و در صورت نیاز رمز دومرحله‌ای فقط در پنل امن وارد می‌شوند؛ آن‌ها را در چت بات ارسال نکن.',
+      text: '🟢 برای اتصال امن حساب، پنل حرفه‌ای KageCatch را باز کن. شماره، کد ورود و در صورت نیاز رمز دومرحله‌ای فقط در پنل امن وارد می‌شوند.',
       keyboard: { inline_keyboard: [[{ text: '🌸 باز کردن پنل اتصال', web_app: { url: PANEL_URL } }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] },
     };
   }
