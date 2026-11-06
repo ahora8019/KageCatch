@@ -49,13 +49,18 @@ test("status and help remain available as slash-command shortcuts", () => {
 
 function createDurableObjectState() {
   const values = new Map();
-  return {
-    storage: {
-      async get(key) { return values.get(key); },
-      async put(key, value) { values.set(key, value); },
-      async delete(key) { return values.delete(key); },
+  let tail = Promise.resolve();
+  const storage = {
+    async get(key) { return values.get(key); },
+    async put(key, value) { values.set(key, value); },
+    async delete(key) { return values.delete(key); },
+    async transaction(callback) {
+      const run = tail.then(() => callback(storage));
+      tail = run.catch(() => {});
+      return run;
     },
   };
+  return { storage };
 }
 
 test("connection link store creates an opaque, short-lived token bound to one Telegram user", async () => {
@@ -124,4 +129,23 @@ test("connection link store rejects malformed requests and unsupported methods",
     body: JSON.stringify({ telegramUserId: "not-a-number", ttlSeconds: 300 }),
   }));
   assert.equal(invalid.status, 400);
+});
+
+
+test("connection link store permits only one winner for concurrent consume attempts", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 112233445, ttlSeconds: 300 }),
+  }));
+  const { token } = await created.json();
+  const consume = () => store.fetch(new Request("https://do.internal/consume", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  }));
+  const results = await Promise.all([consume(), consume()]);
+  assert.deepEqual(results.map((response) => response.status).sort(), [200, 410]);
 });
