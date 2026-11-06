@@ -322,8 +322,12 @@ async function handleCallback(callback, env) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ دسترسی شما مجاز نیست.", show_alert: true });
     return;
   }
+  if (callback.data?.startsWith('owner:') && role !== 'OWNER') {
+    await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ این بخش فقط برای Owner است.", show_alert: true });
+    return;
+  }
   let result = callback.data?.startsWith('owner:')
-    ? (role === 'OWNER' ? await handleOwnerCallback(callback, env) : { text: "⛔ دسترسی غیرمجاز.", keyboard: BACK_MENU, alert: true })
+    ? await handleOwnerCallback(callback, env)
     : resolveCallback(callback.data);
   if (callback.data === 'account:connect') {
     try {
