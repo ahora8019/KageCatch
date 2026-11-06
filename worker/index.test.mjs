@@ -904,3 +904,12 @@ test("internal session store refuses invalid user identifiers and oversized payl
   const invalid = await worker.fetch(await makeSignedSessionStoreRequest("GET", "../100", undefined, secret), { CORE_API_SECRET: secret });
   assert.equal(invalid.status, 404);
 });
+
+
+test("Mini App account connection waits for Telegram authentication to finish", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
+  const html = await response.text();
+  assert.match(html, /let authPromise\s*=\s*null/);
+  assert.match(html, /if\(!session\s*&&\s*authPromise\)\s*await authPromise/);
+  assert.match(html, /authPromise\s*=\s*authenticate\(\)/);
+});
