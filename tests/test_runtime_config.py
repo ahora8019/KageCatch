@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import unittest
 from unittest.mock import patch
@@ -21,6 +22,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
             "telegram_api_id_configured": True,
             "telegram_api_hash_configured": True,
             "session_encryption_key_configured": True,
+            "telethon_available": importlib.util.find_spec("telethon") is not None,
         })
         self.assertNotIn("private-core-secret-value", repr(report))
         self.assertNotIn("private-api-hash", repr(report))
@@ -35,6 +37,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
             "telegram_api_id_configured": False,
             "telegram_api_hash_configured": False,
             "session_encryption_key_configured": False,
+            "telethon_available": importlib.util.find_spec("telethon") is not None,
         })
 
 
