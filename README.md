@@ -23,7 +23,10 @@ The Catch Engine foundation is in `kagecatch/engine.py`. It accepts normalized s
 
 Session components:
 - `kagecatch/session_manager.py`: Fernet encryption/decryption boundary.
-- `kagecatch/sqlite_session_store.py`: single-host SQLite persistence for encrypted blobs.
+- `kagecatch/sqlite_session_store.py`: local single-host SQLite fallback for encrypted blobs.
+- `kagecatch/d1_session_store.py`: signed HTTPS adapter that transports encrypted blobs through the Cloudflare Control Worker into D1; it never stores plaintext sessions or needs a Cloudflare API token in Render.
+- `migrations/0001_telegram_sessions.sql`: D1 schema for encrypted session blobs.
+- `wrangler.toml`: preview D1 binding and the existing Durable Object namespace.
 - `kagecatch/session_runtime.py`: isolated per-user Telethon clients, authorization checks, disconnect and revocation.
 - `kagecatch/telegram_authorization.py`: local interactive authorization helper.
 - `kagecatch/telegram_auth_flow.py`: isolated phone-code authorization state machine; do not expose its OTP/2FA inputs through the bot.
@@ -36,6 +39,14 @@ The authorization state machine is isolated from the bot transport and must not 
 The Worker serves a mobile-first Persian RTL dashboard at `/panel`. Member and Owner bot menus expose it through an inline Web App button. The Mini App posts Telegram `initData` to `/api/session`; the Worker verifies the HMAC-SHA-256 signature and a five-minute freshness window, then resolves the role from the server-side Durable Object registry. The browser cannot assign itself OWNER. The current UI is a product foundation. The Worker now has signed Core health, account status, connect-link, connect-status, disconnect, reconnect, and revoke routes; these remain unavailable until a Python Core host and matching `CORE_API_URL` / `CORE_API_SECRET` are configured. Catch settings and activity APIs are still pending.
 
 See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md).
+
+## Durable session storage (Cloudflare D1)
+
+The preview D1 database is `kagecatch-sessions-preview` in the EU jurisdiction, primary region EEUR. It stores only Fernet-encrypted Telethon StringSession ciphertext. The Python Core encrypts before the request; the Worker accepts only HMAC-authenticated requests signed with the existing Core shared secret, checks timestamp and a Durable Object-backed one-time nonce, then uses parameterized D1 statements.
+
+The Python Core selects this adapter when `KAGECATCH_SESSION_STORE_URL` is configured (set it to the Control Worker origin). The Worker must have the `KAGECATCH_DB` D1 binding and the existing `CONNECT_LINKS` Durable Object binding. Without the URL, local development retains the SQLite fallback.
+
+The D1 database and schema are provisioned for preview, but the Worker binding and new Worker code have **not** been deployed. Render environment variables have not been changed. Do not authorize a real Telegram account until the Worker binding is deployed, the D1 adapter passes live round-trip tests, and the Fernet key exposed in the development conversation has been rotated.
 
 ## Control bot roles
 
