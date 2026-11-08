@@ -87,6 +87,7 @@ def _configured_runtime():
         client_factory=factory,
         handler_registrar=selfbot.attach,
     )
+    runtime._selfbot_controller = selfbot
     from .telegram_auth_flow import TelegramAuthorizationFlow
     auth_flow = TelegramAuthorizationFlow(client_factory=lambda session_string="": factory(session_string), session_manager=manager)
     return manager, runtime, auth_flow
@@ -190,6 +191,16 @@ def create_app(
                 resolver=character_resolver,
                 review_queue=app.state.review_queue,
             )
+
+        # Bind only after the review pipeline exists. SessionRuntime attaches
+        # the controller to each authorized account, and its incoming callback
+        # reads this handler dynamically.
+        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
+        set_handler = getattr(controller, "set_incoming_handler", None)
+        if app.state.review_pipeline is not None and callable(set_handler):
+            async def process_incoming(user_id: str, event) -> None:
+                await app.state.review_pipeline.process(event=event, user_id=user_id)
+            set_handler(process_incoming)
 
     async def close_review_runtime() -> None:
         store = app.state.review_store
