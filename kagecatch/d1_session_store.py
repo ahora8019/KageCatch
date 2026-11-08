@@ -65,6 +65,18 @@ class D1SessionStore:
         self._validate_user(user_id)
         await self._delete_from("session-store", user_id)
 
+    async def list_users(self) -> list[str]:
+        """List Telegram IDs with stored encrypted sessions; never fetch ciphertext."""
+        result = await self._request("GET", None)
+        users = result.get("users") if isinstance(result, dict) else None
+        if not isinstance(users, list):
+            raise RuntimeError("session store returned an invalid user list")
+        validated = []
+        for user_id in users:
+            self._validate_user(user_id)
+            validated.append(user_id)
+        return list(dict.fromkeys(validated))
+
     async def put_pending(self, user_id: str, encrypted_payload: bytes) -> None:
         self._validate_user(user_id)
         if not isinstance(encrypted_payload, bytes) or not encrypted_payload:
@@ -115,7 +127,12 @@ class D1SessionStore:
     ) -> dict:
         if namespace not in {"session-store", "auth-challenge"}:
             raise ValueError("invalid session store namespace")
-        path = f"/internal/{namespace}/" + quote(user_id, safe="")
+        if user_id is None:
+            if method != "GET" or namespace != "session-store":
+                raise ValueError("collection access is only valid for session-store GET")
+            path = "/internal/session-store/users"
+        else:
+            path = f"/internal/{namespace}/" + quote(user_id, safe="")
         body = b"" if payload is None else json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
         timestamp = str(int(self._clock()))
         nonce_value = self._nonce_factory()
