@@ -137,7 +137,6 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reconnect_all_restores_saved_sessions_and_reports_counts(self):
         manager = FakeSessionManager({"user-a": "session-a", "user-b": "session-b"})
-        manager.list_user_ids = lambda: None
         async def list_user_ids():
             return list(manager.sessions)
         manager.list_user_ids = list_user_ids
