@@ -108,6 +108,42 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result.review_item)
         self.assertEqual(queue.items, [])
 
+
+    async def test_real_detector_resolver_and_queue_work_together(self):
+        from kagecatch.character_resolver import CharacterResolver
+        from kagecatch.manual_review_queue import ManualReviewQueue
+        from kagecatch.models.spawn import CharacterMetadata
+        from kagecatch.spawn_detector import SpawnDetector
+
+        metadata = CharacterMetadata(
+            anime_name="KonoSuba", source="senpai", episode=3,
+            similarity=0.91, anime_confidence=0.91,
+        )
+
+        class Adapter:
+            target_name = "SenpaiCatcherBot"
+
+            def is_spawn_message(self, event):
+                return True
+
+            async def extract_metadata(self, event):
+                return metadata
+
+        queue = ManualReviewQueue()
+        pipeline = ReviewPipeline(
+            detector=SpawnDetector([Adapter()]),
+            resolver=CharacterResolver({"KonoSuba": ["Megumin", "Aqua"]}),
+            review_queue=queue,
+        )
+
+        result = await pipeline.process(event=type("Event", (), {"id": 92})(), user_id="12345")
+        pending = await queue.get_pending(user_id="12345")
+
+        self.assertEqual(result.status, "review_queued")
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].spawn_id, 92)
+        self.assertEqual(pending[0].candidates, ("Megumin", "Aqua"))
+
     async def test_invalid_user_id_is_rejected_before_processing(self):
         pipeline = ReviewPipeline(
             detector=FakeDetector(self._spawn()),
