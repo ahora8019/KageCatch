@@ -134,7 +134,7 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         class FailedQueue(FakeQueue):
             async def enqueue(self, **kwargs):
-                response = httpx.Response(503, request=httpx.Request("POST", "https://worker.test/internal/manual-review"))
+                response = httpx.Response(503, json={"error": "manual_review_store_unavailable"}, request=httpx.Request("POST", "https://worker.test/internal/manual-review"))
                 raise httpx.HTTPStatusError("service unavailable", request=response.request, response=response)
 
         pipeline = ReviewPipeline(
@@ -154,7 +154,7 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         class UnauthorizedQueue(FakeQueue):
             async def enqueue(self, **kwargs):
-                response = httpx.Response(401, request=httpx.Request("POST", "https://worker.test/internal/manual-review"))
+                response = httpx.Response(401, json={"error": "invalid_signature"}, request=httpx.Request("POST", "https://worker.test/internal/manual-review"))
                 raise httpx.HTTPStatusError("unauthorized", request=response.request, response=response)
 
         pipeline = ReviewPipeline(
@@ -166,7 +166,33 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {
             "status": "review_persistence_failed",
-            "error": "D1 authentication failed",
+            "error": "D1 HMAC signature invalid",
+        })
+
+
+    async def test_worker_storage_binding_error_is_reported_explicitly(self):
+        import httpx
+
+        class MisconfiguredQueue(FakeQueue):
+            async def enqueue(self, **kwargs):
+                request = httpx.Request("POST", "https://worker.test/internal/manual-review")
+                response = httpx.Response(
+                    503, json={"error": "storage_not_configured"}, request=request
+                )
+                raise httpx.HTTPStatusError(
+                    "storage not configured", request=request, response=response
+                )
+
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(self._spawn()),
+            resolver=FakeResolver(), review_queue=MisconfiguredQueue(),
+        )
+
+        result = await pipeline.process(event=object(), user_id="12345")
+
+        self.assertEqual(result, {
+            "status": "review_persistence_failed",
+            "error": "D1 binding misconfigured",
         })
 
     async def test_real_detector_resolver_and_queue_work_together(self):
