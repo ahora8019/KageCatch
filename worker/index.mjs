@@ -5,6 +5,41 @@ const CONNECTION_LINK_TTL_SECONDS = 300;
 const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
 const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
 
+const RENDER_CORE_HEALTH_URL = "https://kagecatch-core-preview.onrender.com/healthz";
+
+async function keepRenderCoreWarm(env, controller) {
+  const requestFetch = env.FETCH || fetch;
+  try {
+    const response = await requestFetch(RENDER_CORE_HEALTH_URL, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "user-agent": "KageCatch-KeepAlive/1.0",
+      },
+    });
+    const result = { status: response.status, ok: response.ok };
+    const log = JSON.stringify({
+      event: "render_keepalive",
+      target: "kagecatch-core-preview",
+      cron: controller?.cron ?? null,
+      ...result,
+    });
+    if (response.ok) console.log(log);
+    else console.warn(log);
+    return result;
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "render_keepalive",
+      target: "kagecatch-core-preview",
+      cron: controller?.cron ?? null,
+      status: 0,
+      ok: false,
+      error: String(error?.message || error),
+    }));
+    return { status: 0, ok: false };
+  }
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -1393,6 +1428,9 @@ async function internalAuthChallengeStore(request, env) {
 
 
 export default {
+  async scheduled(controller, env) {
+    return keepRenderCoreWarm(env, controller);
+  },
   async fetch(request, env) {    const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
