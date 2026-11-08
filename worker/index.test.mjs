@@ -882,6 +882,12 @@ function createFakeD1SessionDatabase() {
               }
               throw new Error("unexpected D1 statement");
             },
+            async all() {
+              if (sql.startsWith("SELECT user_id FROM telegram_sessions")) {
+                return { results: [...rows.keys()].sort().map((user_id) => ({ user_id })) };
+              }
+              throw new Error("unexpected D1 statement");
+            },
           };
         },
       };
@@ -926,6 +932,23 @@ test("signed auth challenge store persists, retrieves, and deletes encrypted pay
   const remove = await worker.fetch(await makeSignedSessionStoreRequest("DELETE", "7135051954", undefined, secret, undefined, "auth-challenge"), env);
   assert.equal(remove.status, 200);
   assert.equal(DB.challengeRows.has("7135051954"), false);
+});
+
+test("signed internal session index lists only user IDs and never session ciphertext", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const nonceStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const DB = createFakeD1SessionDatabase();
+  DB.rows.set("2002", "ciphertext-two");
+  DB.rows.set("1001", "ciphertext-one");
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: DB };
+  const response = await worker.fetch(
+    await makeSignedSessionStoreRequest("GET", "users", undefined, secret),
+    env,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { users: ["1001", "2002"] });
 });
 
 test("internal session store rejects unsigned requests and replays", async () => {
