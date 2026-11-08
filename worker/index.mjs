@@ -1001,6 +1001,17 @@ async function standaloneConnectApi(request,env){
   return json(result.data,result.status);
 }
 
+function logWebhookFailure(stage, updateId, error) {
+  // Never log Telegram payloads, chat/user IDs, tokens, signatures, or raw error messages.
+  console.error(JSON.stringify({
+    event: "telegram_webhook_processing_failed",
+    stage,
+    update_id: Number.isSafeInteger(updateId) ? updateId : null,
+    error_name: typeof error?.name === "string" ? error.name.slice(0, 64) : "Error",
+    upstream_status: Number.isInteger(error?.status) ? error.status : null,
+  }));
+}
+
 async function handleWebhook(request, env) {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
   if (!env.TELEGRAM_WEBHOOK_SECRET) return new Response("Webhook secret missing", { status: 503 });
@@ -1018,7 +1029,8 @@ async function handleWebhook(request, env) {
   if (update.callback_query) {
     try {
       await handleCallback(update.callback_query, env);
-    } catch {
+    } catch (error) {
+      logWebhookFailure("callback", update.update_id, error);
       return new Response("Telegram delivery failed", { status: 502 });
     }
     return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
@@ -1047,7 +1059,10 @@ async function handleWebhook(request, env) {
           ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
           : { text: role === 'OWNER' ? "🌸 خوش آمدی Owner؛ پنل مدیریت آماده‌ست." : "🌸 دعوتت تأیید شد! به KageCatch خوش اومدی 😎", reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role) };
         await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
-      } catch { return new Response("User registry unavailable", { status: 503 }); }
+      } catch (error) {
+        logWebhookFailure("start", update.update_id, error);
+        return new Response("User registry unavailable", { status: 503 });
+      }
       return new Response("OK", { status: 200 });
     }
     const actor = await getTelegramUser(env, message.from.id);
