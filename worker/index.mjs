@@ -1104,6 +1104,139 @@ async function handleWebhook(request, env) {
 }
 
 
+function reviewRowToItem(row) {
+  let candidates;
+  try { candidates = JSON.parse(row.candidates_json); } catch { throw new Error("invalid stored candidates"); }
+  if (!Array.isArray(candidates)) throw new Error("invalid stored candidates");
+  return {
+    review_id: row.review_id,
+    user_id: row.user_id,
+    spawn_id: row.spawn_id,
+    anime_name: row.anime_name,
+    candidates,
+    created_at: row.created_at,
+    expires_at: row.expires_at,
+    status: row.status,
+    selected_character: row.selected_character ?? null,
+  };
+}
+
+async function internalManualReviewStore(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) return json({ error: "storage_auth_not_configured" }, 503);
+  if (!env.KAGECATCH_DB || !env.CONNECT_LINKS) return json({ error: "storage_not_configured" }, 503);
+
+  let rawBody;
+  try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
+  if (rawBody.byteLength > 64 * 1024) return json({ error: "request_too_large" }, 413);
+  const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
+  const nonce = request.headers.get("X-KageCatch-Nonce") || "";
+  const supplied = request.headers.get("X-KageCatch-Signature") || "";
+  if (!/^\d{10,12}$/.test(timestampRaw) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(supplied)) return json({ error: "invalid_auth_headers" }, 401);
+  const timestamp = Number(timestampRaw);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSeconds - timestamp) > 60) return json({ error: "request_expired" }, 401);
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signingText = [timestampRaw, nonce, request.method, new URL(request.url).pathname, bodyHash].join("\n");
+  const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, new TextEncoder().encode(signingText)));
+  const expected = Array.from(expectedBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let difference = expected.length ^ supplied.length;
+  for (let index = 0; index < expected.length; index += 1) difference |= expected.charCodeAt(index) ^ supplied.charCodeAt(index);
+  if (difference !== 0) return json({ error: "invalid_signature" }, 401);
+
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const claim = await stub.fetch("https://connect-links.internal/claim-nonce", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nonce, expiresAt: Date.now() + 120000 }),
+  });
+  if (claim.status === 409) return json({ error: "request_replayed" }, 409);
+  if (!claim.ok) return json({ error: "replay_guard_unavailable" }, 503);
+
+  let payload;
+  try { payload = JSON.parse(new TextDecoder().decode(rawBody)); }
+  catch { return json({ error: "invalid_request" }, 400); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return json({ error: "invalid_request" }, 400);
+  const now = new Date().toISOString();
+
+  try {
+    if (payload.action === "create") {
+      const { review_id, user_id, spawn_id, anime_name, candidates, created_at, expires_at } = payload;
+      if (typeof review_id !== "string" || !/^[a-f0-9]{32}$/.test(review_id)
+        || typeof user_id !== "string" || !user_id || user_id.length > 128
+        || !Number.isSafeInteger(spawn_id) || spawn_id < 0
+        || typeof anime_name !== "string" || !anime_name.trim() || anime_name.length > 300
+        || !Array.isArray(candidates) || candidates.length < 1 || candidates.length > 30
+        || candidates.some((name) => typeof name !== "string" || !name.trim() || name.length > 100)
+        || typeof created_at !== "string" || typeof expires_at !== "string"
+        || !Number.isFinite(Date.parse(created_at)) || !Number.isFinite(Date.parse(expires_at))
+        || Date.parse(expires_at) <= Date.parse(created_at)) return json({ error: "invalid_review_item" }, 400);
+      await env.KAGECATCH_DB.prepare(
+        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL)"
+      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), created_at, expires_at).run();
+      return json({ status: "created" }, 201);
+    }
+
+    if (payload.action === "expire") {
+      const result = await env.KAGECATCH_DB.prepare(
+        "UPDATE manual_review_items SET status = 'expired' WHERE status = 'pending' AND expires_at <= ?"
+      ).bind(now).run();
+      return json({ expired: Number(result?.meta?.changes || 0) });
+    }
+
+    if (payload.action === "list") {
+      if (typeof payload.user_id !== "string" || !payload.user_id || payload.user_id.length > 128) return json({ error: "invalid_user_id" }, 400);
+      await env.KAGECATCH_DB.prepare(
+        "UPDATE manual_review_items SET status = 'expired' WHERE user_id = ? AND status = 'pending' AND expires_at <= ?"
+      ).bind(payload.user_id, now).run();
+      const result = await env.KAGECATCH_DB.prepare(
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE user_id = ? AND status = 'pending' ORDER BY created_at, review_id"
+      ).bind(payload.user_id).all();
+      return json({ items: (result?.results || []).map(reviewRowToItem) });
+    }
+
+    if (payload.action === "approve" || payload.action === "reject") {
+      const { user_id, review_id } = payload;
+      if (typeof user_id !== "string" || !user_id || user_id.length > 128
+        || typeof review_id !== "string" || !/^[a-f0-9]{32}$/.test(review_id)) return json({ error: "invalid_review_id" }, 400);
+      const row = await env.KAGECATCH_DB.prepare(
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+      ).bind(review_id, user_id).first();
+      if (!row) return json({ error: "review_item_not_found" }, 404);
+      if (row.status !== "pending") return json({ error: "review_item_already_resolved" }, 409);
+      if (Date.parse(row.expires_at) <= Date.parse(now)) {
+        await env.KAGECATCH_DB.prepare(
+          "UPDATE manual_review_items SET status = 'expired' WHERE review_id = ? AND user_id = ? AND status = 'pending'"
+        ).bind(review_id, user_id).run();
+        const expiredRow = await env.KAGECATCH_DB.prepare(
+          "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+        ).bind(review_id, user_id).first();
+        return json({ item: reviewRowToItem(expiredRow) });
+      }
+      const candidates = JSON.parse(row.candidates_json);
+      let selected = null;
+      if (payload.action === "approve") {
+        if (!Number.isSafeInteger(payload.candidate_index) || payload.candidate_index < 0 || payload.candidate_index >= candidates.length) return json({ error: "candidate_index_out_of_range" }, 400);
+        selected = candidates[payload.candidate_index];
+      }
+      const nextStatus = payload.action === "approve" ? "approved" : "rejected";
+      const update = await env.KAGECATCH_DB.prepare(
+        "UPDATE manual_review_items SET status = ?, selected_character = ? WHERE review_id = ? AND user_id = ? AND status = 'pending' AND expires_at > ?"
+      ).bind(nextStatus, selected, review_id, user_id, now).run();
+      if (Number(update?.meta?.changes || 0) !== 1) return json({ error: "review_item_already_resolved" }, 409);
+      const updatedRow = await env.KAGECATCH_DB.prepare(
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+      ).bind(review_id, user_id).first();
+      return json({ item: reviewRowToItem(updatedRow) });
+    }
+    return json({ error: "invalid_action" }, 400);
+  } catch {
+    return json({ error: "manual_review_store_unavailable" }, 503);
+  }
+}
+
+
 async function internalSessionStore(request, env) {
   const pathname = new URL(request.url).pathname;
   const listUsers = pathname === "/internal/session-store/users";
@@ -1246,6 +1379,7 @@ async function internalAuthChallengeStore(request, env) {
 export default {
   async fetch(request, env) {    const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
+    if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
