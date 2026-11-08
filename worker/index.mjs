@@ -1105,13 +1105,15 @@ async function handleWebhook(request, env) {
 
 
 async function internalSessionStore(request, env) {
-  const match = new URL(request.url).pathname.match(/^\/internal\/session-store\/([1-9][0-9]{0,15})$/);
-  if (!match) return json({ error: "not_found" }, 404);
-  if (!["GET", "PUT", "DELETE"].includes(request.method)) return json({ error: "method_not_allowed" }, 405);
+  const pathname = new URL(request.url).pathname;
+  const listUsers = pathname === "/internal/session-store/users";
+  const match = pathname.match(/^\/internal\/session-store\/([1-9][0-9]{0,15})$/);
+  if (!match && !listUsers) return json({ error: "not_found" }, 404);
+  if (listUsers ? request.method !== "GET" : !["GET", "PUT", "DELETE"].includes(request.method)) return json({ error: "method_not_allowed" }, 405);
   if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) return json({ error: "storage_auth_not_configured" }, 503);
   if (!env.KAGECATCH_DB || !env.CONNECT_LINKS) return json({ error: "storage_not_configured" }, 503);
-  const userId = match[1];
-  if (Number(userId) > (2 ** 52 - 1)) return json({ error: "invalid_user_id" }, 400);
+  const userId = match?.[1];
+  if (!listUsers && Number(userId) > (2 ** 52 - 1)) return json({ error: "invalid_user_id" }, 400);
   let rawBody;
   try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
   if (rawBody.byteLength > 8192) return json({ error: "request_too_large" }, 413);
@@ -1140,6 +1142,18 @@ async function internalSessionStore(request, env) {
   });
   if (claim.status === 409) return json({ error: "request_replayed" }, 409);
   if (!claim.ok) return json({ error: "replay_guard_unavailable" }, 503);
+  if (listUsers) {
+    if (rawBody.byteLength !== 0) return json({ error: "unexpected_request_body" }, 400);
+    try {
+      const result = await env.KAGECATCH_DB.prepare(
+        "SELECT user_id FROM telegram_sessions ORDER BY user_id"
+      ).all();
+      const users = (result?.results || []).map((row) => String(row.user_id));
+      return json({ users });
+    } catch {
+      return json({ error: "session_store_unavailable" }, 503);
+    }
+  }
   let payload = null;
   if (rawBody.byteLength) {
     try { payload = JSON.parse(new TextDecoder().decode(rawBody)); }

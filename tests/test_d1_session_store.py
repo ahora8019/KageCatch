@@ -21,6 +21,8 @@ class D1SessionStoreTests(unittest.IsolatedAsyncioTestCase):
         async def handler(request):
             body = await request.aread()
             self.requests.append((request, body))
+            if request.method == "GET" and request.url.path.endswith("/users"):
+                return httpx.Response(200, json={"users": ["1001", "2002"]})
             if request.method == "GET":
                 return httpx.Response(200, json={"ciphertext": base64.b64encode(self.ciphertext).decode()})
             if request.method == "PUT":
@@ -55,6 +57,13 @@ class D1SessionStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.method, "PUT")
         self.assertEqual(request.url.path, "/internal/session-store/7135051954")
         self.assertEqual(json.loads(body), {"ciphertext": base64.b64encode(self.ciphertext).decode()})
+        self.assert_signed(request, body)
+
+    async def test_list_users_uses_signed_collection_endpoint(self):
+        self.assertEqual(await self.store.list_users(), ["1001", "2002"])
+        request, body = self.requests[-1]
+        self.assertEqual(request.method, "GET")
+        self.assertEqual(request.url.path, "/internal/session-store/users")
         self.assert_signed(request, body)
 
     async def test_get_returns_original_ciphertext(self):

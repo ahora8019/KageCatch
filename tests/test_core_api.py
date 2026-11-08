@@ -97,6 +97,27 @@ class CoreApiTests(unittest.TestCase):
         )
         self.client = TestClient(self.app)
 
+    def test_app_startup_restores_saved_sessions(self):
+        class StartupRuntime(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self.restore_called = False
+
+            async def restore_saved_sessions(self):
+                self.restore_called = True
+                return {"connected": 2, "failed": 0}
+
+        runtime = StartupRuntime()
+        app = create_app(
+            core_secret=SECRET,
+            runtime=runtime,
+            session_manager=self.sessions,
+            auth_flow=self.auth_flow,
+            nonce_store=InMemoryNonceStore(),
+        )
+        with TestClient(app):
+            self.assertTrue(runtime.restore_called)
+
     def test_public_liveness_endpoint_discloses_no_private_state(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)

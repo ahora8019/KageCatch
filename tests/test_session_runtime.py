@@ -49,6 +49,21 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(await runtime.get_client("user-a"), client)
         self.assertEqual(clients[0][0], "encrypted-session-a")
 
+    async def test_registers_telegram_handlers_after_authorized_connection(self):
+        registered = []
+
+        async def register(client, user_id):
+            registered.append((client, user_id))
+
+        runtime = SessionRuntime(
+            session_manager=FakeSessionManager({"user-a": "session-a"}),
+            client_factory=lambda session: FakeClient(),
+            handler_registrar=register,
+        )
+        client = await runtime.connect_user("user-a")
+
+        self.assertEqual(registered, [(client, "user-a")])
+
     async def test_does_not_connect_user_without_saved_session(self):
         runtime = SessionRuntime(
             session_manager=FakeSessionManager({}),

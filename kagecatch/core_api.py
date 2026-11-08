@@ -77,7 +77,15 @@ def _configured_runtime():
         store = SQLiteSessionStore(os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3"))
     manager = SessionManager(fernet_key=fernet_key, store=store)
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
-    runtime = SessionRuntime(session_manager=manager, client_factory=factory)
+    from .telegram_selfbot import TelegramSelfbotController
+    selfbot = TelegramSelfbotController(
+        panel_image_url=os.getenv("KAGECATCH_PANEL_IMAGE_URL") or None
+    )
+    runtime = SessionRuntime(
+        session_manager=manager,
+        client_factory=factory,
+        handler_registrar=selfbot.attach,
+    )
     from .telegram_auth_flow import TelegramAuthorizationFlow
     auth_flow = TelegramAuthorizationFlow(client_factory=lambda session_string="": factory(session_string), session_manager=manager)
     return manager, runtime, auth_flow
@@ -133,6 +141,23 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid_signature")
         if not await replay_guard.claim(nonce, now + 120):
             raise HTTPException(status_code=409, detail="request_replayed")
+
+    @app.on_event("startup")
+    async def restore_authorized_sessions() -> None:
+        restore = getattr(runtime, "restore_saved_sessions", None) if runtime is not None else None
+        if restore is None:
+            return
+        try:
+            result = await restore()
+            logging.getLogger("kagecatch.core").info(
+                "Startup session restoration completed: connected=%s failed=%s",
+                result.get("connected", 0),
+                result.get("failed", 0),
+            )
+        except Exception:
+            logging.getLogger("kagecatch.core").exception(
+                "Startup session restoration could not enumerate saved sessions"
+            )
 
     @app.get("/healthz")
     async def liveness():

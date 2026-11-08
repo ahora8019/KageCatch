@@ -74,6 +74,13 @@ class SQLiteSessionStore:
             ).fetchone()
         return bytes(row[0]) if row is not None else None
 
+    async def list_users(self) -> list[str]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT user_id FROM telegram_sessions ORDER BY user_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     async def delete(self, user_id: str) -> None:
         with closing(self._connect()) as connection:
             with connection:

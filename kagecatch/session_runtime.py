@@ -26,9 +26,11 @@ class SessionRuntime:
         *,
         session_manager: SessionManager,
         client_factory: ClientFactory,
+        handler_registrar=None,
     ) -> None:
         self._session_manager = session_manager
         self._client_factory = client_factory
+        self._handler_registrar = handler_registrar
         self._clients: dict[str, RuntimeClient] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
@@ -59,6 +61,8 @@ class SessionRuntime:
                 await client.connect()
                 if not await client.is_user_authorized():
                     raise PermissionError("stored Telegram session is no longer authorized")
+                if self._handler_registrar is not None:
+                    await self._handler_registrar(client, user_id)
             except Exception:
                 try:
                     await client.disconnect()
@@ -68,6 +72,26 @@ class SessionRuntime:
 
             self._clients[user_id] = client
             return client
+
+    async def restore_saved_sessions(self) -> dict[str, int]:
+        """Reconnect every previously authorized session without interactive login.
+
+        A failure for one account is isolated and does not prevent other saved
+        accounts from being restored. The returned object contains counts only.
+        """
+        list_user_ids = getattr(self._session_manager, "list_user_ids", None)
+        if list_user_ids is None:
+            raise RuntimeError("session manager does not support session restoration")
+        user_ids = await list_user_ids()
+        connected = 0
+        failed = 0
+        for user_id in user_ids:
+            try:
+                await self.connect_user(user_id)
+                connected += 1
+            except Exception:
+                failed += 1
+        return {"connected": connected, "failed": failed}
 
     async def get_client(self, user_id: str) -> RuntimeClient | None:
         await self._user_lock(user_id)

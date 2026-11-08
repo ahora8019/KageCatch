@@ -72,6 +72,18 @@ class SessionManager:
         self._validate_user(user_id)
         await self._store.delete_pending(user_id)
 
+    async def list_user_ids(self) -> list[str]:
+        """Return IDs of users with stored authorized sessions, never session material."""
+        list_users = getattr(self._store, "list_users", None)
+        if list_users is None:
+            raise RuntimeError("session store does not support listing saved sessions")
+        users = await list_users()
+        if not isinstance(users, list) or any(not isinstance(user, str) for user in users):
+            raise RuntimeError("session store returned an invalid user list")
+        for user in users:
+            self._validate_user(user)
+        return list(dict.fromkeys(users))
+
     async def revoke_session(self, user_id: str) -> None:
         self._validate_user(user_id)
         await self._store.delete(user_id)
