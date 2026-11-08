@@ -1,4 +1,4 @@
-"""Real Worker + D1 Preview integration check (no Telegram or Catch).
+"""Real Worker + D1 Preview round-trip and queue-restart test.
 
 Required environment:
   KAGECATCH_PREVIEW_WORKER_URL=https://<preview-worker-host>
@@ -8,27 +8,27 @@ Required environment:
 Run:
   python scripts/test_real_d1.py
 
-The script creates one short-lived synthetic review row, reads it back through
-the authenticated Worker API, then rejects it so it no longer appears in the
-pending queue. It never calls Telethon or any Telegram API.
+The test creates a synthetic review through the real D1ManualReviewStore,
+closes that HTTP client/queue instance, constructs a fresh store/queue, and
+reads the row back. It then rejects the row so it no longer appears in Pending.
+No Telegram API, Telethon session, or Catch command is used.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import os
-import re
-import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import httpx
 
+from kagecatch.d1_manual_review_store import D1ManualReviewStore
+from kagecatch.manual_review_queue import ReviewStatus
+from kagecatch.persistent_manual_review_queue import PersistentManualReviewQueue
 
-PATH = "/internal/manual-review"
+
 PRODUCTION_HOSTS = {"kagecatch-control.ahora-project.workers.dev"}
 CONFIRMATION = "I_AM_USING_PREVIEW_D1"
 
@@ -60,128 +60,85 @@ def _configuration() -> tuple[str, str]:
     return base_url, secret
 
 
-def _signed_headers(payload: dict, secret: str) -> tuple[bytes, dict[str, str]]:
-    body = json.dumps(
-        payload, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
-    timestamp = str(int(datetime.now(timezone.utc).timestamp()))
-    nonce = uuid.uuid4().hex
-    body_hash = hashlib.sha256(body).hexdigest()
-    signing_text = f"{timestamp}\n{nonce}\nPOST\n{PATH}\n{body_hash}"
-    signature = hmac.new(
-        secret.encode("utf-8"), signing_text.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    return body, {
-        "content-type": "application/json",
-        "X-KageCatch-Timestamp": timestamp,
-        "X-KageCatch-Nonce": nonce,
-        "X-KageCatch-Signature": signature,
-    }
-
-
-async def _post(
-    client: httpx.AsyncClient, base_url: str, secret: str, payload: dict
-) -> tuple[int, dict]:
-    body, headers = _signed_headers(payload, secret)
-    response = await client.post(base_url + PATH, content=body, headers=headers)
-    try:
-        data = response.json()
-    except ValueError:
-        data = {"error": "non_json_response"}
-    return response.status_code, data
-
-
 async def main() -> None:
     base_url, secret = _configuration()
-    unique = uuid.uuid4().hex
+    unique = __import__("uuid").uuid4().hex
     user_id = "preview-test-" + unique
-    review_id = unique
     now = datetime.now(timezone.utc)
-    created_at = now.isoformat().replace("+00:00", "Z")
-    expires_at = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
-    create_payload = {
-        "action": "create",
-        "review_id": review_id,
-        "user_id": user_id,
-        "spawn_id": int(now.timestamp()),
-        "anime_name": "KageCatch Preview Integration Test",
-        "candidates": ["Preview Candidate A", "Preview Candidate B"],
-        "created_at": created_at,
-        "expires_at": expires_at,
-    }
 
-    created = False
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(10.0, connect=5.0),
-        follow_redirects=False,
-    ) as client:
-        try:
-            status, body = await _post(client, base_url, secret, create_payload)
-            if status != 201 or body.get("status") != "created":
-                raise RuntimeError(
-                    f"CREATE failed: HTTP {status}, error={body.get('error', 'unknown')}"
-                )
-            created = True
-            print("PASS: Worker accepted signed create request.")
+    # First process/runtime instance: create the durable row.
+    first_store = D1ManualReviewStore(base_url, secret)
+    first_queue = PersistentManualReviewQueue(
+        store=first_store,
+        default_ttl=timedelta(minutes=5),
+    )
+    try:
+        created_item = await first_queue.enqueue(
+            user_id=user_id,
+            spawn_id=int(now.timestamp()),
+            anime_name="KageCatch Preview Integration Test",
+            candidates=("Preview Candidate A", "Preview Candidate B"),
+        )
+        print("PASS: first queue instance persisted a synthetic review.")
+    finally:
+        await first_store.close()
 
-            status, body = await _post(
-                client, base_url, secret, {"action": "list", "user_id": user_id}
+    # Simulate a Core restart: no queue object or HTTPX client is reused.
+    second_store = D1ManualReviewStore(base_url, secret)
+    second_queue = PersistentManualReviewQueue(store=second_store)
+    cleanup_confirmed = False
+    try:
+        pending = await second_queue.get_pending(user_id=user_id)
+        matches = [item for item in pending if item.review_id == created_item.review_id]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "Restart read-after-write failed: D1 did not return the persisted row."
             )
-            if status != 200:
-                raise RuntimeError(
-                    f"LIST failed: HTTP {status}, error={body.get('error', 'unknown')}"
+
+        restored = matches[0]
+        expected = {
+            "user_id": user_id,
+            "spawn_id": created_item.spawn_id,
+            "anime_name": "KageCatch Preview Integration Test",
+            "candidates": ("Preview Candidate A", "Preview Candidate B"),
+            "status": ReviewStatus.PENDING,
+        }
+        actual = {
+            "user_id": restored.user_id,
+            "spawn_id": restored.spawn_id,
+            "anime_name": restored.anime_name,
+            "candidates": restored.candidates,
+            "status": restored.status,
+        }
+        if actual != expected:
+            raise RuntimeError("Restart restored a record with mismatched fields.")
+
+        print("PASS: a fresh queue/store instance restored the record from D1.")
+
+        rejected = await second_queue.reject(
+            user_id=user_id,
+            review_id=restored.review_id,
+        )
+        if rejected.status is not ReviewStatus.REJECTED:
+            raise RuntimeError("Cleanup failed: D1 did not persist rejected status.")
+        cleanup_confirmed = True
+        print("PASS: test row marked rejected; no longer pending.")
+    finally:
+        if not cleanup_confirmed:
+            try:
+                await second_queue.reject(
+                    user_id=user_id,
+                    review_id=created_item.review_id,
                 )
-            matches = [
-                item for item in body.get("items", [])
-                if isinstance(item, dict) and item.get("review_id") == review_id
-            ]
-            if len(matches) != 1:
-                raise RuntimeError(
-                    "D1 read-after-write failed: unique review row was not returned."
-                )
-            item = matches[0]
-            expected = {
-                "user_id": user_id,
-                "spawn_id": create_payload["spawn_id"],
-                "anime_name": create_payload["anime_name"],
-                "candidates": create_payload["candidates"],
-                "status": "pending",
-            }
-            mismatches = [
-                key for key, value in expected.items() if item.get(key) != value
-            ]
-            if mismatches:
-                raise RuntimeError(
-                    "D1 read-after-write returned mismatched fields: "
-                    + ", ".join(mismatches)
-                )
-            print("PASS: unique row was read back from the Worker/D1 path.")
-        finally:
-            if created:
-                try:
-                    status, body = await _post(
-                        client,
-                        base_url,
-                        secret,
-                        {
-                            "action": "reject",
-                            "user_id": user_id,
-                            "review_id": review_id,
-                        },
-                    )
-                    if status == 200 and body.get("item", {}).get("status") == "rejected":
-                        print("PASS: test row marked rejected (not pending).")
-                    else:
-                        print(
-                            "WARNING: cleanup did not confirm rejection; "
-                            f"HTTP {status}, error={body.get('error', 'unknown')}"
-                        )
-                except httpx.HTTPError:
-                    print("WARNING: cleanup request failed; row will expire after 5 minutes.")
+                print("Cleanup: synthetic row marked rejected.")
+            except (httpx.HTTPError, LookupError, RuntimeError):
+                print("WARNING: cleanup failed; synthetic row expires after 5 minutes.")
+        await second_store.close()
 
     print(json.dumps({
-        "result": "preview_d1_round_trip_passed",
+        "result": "preview_d1_restart_round_trip_passed",
         "worker": base_url,
+        "queue_instances": 2,
         "telegram_connected": False,
         "catch_executed": False,
     }, ensure_ascii=False, indent=2))
