@@ -1172,9 +1172,10 @@ async function internalManualReviewStore(request, env) {
         || typeof created_at !== "string" || typeof expires_at !== "string"
         || !Number.isFinite(Date.parse(created_at)) || !Number.isFinite(Date.parse(expires_at))
         || Date.parse(expires_at) <= Date.parse(created_at)) return json({ error: "invalid_review_item" }, 400);
-      await env.KAGECATCH_DB.prepare(
-        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL)"
-      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), new Date(created_at).toISOString(), new Date(expires_at).toISOString()).run();
+      const inserted = await env.KAGECATCH_DB.prepare(
+        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
+      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
+      if (Number(inserted?.meta?.changes || 0) !== 1) return json({ error: "pending_queue_limit_reached" }, 429);
       return json({ status: "created" }, 201);
     }
 
@@ -1191,7 +1192,7 @@ async function internalManualReviewStore(request, env) {
         "UPDATE manual_review_items SET status = 'expired' WHERE user_id = ? AND status = 'pending' AND expires_at <= ?"
       ).bind(payload.user_id, now).run();
       const result = await env.KAGECATCH_DB.prepare(
-        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE user_id = ? AND status = 'pending' ORDER BY created_at, review_id"
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE user_id = ? AND status = 'pending' ORDER BY created_at, review_id LIMIT 100"
       ).bind(payload.user_id).all();
       return json({ items: (result?.results || []).map(reviewRowToItem) });
     }
