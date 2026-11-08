@@ -46,6 +46,11 @@ class FakeD1 {
         return null;
       },
       async all() {
+        if (sql.includes("GROUP BY status")) {
+          const counts = new Map();
+          for (const row of db.rows.values()) counts.set(row.status, (counts.get(row.status) || 0) + 1);
+          return { results: [...counts].map(([status, total]) => ({ status, total })) };
+        }
         return { results: [...db.rows.values()].filter((r) => r.status === "pending").map((r) => ({ request_id: r.request_id })) };
       },
     };
