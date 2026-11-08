@@ -104,6 +104,19 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rejected.status, ReviewStatus.REJECTED)
         self.assertIsNone(rejected.selected_character)
 
+    async def test_rejects_worker_incompatible_payload_limits_before_persistence(self):
+        store = FakeDurableStore()
+        queue = PersistentManualReviewQueue(store=store)
+        with self.assertRaises(ValueError):
+            await queue.enqueue(user_id="12345", spawn_id=2**53, anime_name="KonoSuba", candidates=("Megumin",))
+        with self.assertRaises(ValueError):
+            await queue.enqueue(user_id="12345", spawn_id=1, anime_name="A" * 301, candidates=("Megumin",))
+        with self.assertRaises(ValueError):
+            await queue.enqueue(user_id="12345", spawn_id=1, anime_name="KonoSuba", candidates=("M" * 101,))
+        with self.assertRaises(ValueError):
+            await queue.enqueue(user_id="12345", spawn_id=1, anime_name="KonoSuba", candidates=tuple(f"C{i}" for i in range(31)))
+        self.assertEqual(store.records, {})
+
     async def test_expiry_delegates_to_durable_store(self):
         class ExpiringStore(FakeDurableStore):
             async def expire(self):
