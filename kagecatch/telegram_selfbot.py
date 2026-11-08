@@ -1,23 +1,41 @@
-"""Per-account Telethon listeners and self-account dot commands.
+"""Per-account Telethon listeners and safe dot-command triggers.
 
-Commands are handled only on the authorized account's own outgoing messages.
-The controller toggles a per-user Catch intent flag; it does not send catch
-commands to target bots. Spawn processing is supplied separately.
+The in-chat panel is requested through an injected durable requester. Telethon
+never sends inline keyboards for the bot-owned panel: the Control Bot owns that
+UI and its callback lifecycle.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+
+PanelRequester = Callable[..., Awaitable[dict[str, Any]]]
+
 
 class TelegramSelfbotController:
-    def __init__(self, *, incoming_handler=None, panel_image_url: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        incoming_handler=None,
+        panel_image_url: str | None = None,
+        panel_requester: PanelRequester | None = None,
+    ) -> None:
         self.enabled_users: set[str] = set()
         self.incoming_event_counts: dict[str, int] = {}
         self._incoming_handler = incoming_handler
         self._panel_image_url = panel_image_url
+        self._panel_requester = panel_requester
 
     def set_incoming_handler(self, handler) -> None:
         if handler is not None and not callable(handler):
             raise TypeError("incoming handler must be callable or None")
         self._incoming_handler = handler
+
+    def set_panel_requester(self, requester: PanelRequester | None) -> None:
+        if requester is not None and not callable(requester):
+            raise TypeError("panel requester must be callable or None")
+        self._panel_requester = requester
 
     def is_enabled(self, user_id: str) -> bool:
         return user_id in self.enabled_users
@@ -43,28 +61,17 @@ class TelegramSelfbotController:
                     await result
 
         async def outgoing(event):
+            command = (getattr(event, "raw_text", "") or "").strip()
+            if command in {".panel", ".پنل"}:
+                await self._request_in_chat_panel(event, user_id)
+                return
+
+            # Existing local dot commands remain restricted to Saved Messages.
             if not getattr(event, "is_private", False):
                 return
             if str(getattr(event, "chat_id", "")) != user_id:
                 return
-            command = (getattr(event, "raw_text", "") or "").strip()
-            if command == ".پنل":
-                buttons = [
-                    [Button.inline("🌸 روشن کردن Catch", b"kagecatch:enable")],
-                    [Button.inline("⏸ خاموش کردن Catch", b"kagecatch:disable")],
-                    [Button.inline("📊 وضعیت", b"kagecatch:status")],
-                ]
-                caption = self._panel_text(user_id)
-                if self._panel_image_url:
-                    await client.send_file(
-                        event.chat_id,
-                        self._panel_image_url,
-                        caption=caption,
-                        buttons=buttons,
-                    )
-                else:
-                    await event.respond(caption, buttons=buttons)
-            elif command == ".روشن":
+            if command == ".روشن":
                 self.set_enabled(user_id, True)
                 await event.respond("🟢 حالت Catch روشن شد؛ اجرای واقعی بعد از اتصال Spawn Detector و Recognition Engine فعال می‌شود. برای توقف، .خاموش را بفرست.")
             elif command == ".خاموش":
@@ -72,6 +79,7 @@ class TelegramSelfbotController:
                 await event.respond("⏸ حالت Catch خاموش شد؛ هیچ Catch جدیدی از این حالت اجرا نمی‌شود.")
 
         async def callback(event):
+            # Legacy callbacks remain scoped to Saved Messages only.
             if str(getattr(event, "sender_id", "")) != user_id:
                 return
             if str(getattr(event, "chat_id", "")) != user_id:
@@ -101,6 +109,59 @@ class TelegramSelfbotController:
         client.add_event_handler(outgoing, events.NewMessage(outgoing=True))
         client.add_event_handler(callback, events.CallbackQuery)
 
+    async def _request_in_chat_panel(self, event, user_id: str) -> None:
+        # NewMessage(outgoing=True) is the primary sender check; verify identity
+        # again so test doubles or future handler reuse cannot spoof the owner.
+        sender_id = getattr(event, "sender_id", None)
+        try:
+            expected_sender = int(user_id)
+        except (TypeError, ValueError):
+            return
+        if sender_id != expected_sender or getattr(event, "out", True) is False:
+            return
+
+        # Initially support groups/supergroups only. Broadcast channels and
+        # private chats are intentionally excluded until their permissions are verified.
+        is_group = bool(getattr(event, "is_group", False))
+        is_channel = bool(getattr(event, "is_channel", False))
+        is_broadcast = bool(getattr(event, "is_broadcast", False))
+        if not is_group or is_broadcast or (is_channel and not is_group):
+            return
+
+        chat_id = getattr(event, "chat_id", None)
+        message_id = getattr(event, "id", None)
+        if (
+            isinstance(chat_id, bool) or not isinstance(chat_id, int)
+            or isinstance(message_id, bool) or not isinstance(message_id, int)
+            or message_id <= 0
+        ):
+            return
+        if self._panel_requester is None:
+            await event.respond("⚠️ سرویس ساخت پنل فعلاً پیکربندی نشده؛ پیام فرمان حذف نشد.")
+            return
+
+        try:
+            result = await self._panel_requester(
+                owner_id=user_id,
+                chat_id=chat_id,
+                source_message_id=message_id,
+            )
+        except Exception:
+            await event.respond("⚠️ درخواست پنل ثبت نشد؛ دوباره تلاش کن.")
+            return
+
+        if not isinstance(result, dict) or result.get("accepted") is not True:
+            await event.respond("⚠️ درخواست پنل تأیید نشد؛ پیام فرمان حذف نشد.")
+            return
+
+        # Delete only after durable acceptance has been acknowledged.
+        try:
+            await event.delete()
+        except Exception:
+            # The accepted task remains idempotent; a failed delete must not
+            # cancel or duplicate panel creation.
+            pass
+
     def _panel_text(self, user_id: str) -> str:
         status = "🟢 روشن" if self.is_enabled(user_id) else "⚪ خاموش"
         return (
@@ -109,6 +170,5 @@ class TelegramSelfbotController:
             f"وضعیت Catch: {status}\n"
             "حساب: متصل\n"
             "موتور Catch: در انتظار اتصال Spawn Detector\n\n"
-            "از دکمه‌ها برای کنترل حالت Catch استفاده کن. "
-            "این پنل فقط روی پیام‌های خودت در Saved Messages کار می‌کند."
+            "این پنل قدیمی فقط در Saved Messages قابل استفاده است."
         )
