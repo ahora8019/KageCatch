@@ -998,12 +998,12 @@ test("invite store rejects invalid tokens, duplicate member redemption, and supp
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ maxUses: 1, ttlSeconds: 3600 }),
   }));
-  const { token } = await created.json();
+  const { token, id } = await created.json();
   const consume = (telegramUserId, value = token) => store.fetch(new Request("https://do.internal/invite/consume", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ token: value, telegramUserId }),
   }));
-  assert.equal((await consume(200001, "invalid-token")).status, 410);
+  assert.equal((await consume(200001, "invalid-token")).status, 400);
   assert.equal((await consume(200001)).status, 200);
   assert.equal((await consume(200001)).status, 200);
   const revoked = await store.fetch(new Request("https://do.internal/invite/revoke", {
