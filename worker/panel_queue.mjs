@@ -44,6 +44,23 @@ async function verifySignedRequest(request, env, rawBody) {
   return 200;
 }
 
+export async function enqueuePanelRequestAndDispatch(request, env, ctx, sendTelegram) {
+  const response = await enqueuePanelRequest(request, env);
+  if (response.status !== 202) return response;
+
+  const dispatch = processPanelQueue(env, sendTelegram).catch((error) => {
+    console.error(JSON.stringify({
+      event: "panel_queue_dispatch_failed",
+      error_name: error?.name || "Error",
+    }));
+    return { processed: 0, error: "dispatch_failed" };
+  });
+
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(dispatch);
+  else await dispatch;
+  return response;
+}
+
 export async function enqueuePanelRequest(request, env) {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
