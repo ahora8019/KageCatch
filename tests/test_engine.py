@@ -131,5 +131,42 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter.sent, [])
 
 
+    async def test_malformed_candidate_name_is_ignored(self):
+        spawn = Spawn(
+            source="henta_catcher",
+            chat_id=100,
+            message_id=202,
+            media_kind="image",
+            candidates=(Candidate(None, 0.99), Candidate("Sakura", 0.95)),
+        )
+        result = await self.engine.handle_spawn("user-1", spawn, self.adapter)
+        self.assertEqual(result.status, "verified")
+        self.assertEqual(self.adapter.sent, [(202, "Sakura")])
+
+    async def test_boolean_confidence_is_not_accepted(self):
+        spawn = Spawn(
+            source="henta_catcher",
+            chat_id=100,
+            message_id=203,
+            media_kind="image",
+            candidates=(Candidate("Sakura", True),),
+        )
+        result = await self.engine.handle_spawn("user-1", spawn, self.adapter)
+        self.assertEqual(result.status, "no_match")
+        self.assertEqual(self.adapter.sent, [])
+
+    async def test_candidate_name_with_control_characters_is_ignored(self):
+        spawn = Spawn(
+            source="henta_catcher",
+            chat_id=100,
+            message_id=204,
+            media_kind="image",
+            candidates=(Candidate("Sakura\\n/catch forged", 0.99),),
+        )
+        result = await self.engine.handle_spawn("user-1", spawn, self.adapter)
+        self.assertEqual(result.status, "no_match")
+        self.assertEqual(self.adapter.sent, [])
+
+
 if __name__ == "__main__":
     unittest.main()
