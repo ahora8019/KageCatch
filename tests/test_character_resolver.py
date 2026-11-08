@@ -25,7 +25,8 @@ class CharacterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result.character_name)
         self.assertEqual(result.candidates, ("Megumin", "Aqua", "Darkness"))
         self.assertEqual(result.source, "local_mapping")
-        self.assertLessEqual(result.confidence, 60.0)
+        self.assertEqual(result.confidence, CharacterResolver.MAX_MAPPING_CONFIDENCE)
+        self.assertLessEqual(result.confidence, 50.0)
 
     async def test_unknown_anime_returns_none(self):
         metadata = CharacterMetadata(anime_name="Unknown Anime", source="trace.moe")
@@ -35,9 +36,26 @@ class CharacterResolverTests(unittest.IsolatedAsyncioTestCase):
         metadata = CharacterMetadata(anime_name=None, source="trace.moe")
         self.assertIsNone(await self.resolver.resolve(metadata))
 
+    async def test_blank_anime_name_returns_none(self):
+        metadata = CharacterMetadata(anime_name="   ", source="trace.moe")
+        self.assertIsNone(await self.resolver.resolve(metadata))
+
+    async def test_empty_mapping_returns_none(self):
+        resolver = CharacterResolver(local_mapping={})
+        metadata = CharacterMetadata(anime_name="KonoSuba", source="trace.moe")
+        self.assertIsNone(await resolver.resolve(metadata))
+
     async def test_matching_is_exact_after_normalization_not_substring(self):
         metadata = CharacterMetadata(anime_name="KonoSuba: Another World", source="trace.moe")
         self.assertIsNone(await self.resolver.resolve(metadata))
+
+    async def test_unicode_titles_are_matched_without_losing_characters(self):
+        resolver = CharacterResolver(local_mapping={"魔法少女まどか☆マギカ": ["Madoka"]})
+        metadata = CharacterMetadata(
+            anime_name="  魔法少女まどか☆マギカ  ", source="trace.moe"
+        )
+        result = await resolver.resolve(metadata)
+        self.assertEqual(result.candidates, ("Madoka",))
 
     async def test_json_mapping_is_loaded_from_explicit_path(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -49,7 +67,8 @@ class CharacterResolverTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(result.candidates, ("Megumin",))
         self.assertIsNone(result.character_name)
-        self.assertLessEqual(result.confidence, 60.0)
+        self.assertEqual(result.confidence, 50.0)
+        self.assertLessEqual(result.confidence, 50.0)
 
     async def test_empty_candidate_mapping_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -76,8 +95,8 @@ class SuggestionFormatterTests(unittest.TestCase):
             for row in message.inline_keyboard
             for button in row
         ]
+        self.assertEqual(callback_data, ["kc:s:123:0", "kc:s:123:1", "kc:i:123"])
         self.assertTrue(all(len(value.encode("utf-8")) <= 64 for value in callback_data))
-        self.assertTrue(all(value.startswith("kc:s:123:") for value in callback_data))
 
     def test_escapes_untrusted_anime_title(self):
         resolved = ResolvedCharacter(
