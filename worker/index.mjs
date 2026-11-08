@@ -188,7 +188,8 @@ export function buildRoleMenu(role = "MEMBER") {
   ];
   if (role === "OWNER") return { inline_keyboard: [
     [{ text: "📊 نمای کلی", callback_data: "owner:stats" }, { text: "👁️ نظارت کاربران", callback_data: "owner:monitor" }],
-    [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
+    [{ text: "🚨 مرکز هشدارها", callback_data: "owner:alerts" }, { text: "🩺 وضعیت سرویس‌ها", callback_data: "owner:services" }],
+    [{ text: "👥 فهرست اعضا", callback_data: "owner:members" }, { text: "🔐 مدیریت دسترسی", callback_data: "owner:access" }],
     [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
     [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
     [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
@@ -771,7 +772,8 @@ function activityLabel(action) {
     "account:list": "مشاهده حساب متصل", "stats:open": "مشاهده آمار", "settings:open": "باز کردن تنظیمات",
     "security:open": "مشاهده امنیت حساب", "account:disconnect": "قطع اتصال حساب", "help:open": "مشاهده راهنما",
     "home:panel": "بازگشت به پنل کاربری", "home:admin": "باز کردن پنل Owner", "owner:monitor": "باز کردن نظارت کاربران",
-    "owner:invites": "مدیریت دعوت‌ها", "owner:members": "مدیریت اعضا", "owner:stats": "مشاهده نمای کلی",
+    "owner:invites": "مدیریت دعوت‌ها", "owner:members": "مدیریت اعضا", "owner:access": "مدیریت دسترسی کاربران",
+    "owner:alerts": "مشاهده مرکز هشدارها", "owner:services": "مشاهده وضعیت سرویس‌ها", "owner:stats": "مشاهده نمای کلی",
   };
   if (labels[action]) return labels[action];
   if (action.startsWith("owner:invite:create:")) return "ساخت لینک دعوت";
@@ -780,6 +782,23 @@ function activityLabel(action) {
   if (action.startsWith("owner:block:")) return "مسدودسازی عضو";
   if (action.startsWith("owner:unblock:")) return "رفع مسدودی عضو";
   return action.startsWith("owner:") ? "فعالیت مدیریتی" : action;
+}
+
+async function ownerDiagnostics(env) {
+  const response = await health(env);
+  const snapshot = await response.json();
+  let database = "unknown";
+  if (env.KAGECATCH_DB?.prepare) {
+    try {
+      const row = await env.KAGECATCH_DB.prepare("SELECT 1 AS ok").first();
+      database = row?.ok === 1 ? "connected" : "degraded";
+    } catch {
+      database = "unreachable";
+    }
+  } else {
+    database = "unconfigured";
+  }
+  return { snapshot, database };
 }
 
 async function handleOwnerCallback(callback, env) {
@@ -791,6 +810,31 @@ async function handleOwnerCallback(callback, env) {
     const { invites = [] } = await registryRequest(env, '/invite/list', {});
     const usable = invites.filter((invite) => !invite.revokedAt && invite.expiresAt > Date.now() && invite.uses < invite.maxUses).length;
     return { text: '👑 نمای کلی KageCatch\n\n👥 اعضای فعال: ' + active + '\n🚫 مسدود: ' + blocked + '\n🎟️ دعوت‌های معتبر: ' + usable + '\n\nوضعیت Catch: خاموش · بدون اجرای زنده', keyboard: { inline_keyboard: [[{ text: '👥 اعضا', callback_data: 'owner:members' }, { text: '🎟️ دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
+  }
+  if (data === 'owner:alerts') {
+    const { snapshot, database } = await ownerDiagnostics(env);
+    const alerts = [];
+    if (snapshot.status !== 'webhook_ready' || snapshot.telegram_webhook !== 'configured') alerts.push('🔴 وب‌هوک تلگرام آماده نیست یا درست تنظیم نشده است.');
+    if ((snapshot.pending_updates || 0) > 0) alerts.push('🟠 پیام‌های در انتظار تلگرام: ' + snapshot.pending_updates);
+    if (snapshot.last_telegram_error) alerts.push('🟠 آخرین خطای گزارش‌شده تلگرام (ممکن است تاریخی باشد): ' + String(snapshot.last_telegram_error).slice(0, 180));
+    if (snapshot.python_core !== 'connected') alerts.push('🔴 اتصال Python Core برقرار نیست (' + (snapshot.python_core || 'نامشخص') + ').');
+    if (database !== 'connected') alerts.push('🔴 دیتابیس D1 در دسترس نیست (' + database + ').');
+    return {
+      text: '🚨 مرکز هشدارهای KageCatch\n\n' + (alerts.join('\n\n') || '🟢 در بررسی فعلی هشدار فعالی پیدا نشد.') + '\n\nاین گزارش لحظه‌ای است؛ خطای آخر تلگرام ممکن است مربوط به قبل باشد و تاریخچهٔ هشدارها ذخیره نمی‌شود.',
+      keyboard: { inline_keyboard: [[{ text: '🔄 بررسی دوباره', callback_data: 'owner:alerts' }, { text: '🩺 وضعیت سرویس‌ها', callback_data: 'owner:services' }], [{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]] },
+    };
+  }
+  if (data === 'owner:services') {
+    const { snapshot, database } = await ownerDiagnostics(env);
+    const workerState = snapshot.status === 'webhook_ready' ? '🟢 پاسخ‌گو' : '🟠 نیازمند بررسی';
+    const telegramState = snapshot.telegram_webhook === 'configured' ? '🟢 وب‌هوک تنظیم است' : '🔴 وب‌هوک تنظیم نیست';
+    const coreState = snapshot.python_core === 'connected' ? '🟢 متصل' : snapshot.python_core === 'degraded' ? '🟠 ناپایدار' : '🔴 قطع یا در دسترس نیست';
+    const databaseState = database === 'connected' ? '🟢 متصل' : '🔴 در دسترس نیست (' + database + ')';
+    const pending = Number.isFinite(snapshot.pending_updates) ? snapshot.pending_updates : 'نامشخص';
+    return {
+      text: '🩺 وضعیت سرویس‌های KageCatch\n\nControl Worker: ' + workerState + '\nTelegram: ' + telegramState + '\nPython Core: ' + coreState + '\nD1 Database: ' + databaseState + '\nپیام‌های در انتظار: ' + pending + '\n\nوضعیت بات‌های مقصد هنوز به‌صورت مستقل پایش نمی‌شود؛ اینجا دربارهٔ آن‌ها وضعیت ساختگی نمایش نمی‌دهیم.',
+      keyboard: { inline_keyboard: [[{ text: '🚨 مرکز هشدارها', callback_data: 'owner:alerts' }, { text: '🔄 بروزرسانی', callback_data: 'owner:services' }], [{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]] },
+    };
   }
   if (data === 'owner:monitor') {
     const { users = [] } = await registryRequest(env, '/users', {});
@@ -869,13 +913,17 @@ async function handleOwnerCallback(callback, env) {
     return { text: '📣 ارسال همگانی تمام شد.\n\nموفق: ' + delivered + '\nناموفق: ' + failed + '\nمخاطبان فعال: ' + recipients.length, keyboard: BACK_MENU };
   }
   if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\n\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
-  if (data === 'owner:members') {
+  if (data === 'owner:members' || data === 'owner:access') {
     const result = await registryRequest(env, '/users', {});
     const users = result.users || [];
-    const lines = users.map((u) => '• ' + u.telegramUserId + ' — ' + u.role + ' — ' + u.status);
-    const keyboard = users.filter((u) => u.role !== 'OWNER').slice(0, 20).map((u) => [{ text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + u.telegramUserId, callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId }]);
+    const members = users.filter((u) => u.role !== 'OWNER');
+    const active = members.filter((u) => u.status === 'active').length;
+    const blocked = members.filter((u) => u.status === 'blocked').length;
+    const lines = members.map((u) => '• ' + (u.firstName || u.username || u.telegramUserId) + ' — ' + (u.status === 'blocked' ? 'مسدود' : 'فعال'));
+    const keyboard = members.slice(0, 20).map((u) => [{ text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + (u.firstName || u.telegramUserId), callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId }]);
     keyboard.push([{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
-    return { text: '👥 اعضای KageCatch\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
+    const title = data === 'owner:access' ? '🔐 مدیریت دسترسی کاربران' : '👥 اعضای KageCatch';
+    return { text: title + '\n\nفعال: ' + active + ' · مسدود: ' + blocked + '\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
   }
   const manage = data.match(/^owner:(block|unblock):(\d+)$/);
   if (manage) {
