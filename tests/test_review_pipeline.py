@@ -62,7 +62,7 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         result = await pipeline.process(event=object(), user_id="12345")
 
-        self.assertEqual(result.status, "review_queued")
+        self.assertEqual(result["status"], "review_queued")
         self.assertEqual(len(queue.items), 1)
         self.assertEqual(queue.items[0]["spawn_id"], 91)
         self.assertEqual(queue.items[0]["candidates"], ("Megumin", "Aqua"))
@@ -105,9 +105,69 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         result = await pipeline.process(event=object(), user_id="12345")
 
         self.assertEqual(result.status, "review_persistence_failed")
-        self.assertIsNone(result.review_item)
+        self.assertIsNone(result.get("review_item"))
         self.assertEqual(queue.items, [])
 
+
+
+    async def test_httpx_timeout_returns_d1_unreachable_without_success(self):
+        import httpx
+
+        class TimeoutQueue(FakeQueue):
+            async def enqueue(self, **kwargs):
+                raise httpx.ReadTimeout("upstream timed out")
+
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(self._spawn()),
+            resolver=FakeResolver(), review_queue=TimeoutQueue(),
+        )
+
+        result = await pipeline.process(event=object(), user_id="12345")
+
+        self.assertEqual(result, {
+            "status": "review_persistence_failed",
+            "error": "D1 unreachable",
+        })
+
+    async def test_worker_5xx_returns_d1_unreachable(self):
+        import httpx
+
+        class FailedQueue(FakeQueue):
+            async def enqueue(self, **kwargs):
+                response = httpx.Response(503, request=httpx.Request("POST", "https://worker.test/internal/manual-review"))
+                raise httpx.HTTPStatusError("service unavailable", request=response.request, response=response)
+
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(self._spawn()),
+            resolver=FakeResolver(), review_queue=FailedQueue(),
+        )
+
+        result = await pipeline.process(event=object(), user_id="12345")
+
+        self.assertEqual(result, {
+            "status": "review_persistence_failed",
+            "error": "D1 unreachable",
+        })
+
+    async def test_worker_401_is_reported_as_authentication_failure_not_network_failure(self):
+        import httpx
+
+        class UnauthorizedQueue(FakeQueue):
+            async def enqueue(self, **kwargs):
+                response = httpx.Response(401, request=httpx.Request("POST", "https://worker.test/internal/manual-review"))
+                raise httpx.HTTPStatusError("unauthorized", request=response.request, response=response)
+
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(self._spawn()),
+            resolver=FakeResolver(), review_queue=UnauthorizedQueue(),
+        )
+
+        result = await pipeline.process(event=object(), user_id="12345")
+
+        self.assertEqual(result, {
+            "status": "review_persistence_failed",
+            "error": "D1 authentication failed",
+        })
 
     async def test_real_detector_resolver_and_queue_work_together(self):
         from kagecatch.character_resolver import CharacterResolver
