@@ -42,7 +42,7 @@ See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md).
 
 ## Durable group panel queue
 
-Group commands `.panel` and `.پنل` are accepted only from the authorized account owner in a group/supergroup. The Python Core sends a timestamped HMAC-signed request to `POST /internal/panel-requests`; the Worker stores it in the independent `panel_requests` D1 table with a deterministic idempotency key. The scheduled Worker claims pending requests, sends the Control Bot panel into the exact source group, and stores the resulting message ID. Abandoned claims are recovered after two minutes and delivery attempts are bounded to three.
+Group commands `.panel` and `.پنل` are accepted only from the authorized account owner in a group/supergroup. The Python Core sends a timestamped HMAC-signed request to `POST /internal/panel-requests`; the Worker stores it in the independent `panel_requests` D1 table with a deterministic idempotency key. After the Worker accepts a signed request, it immediately dispatches the queue in the request's `waitUntil` background task; panel delivery does not wait for the ten-minute Render keep-alive Cron. The `*/10 * * * *` Cron only sends a lightweight GET to the Render Core `/healthz` endpoint. Abandoned delivery claims are recovered when the queue is next dispatched, and delivery attempts are bounded to three.
 
 Every callback is bound to the stored request, owner Telegram ID, exact group ID, exact panel message ID, and active expiry. Non-owners receive an alert. Catch remains disabled in the panel; buttons currently expose status/configuration placeholders only.
 
