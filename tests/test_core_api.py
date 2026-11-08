@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -117,6 +118,40 @@ class CoreApiTests(unittest.TestCase):
         )
         with TestClient(app):
             self.assertTrue(runtime.restore_called)
+
+    def test_review_pipeline_is_wired_to_the_runtime_selfbot_incoming_listener(self):
+        class SelfbotRegistry:
+            def __init__(self):
+                self.handler = None
+
+            def set_incoming_handler(self, handler):
+                self.handler = handler
+
+        class RuntimeWithSelfbot(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self._selfbot_controller = SelfbotRegistry()
+
+        class Pipeline:
+            def __init__(self):
+                self.events = []
+
+            async def process(self, *, event, user_id):
+                self.events.append((user_id, event))
+                return {"status": "no_spawn"}
+
+        runtime = RuntimeWithSelfbot()
+        pipeline = Pipeline()
+        app = create_app(
+            core_secret=SECRET, runtime=runtime, session_manager=self.sessions,
+            auth_flow=self.auth_flow, review_pipeline=pipeline,
+        )
+        event = object()
+        with TestClient(app):
+            self.assertIsNotNone(runtime._selfbot_controller.handler)
+            asyncio.run(runtime._selfbot_controller.handler("2001", event))
+
+        self.assertEqual(pipeline.events, [("2001", event)])
 
     def test_public_liveness_endpoint_discloses_no_private_state(self):
         response = self.client.get("/healthz")

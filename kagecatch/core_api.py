@@ -8,6 +8,7 @@ raw session material is never accepted from or returned to the Worker.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import importlib.util
 import logging
@@ -86,6 +87,7 @@ def _configured_runtime():
         client_factory=factory,
         handler_registrar=selfbot.attach,
     )
+    runtime._selfbot_controller = selfbot
     from .telegram_auth_flow import TelegramAuthorizationFlow
     auth_flow = TelegramAuthorizationFlow(client_factory=lambda session_string="": factory(session_string), session_manager=manager)
     return manager, runtime, auth_flow
@@ -99,6 +101,11 @@ def create_app(
     auth_flow=None,
     nonce_store: NonceStore | None = None,
     clock=time.time,
+    review_store=None,
+    review_queue=None,
+    review_pipeline=None,
+    spawn_detector=None,
+    character_resolver=None,
 ) -> FastAPI:
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
     logging.getLogger("kagecatch.core").info("Core configuration presence: %s", _configuration_presence(secret))
@@ -114,7 +121,27 @@ def create_app(
         session_manager = getattr(runtime, "_session_manager", None)
 
     replay_guard = nonce_store or InMemoryNonceStore(clock=clock)
-    app = FastAPI(title="KageCatch Core", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            await initialize_review_runtime()
+            await restore_authorized_sessions()
+            yield
+        finally:
+            await close_review_runtime()
+
+    app = FastAPI(
+        title="KageCatch Core",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+    # Review persistence is an independent resource from Telegram sessions.
+    # Construct the network client during startup, never at module import time.
+    app.state.review_store = review_store
+    app.state.review_queue = review_queue
+    app.state.review_pipeline = review_pipeline
 
     async def require_core_auth(request: Request) -> None:
         if not secret:
@@ -142,7 +169,50 @@ def create_app(
         if not await replay_guard.claim(nonce, now + 120):
             raise HTTPException(status_code=409, detail="request_replayed")
 
-    @app.on_event("startup")
+    async def initialize_review_runtime() -> None:
+        if app.state.review_store is None:
+            store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
+            store_secret = secret
+            if store_url and store_secret:
+                from .d1_manual_review_store import D1ManualReviewStore
+                app.state.review_store = D1ManualReviewStore(store_url, store_secret)
+        if app.state.review_queue is None and app.state.review_store is not None:
+            from .persistent_manual_review_queue import PersistentManualReviewQueue
+            app.state.review_queue = PersistentManualReviewQueue(store=app.state.review_store)
+        if (
+            app.state.review_pipeline is None
+            and app.state.review_queue is not None
+            and spawn_detector is not None
+            and character_resolver is not None
+        ):
+            from .review_pipeline import ReviewPipeline
+            app.state.review_pipeline = ReviewPipeline(
+                detector=spawn_detector,
+                resolver=character_resolver,
+                review_queue=app.state.review_queue,
+            )
+
+        # Bind only after the review pipeline exists. SessionRuntime attaches
+        # the controller to each authorized account, and its incoming callback
+        # reads this handler dynamically.
+        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
+        set_handler = getattr(controller, "set_incoming_handler", None)
+        if app.state.review_pipeline is not None and callable(set_handler):
+            async def process_incoming(user_id: str, event) -> None:
+                await app.state.review_pipeline.process(event=event, user_id=user_id)
+            set_handler(process_incoming)
+
+    async def close_review_runtime() -> None:
+        store = app.state.review_store
+        close = getattr(store, "close", None) if store is not None else None
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Manual review store shutdown failed"
+                )
+
     async def restore_authorized_sessions() -> None:
         restore = getattr(runtime, "restore_saved_sessions", None) if runtime is not None else None
         if restore is None:
