@@ -32,6 +32,23 @@ class CoreApiReviewLifecycleTests(unittest.TestCase):
         self.assertTrue(store.closed)
 
 
+
+    def test_runtime_composes_pipeline_when_detector_and_resolver_are_injected(self):
+        detector = object()
+        resolver = object()
+        queue = object()
+        app = create_app(
+            core_secret=SECRET, runtime=object(),
+            session_manager=object(), review_queue=queue,
+            spawn_detector=detector, character_resolver=resolver,
+        )
+        with TestClient(app):
+            pipeline = app.state.review_pipeline
+            self.assertIsNotNone(pipeline)
+            self.assertIs(pipeline.detector, detector)
+            self.assertIs(pipeline.resolver, resolver)
+            self.assertIs(pipeline.review_queue, queue)
+
     def test_environment_configured_store_is_created_at_startup_and_closed(self):
         with patch.dict(os.environ, {
             "KAGECATCH_SESSION_STORE_URL": "https://control.example.test",
