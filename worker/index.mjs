@@ -626,7 +626,7 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/activity/record') {
       const { telegramUserId, action, firstName, username } = body || {};
-      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || typeof action !== 'string' || !/^(start|panel|message|command|catch:open|bots:open|account:connect|account:list|stats:open|settings:open|security:open|account:disconnect|help:open|owner:[a-z:_-]+|home:[a-z]+)$/.test(action)) return json({ error: 'invalid_activity' }, 400);
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || typeof action !== 'string' || !/^(start|panel|message|command|catch:open|bots:open|account:connect|account:list|stats:open|settings:open|security:open|account:disconnect|help:open|owner:[a-z0-9:_-]+|home:[a-z]+)$/.test(action)) return json({ error: 'invalid_activity' }, 400);
       const key = 'user:' + telegramUserId;
       const existing = await this.state.storage.get(key);
       if (!existing) return json({ error: 'user_not_found' }, 404);
@@ -785,13 +785,13 @@ async function handleOwnerCallback(callback, env) {
       const accountLabel = !account ? '⚪ وضعیت حساب نامشخص (Core در دسترس نیست)' : account.connected ? '🟢 آنلاین و متصل' : account.session_saved ? '🟡 نشست ذخیره است؛ فعلاً آفلاین' : '🔴 حساب متصل نیست';
       const seen = user.lastSeenAt ? new Date(user.lastSeenAt).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) : 'هنوز فعالیتی ثبت نشده';
       const action = user.lastAction || '—';
-      return '👤 ' + name + '\\n' + accountLabel + '\\n🕒 آخرین فعالیت: ' + seen + '\\n⚡ آخرین بخش: ' + action;
+      return '👤 ' + name + '\n' + accountLabel + '\n🕒 آخرین فعالیت: ' + seen + '\n⚡ آخرین بخش: ' + action;
     });
     const rows = members.map((user) => [{ text: 'جزئیات ' + (user.firstName || user.telegramUserId), callback_data: 'owner:monitor:user:' + user.telegramUserId }]);
     rows.push([{ text: '🔄 بروزرسانی', callback_data: 'owner:monitor' }, { text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
-    return { text: '👁️ نظارت کاربران KageCatch\\n\\n' + (lines.join('\\n\\n') || 'هنوز عضوی وجود ندارد.') + '\\n\\nوضعیت آنلاین فقط اتصال واقعی Core را نشان می‌دهد؛ نشست ذخیره‌شده لزوماً آنلاین نیست.', keyboard: { inline_keyboard: rows } };
+    return { text: '👁️ نظارت کاربران KageCatch\n\n' + (lines.join('\n\n') || 'هنوز عضوی وجود ندارد.') + '\n\nوضعیت آنلاین فقط اتصال واقعی Core را نشان می‌دهد؛ نشست ذخیره‌شده لزوماً آنلاین نیست.', keyboard: { inline_keyboard: rows } };
   }
-  const monitorUser = data.match(/^owner:monitor:user:(\\d+)$/);
+  const monitorUser = data.match(/^owner:monitor:user:(\d+)$/);
   if (monitorUser) {
     const telegramUserId = Number(monitorUser[1]);
     const { users = [] } = await registryRequest(env, '/users', {});
@@ -801,8 +801,8 @@ async function handleOwnerCallback(callback, env) {
     const { events = [] } = await registryRequest(env, '/activity/list', { telegramUserId });
     const account = status.status >= 200 && status.status < 300 ? status.data : null;
     const state = !account ? 'نامشخص؛ Core در دسترس نیست' : account.connected ? 'متصل و آنلاین' : account.session_saved ? 'نشست مجاز ذخیره شده، اما آفلاین' : 'متصل نیست';
-    const history = events.map((event) => '• ' + new Date(event.at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + event.action).join('\\n') || 'رویدادی ثبت نشده است.';
-    return { text: '👤 جزئیات کاربر\\n\\nشناسه: ' + telegramUserId + '\\nنام: ' + (user.firstName || 'ثبت نشده') + '\\nنام کاربری: ' + (user.username ? '@' + user.username : 'ثبت نشده') + '\\nوضعیت دسترسی: ' + user.status + '\\nوضعیت حساب: ' + state + '\\nنشست ذخیره‌شده: ' + (account ? (account.session_saved ? 'بله' : 'خیر') : 'نامشخص') + '\\n\\n📜 آخرین فعالیت‌ها\\n' + history, keyboard: { inline_keyboard: [[{ text: '⬅️ بازگشت به نظارت', callback_data: 'owner:monitor' }], ...BACK_MENU.inline_keyboard] } };
+    const history = events.map((event) => '• ' + new Date(event.at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + event.action).join('\n') || 'رویدادی ثبت نشده است.';
+    return { text: '👤 جزئیات کاربر\n\nشناسه: ' + telegramUserId + '\nنام: ' + (user.firstName || 'ثبت نشده') + '\nنام کاربری: ' + (user.username ? '@' + user.username : 'ثبت نشده') + '\nوضعیت دسترسی: ' + user.status + '\nوضعیت حساب: ' + state + '\nنشست ذخیره‌شده: ' + (account ? (account.session_saved ? 'بله' : 'خیر') : 'نامشخص') + '\n\n📜 آخرین فعالیت‌ها\n' + history, keyboard: { inline_keyboard: [[{ text: '⬅️ بازگشت به نظارت', callback_data: 'owner:monitor' }], ...BACK_MENU.inline_keyboard] } };
   }
   if (data === 'owner:invites') {
     const { invites = [] } = await registryRequest(env, '/invite/list', {});
