@@ -10,6 +10,7 @@ from __future__ import annotations
 class TelegramSelfbotController:
     def __init__(self, *, incoming_handler=None, panel_image_url: str | None = None) -> None:
         self.enabled_users: set[str] = set()
+        self.incoming_event_counts: dict[str, int] = {}
         self._incoming_handler = incoming_handler
         self._panel_image_url = panel_image_url
 
@@ -30,6 +31,7 @@ class TelegramSelfbotController:
             raise RuntimeError("install KageCatch with the telegram extra") from exc
 
         async def incoming(event):
+            self.incoming_event_counts[user_id] = self.incoming_event_counts.get(user_id, 0) + 1
             if self._incoming_handler is not None:
                 result = self._incoming_handler(user_id, event)
                 if hasattr(result, "__await__"):
@@ -59,10 +61,10 @@ class TelegramSelfbotController:
                     await event.respond(caption, buttons=buttons)
             elif command == ".روشن":
                 self.set_enabled(user_id, True)
-                await event.respond("🟢 حالت Catch روشن شد. برای توقف، .خاموش را بفرست.")
+                await event.respond("🟢 حالت Catch روشن شد؛ اجرای واقعی بعد از اتصال Spawn Detector و Recognition Engine فعال می‌شود. برای توقف، .خاموش را بفرست.")
             elif command == ".خاموش":
                 self.set_enabled(user_id, False)
-                await event.respond("⏸ حالت Catch خاموش شد.")
+                await event.respond("⏸ حالت Catch خاموش شد؛ هیچ Catch جدیدی از این حالت اجرا نمی‌شود.")
 
         async def callback(event):
             if str(getattr(event, "sender_id", "")) != user_id:
