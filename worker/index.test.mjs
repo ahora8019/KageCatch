@@ -956,3 +956,84 @@ test("Mini App account connection waits for Telegram authentication to finish", 
   assert.match(html, /if\(!session\s*&&\s*authPromise\)\s*await authPromise/);
   assert.match(html, /authPromise\s*=\s*authenticate\(\)/);
 });
+
+
+test("owner menu exposes a dedicated invite-management section", () => {
+  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("owner:invites"));
+  assert.ok(callbacks.includes("owner:invite:create:1"));
+  assert.ok(callbacks.includes("owner:invite:create:10"));
+});
+
+test("invite records are owner-created, expiring, revocable, and limited by use count", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const create = () => store.fetch(new Request("https://do.internal/invite/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ maxUses: 2, ttlSeconds: 86400 }),
+  }));
+  const created = await create();
+  assert.equal(created.status, 201);
+  const invite = await created.json();
+  assert.match(invite.token, /^[A-Za-z0-9_-]{40,}$/);
+  assert.equal(invite.maxUses, 2);
+  assert.equal(invite.expiresIn, 86400);
+  const consume = (telegramUserId) => store.fetch(new Request("https://do.internal/invite/consume", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: invite.token, telegramUserId }),
+  }));
+  const first = await consume(100001);
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).user.status, "active");
+  const second = await consume(100002);
+  assert.equal(second.status, 200);
+  assert.equal((await second.json()).user.status, "active");
+  assert.equal((await consume(100003)).status, 410);
+});
+
+test("invite store rejects invalid tokens, duplicate member redemption, and supports revocation", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/invite/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ maxUses: 1, ttlSeconds: 3600 }),
+  }));
+  const { token } = await created.json();
+  const consume = (telegramUserId, value = token) => store.fetch(new Request("https://do.internal/invite/consume", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: value, telegramUserId }),
+  }));
+  assert.equal((await consume(200001, "invalid-token")).status, 410);
+  assert.equal((await consume(200001)).status, 200);
+  assert.equal((await consume(200001)).status, 200);
+  const revoked = await store.fetch(new Request("https://do.internal/invite/revoke", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+  }));
+  assert.equal(revoked.status, 200);
+  const second = await store.fetch(new Request("https://do.internal/invite/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ maxUses: 3, ttlSeconds: 3600 }),
+  }));
+  const secondToken = (await second.json()).token;
+  assert.equal((await store.fetch(new Request("https://do.internal/invite/revoke", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: secondToken }),
+  }))).status, 200);
+  assert.equal((await consume(200002, secondToken)).status, 410);
+});
+
+test("new Telegram users cannot self-register without a valid invitation", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001" };
+  const request = (text, fromId) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: fromId, message: { chat: { id: fromId, type: "private" }, from: { id: fromId }, text } }),
+  }), { ...env, TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token", FETCH: async () => new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }) });
+  const denied = await request("/start", 300001);
+  assert.equal(denied.status, 200);
+  assert.equal((await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 300001 }) }))).json instanceof Function, true);
+});
