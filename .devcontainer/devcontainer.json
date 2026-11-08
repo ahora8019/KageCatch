@@ -1,0 +1,10 @@
+{
+  "name": "KageCatch Codespace - Remote Commander test",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    }
+  },
+  "postAttachCommand": "bash -lc 'set -eu; LOG=\"$PWD/.codespace-remote-commander.log\"; EXCLUDE=\"$(git rev-parse --git-path info/exclude)\"; grep -qxF \"/.codespace-remote-commander.log\" \"$EXCLUDE\" || printf \"\\n/.codespace-remote-commander.log\\n\" >> \"$EXCLUDE\"; if ! pgrep -f \"[d]esktop-commander.*remote\" >/dev/null 2>&1; then nohup npx --yes @wonderwhy-er/desktop-commander@latest remote >\"$LOG\" 2>&1 </dev/null & fi; sleep 12; echo \"Remote Commander startup log: $LOG\"; tail -n 25 \"$LOG\" || true'"
+}
