@@ -1015,10 +1015,10 @@ test("invite store rejects invalid tokens, duplicate member redemption, and supp
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ maxUses: 3, ttlSeconds: 3600 }),
   }));
-  const secondToken = (await second.json()).token;
+  const secondInvite = await second.json();
   assert.equal((await store.fetch(new Request("https://do.internal/invite/revoke", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token: secondToken }),
+    body: JSON.stringify({ id: secondInvite.id }),
   }))).status, 200);
   assert.equal((await consume(200002, secondToken)).status, 410);
 });
@@ -1027,13 +1027,15 @@ test("new Telegram users cannot self-register without a valid invitation", async
   const { ConnectionLinkStore } = await import("./index.mjs");
   const store = new ConnectionLinkStore(createDurableObjectState());
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001" };
-  const request = (text, fromId) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
-    method: "POST",
-    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
-    body: JSON.stringify({ update_id: fromId, message: { chat: { id: fromId, type: "private" }, from: { id: fromId }, text } }),
-  }), { ...env, TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token", FETCH: async () => new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }) });
-  const denied = await request("/start", 300001);
+  const calls = [];
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
+    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
+  const denied = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 300001, message: { chat: { id: 300001, type: "private" }, from: { id: 300001 }, text: "/start" } }),
+  }), env);
   assert.equal(denied.status, 200);
-  assert.equal((await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 300001 }) }))).json instanceof Function, true);
+  assert.match(calls[0].text, /لینک دعوت نیاز داری/);
+  const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 300001 }) }));
+  assert.equal((await user.json()).user, null);
 });
