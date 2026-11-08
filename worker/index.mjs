@@ -1174,7 +1174,7 @@ async function internalManualReviewStore(request, env) {
         || Date.parse(expires_at) <= Date.parse(created_at)) return json({ error: "invalid_review_item" }, 400);
       await env.KAGECATCH_DB.prepare(
         "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL)"
-      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), created_at, expires_at).run();
+      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), new Date(created_at).toISOString(), new Date(expires_at).toISOString()).run();
       return json({ status: "created" }, 201);
     }
 
