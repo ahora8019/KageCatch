@@ -1168,3 +1168,99 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
   assert.match(edit.payload.text, /TestUser/);
   assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:monitor:user:500002"));
 });
+
+
+test("Owner menu exposes alerts, access management, and service status", () => {
+  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("owner:alerts"));
+  assert.ok(callbacks.includes("owner:access"));
+  assert.ok(callbacks.includes("owner:services"));
+  const memberCallbacks = buildRoleMenu("MEMBER").inline_keyboard.flat().map((button) => button.callback_data);
+  assert.equal(memberCallbacks.some((value) => value?.startsWith("owner:")), false);
+});
+
+test("Owner alerts screen reports webhook and Core problems without exposing secrets", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }) }));
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CORE_API_URL: "https://core.example", CORE_API_SECRET: "a".repeat(40),
+    FETCH: async (url, init) => {
+      const target = String(url);
+      const method = target.split("/").pop();
+      if (target.endsWith("/v1/health")) return new Response(JSON.stringify({ status: "degraded" }), { status: 503 });
+      if (method === "getWebhookInfo") return new Response(JSON.stringify({ ok: true, result: { url: "https://kagecatch-control.ahora-project.workers.dev/webhook", pending_update_count: 2, last_error_message: "502 Bad Gateway" } }));
+      if (method === "getMe") return new Response(JSON.stringify({ ok: true, result: { id: 123, username: "KageCatchBot" } }));
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true, result: {} }));
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 990001, callback_query: { id: "alert-cb", data: "owner:alerts", from: { id: 999001 }, message: { message_id: 1, chat: { id: 999001, type: "private" } } } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const edit = calls.find((payload) => payload.method === "editMessageText");
+  assert.ok(edit);
+  assert.match(edit.text, /هشدار/);
+  assert.match(edit.text, /502 Bad Gateway/);
+  assert.match(edit.text, /Core/);
+  assert.doesNotMatch(edit.text, /CORE_API_SECRET|bot-token|hook-secret/);
+});
+
+test("Owner services screen distinguishes Worker, Telegram, Core, and database health", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }) }));
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CORE_API_URL: "https://core.example", CORE_API_SECRET: "a".repeat(40),
+    KAGECATCH_DB: { prepare: () => ({ first: async () => ({ ok: 1 }) }) },
+    FETCH: async (url, init) => {
+      const target = String(url);
+      const method = target.split("/").pop();
+      if (target.endsWith("/v1/health")) return new Response(JSON.stringify({ status: "ready" }));
+      if (method === "getWebhookInfo") return new Response(JSON.stringify({ ok: true, result: { url: "https://kagecatch-control.ahora-project.workers.dev/webhook", pending_update_count: 0 } }));
+      if (method === "getMe") return new Response(JSON.stringify({ ok: true, result: { id: 123, username: "KageCatchBot" } }));
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true, result: {} }));
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 990002, callback_query: { id: "service-cb", data: "owner:services", from: { id: 999001 }, message: { message_id: 2, chat: { id: 999001, type: "private" } } } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const edit = calls.find((payload) => payload.method === "editMessageText");
+  assert.ok(edit);
+  assert.match(edit.text, /Worker/);
+  assert.match(edit.text, /Telegram/);
+  assert.match(edit.text, /Core/);
+  assert.match(edit.text, /D1|دیتابیس/);
+  assert.match(edit.text, /فعال|متصل/);
+});
+
+test("Owner access screen reuses safe member block and unblock controls", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }) }));
+  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 500003, ownerTelegramId: "999001" }) }));
+  const calls = [];
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: {} })); } };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 990003, callback_query: { id: "access-cb", data: "owner:access", from: { id: 999001 }, message: { message_id: 3, chat: { id: 999001, type: "private" } } } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const edit = calls.find((payload) => payload.method === "editMessageText");
+  assert.ok(edit);
+  assert.match(edit.text, /دسترسی/);
+  assert.ok(edit.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:block:500003"));
+});
