@@ -1029,7 +1029,7 @@ test("new Telegram users cannot self-register without a valid invitation", async
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const calls = [];
   const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
-    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
+    FETCH: async (url, init) => { calls.push({ method, payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
   const denied = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
     body: JSON.stringify({ update_id: 300001, message: { chat: { id: 300001, type: "private" }, from: { id: 300001 }, text: "/start" } }),
@@ -1083,7 +1083,7 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
   const invite = await created.json();
   const calls = [];
   const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
-    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
+    FETCH: async (url, init) => { calls.push({ method, payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
     body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
@@ -1194,7 +1194,7 @@ test("Owner alerts screen reports webhook and Core problems without exposing sec
       if (target.endsWith("/v1/health")) return new Response(JSON.stringify({ status: "degraded" }), { status: 503 });
       if (method === "getWebhookInfo") return new Response(JSON.stringify({ ok: true, result: { url: "https://kagecatch-control.ahora-project.workers.dev/webhook", pending_update_count: 2, last_error_message: "502 Bad Gateway" } }));
       if (method === "getMe") return new Response(JSON.stringify({ ok: true, result: { id: 123, username: "KageCatchBot" } }));
-      calls.push(JSON.parse(init.body));
+      calls.push({ method, payload: JSON.parse(init.body) });
       return new Response(JSON.stringify({ ok: true, result: {} }));
     },
   };
@@ -1203,12 +1203,12 @@ test("Owner alerts screen reports webhook and Core problems without exposing sec
     body: JSON.stringify({ update_id: 990001, callback_query: { id: "alert-cb", data: "owner:alerts", from: { id: 999001 }, message: { message_id: 1, chat: { id: 999001, type: "private" } } } }),
   }), env);
   assert.equal(response.status, 200);
-  const edit = calls.find((payload) => payload.method === "editMessageText");
+  const edit = calls.find((call) => call.method === "editMessageText");
   assert.ok(edit);
-  assert.match(edit.text, /هشدار/);
-  assert.match(edit.text, /502 Bad Gateway/);
-  assert.match(edit.text, /Core/);
-  assert.doesNotMatch(edit.text, /CORE_API_SECRET|bot-token|hook-secret/);
+  assert.match(edit.payload.text, /هشدار/);
+  assert.match(edit.payload.text, /502 Bad Gateway/);
+  assert.match(edit.payload.text, /Core/);
+  assert.doesNotMatch(edit.payload.text, /CORE_API_SECRET|bot-token|hook-secret/);
 });
 
 test("Owner services screen distinguishes Worker, Telegram, Core, and database health", async () => {
@@ -1227,7 +1227,7 @@ test("Owner services screen distinguishes Worker, Telegram, Core, and database h
       if (target.endsWith("/v1/health")) return new Response(JSON.stringify({ status: "ready" }));
       if (method === "getWebhookInfo") return new Response(JSON.stringify({ ok: true, result: { url: "https://kagecatch-control.ahora-project.workers.dev/webhook", pending_update_count: 0 } }));
       if (method === "getMe") return new Response(JSON.stringify({ ok: true, result: { id: 123, username: "KageCatchBot" } }));
-      calls.push(JSON.parse(init.body));
+      calls.push({ method, payload: JSON.parse(init.body) });
       return new Response(JSON.stringify({ ok: true, result: {} }));
     },
   };
@@ -1236,13 +1236,13 @@ test("Owner services screen distinguishes Worker, Telegram, Core, and database h
     body: JSON.stringify({ update_id: 990002, callback_query: { id: "service-cb", data: "owner:services", from: { id: 999001 }, message: { message_id: 2, chat: { id: 999001, type: "private" } } } }),
   }), env);
   assert.equal(response.status, 200);
-  const edit = calls.find((payload) => payload.method === "editMessageText");
+  const edit = calls.find((call) => call.method === "editMessageText");
   assert.ok(edit);
-  assert.match(edit.text, /Worker/);
-  assert.match(edit.text, /Telegram/);
-  assert.match(edit.text, /Core/);
-  assert.match(edit.text, /D1|دیتابیس/);
-  assert.match(edit.text, /فعال|متصل/);
+  assert.match(edit.payload.text, /Worker/);
+  assert.match(edit.payload.text, /Telegram/);
+  assert.match(edit.payload.text, /Core/);
+  assert.match(edit.payload.text, /D1|دیتابیس/);
+  assert.match(edit.payload.text, /فعال|متصل/);
 });
 
 test("Owner access screen reuses safe member block and unblock controls", async () => {
@@ -1253,14 +1253,14 @@ test("Owner access screen reuses safe member block and unblock controls", async 
   await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 500003, ownerTelegramId: "999001" }) }));
   const calls = [];
   const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
-    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: {} })); } };
+    FETCH: async (url, init) => { calls.push({ method, payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: {} })); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
     body: JSON.stringify({ update_id: 990003, callback_query: { id: "access-cb", data: "owner:access", from: { id: 999001 }, message: { message_id: 3, chat: { id: 999001, type: "private" } } } }),
   }), env);
   assert.equal(response.status, 200);
-  const edit = calls.find((payload) => payload.method === "editMessageText");
+  const edit = calls.find((call) => call.method === "editMessageText");
   assert.ok(edit);
-  assert.match(edit.text, /دسترسی/);
-  assert.ok(edit.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:block:500003"));
+  assert.match(edit.payload.text, /دسترسی/);
+  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:block:500003"));
 });
