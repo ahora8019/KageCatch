@@ -30,7 +30,9 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sends_command_to_configured_target_using_authorized_client(self):
         client = FakeClient()
-        adapter = TelethonCatchAdapter(client=client, source="henta_catcher")
+        adapter = TelethonCatchAdapter(
+            client=client, source="henta_catcher", dispatch_enabled=True
+        )
         receipt = await adapter.send_catch(self.spawn(), "Sakura")
 
         self.assertEqual(client.sent, [("HentaCatcherBot", "/catch Sakura")])
@@ -51,13 +53,16 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
             client=client,
             source="henta_catcher",
             response_verifier=verifier,
+            dispatch_enabled=True,
         )
         receipt = await adapter.send_catch(self.spawn(), "Sakura")
         self.assertTrue(await adapter.verify_catch(receipt))
 
     async def test_rejects_spawn_from_another_source_before_sending(self):
         client = FakeClient()
-        adapter = TelethonCatchAdapter(client=client, source="henta_catcher")
+        adapter = TelethonCatchAdapter(
+            client=client, source="henta_catcher", dispatch_enabled=True
+        )
         spawn = self.spawn()
         wrong = Spawn(
             source="character_catcher",
