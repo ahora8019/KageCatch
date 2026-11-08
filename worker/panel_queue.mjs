@@ -1,0 +1,168 @@
+const QUEUE_PATH = "/internal/panel-requests";
+const MAX_QUEUE_BODY_BYTES = 4096;
+const PANEL_TTL_MINUTES = 10;
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+function validPayload(payload) {
+  return payload && typeof payload === "object" && !Array.isArray(payload)
+    && typeof payload.owner_id === "string"
+    && /^[1-9][0-9]{0,15}$/.test(payload.owner_id)
+    && Number(payload.owner_id) <= 2 ** 52 - 1
+    && Number.isSafeInteger(payload.chat_id) && payload.chat_id < 0
+    && Number.isSafeInteger(payload.source_message_id) && payload.source_message_id > 0;
+}
+
+async function verifySignedRequest(request, env, rawBody) {
+  if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32 || !env.CONNECT_LINKS) return 503;
+  const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
+  const nonce = request.headers.get("X-KageCatch-Nonce") || "";
+  const supplied = request.headers.get("X-KageCatch-Signature") || "";
+  if (!/^\d{10,12}$/.test(timestampRaw) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(supplied)) return 401;
+  if (Math.abs(Math.floor(Date.now() / 1000) - Number(timestampRaw)) > 60) return 401;
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const path = new URL(request.url).pathname;
+  const signingText = [timestampRaw, nonce, request.method, path, bodyHash].join("\n");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText)));
+  const expected = Array.from(expectedBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let difference = expected.length ^ supplied.length;
+  for (let i = 0; i < expected.length; i += 1) difference |= expected.charCodeAt(i) ^ supplied.charCodeAt(i);
+  if (difference !== 0) return 401;
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const claim = await stub.fetch("https://connect-links.internal/claim-nonce", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nonce, expiresAt: Date.now() + 120000 }),
+  });
+  if (claim.status === 409) return 409;
+  if (!claim.ok) return 503;
+  return 200;
+}
+
+export async function enqueuePanelRequest(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  if (!env.KAGECATCH_DB) return json({ error: "panel_queue_not_configured" }, 503);
+  let rawBody;
+  try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
+  if (rawBody.byteLength > MAX_QUEUE_BODY_BYTES) return json({ error: "request_too_large" }, 413);
+  const auth = await verifySignedRequest(request, env, rawBody);
+  if (auth !== 200) return json({ error: auth === 409 ? "request_replayed" : auth === 503 ? "panel_queue_not_configured" : "unauthorized" }, auth);
+  let payload;
+  try { payload = JSON.parse(new TextDecoder().decode(rawBody)); } catch { return json({ error: "invalid_request" }, 400); }
+  if (!validPayload(payload)) return json({ error: "invalid_panel_request" }, 400);
+
+  const identity = [payload.owner_id, String(payload.chat_id), String(payload.source_message_id)].join(":");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity));
+  const idempotencyKey = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const requestId = crypto.randomUUID().replaceAll("-", "");
+  try {
+    await env.KAGECATCH_DB.prepare(
+      "INSERT INTO panel_requests (request_id, idempotency_key, owner_id, chat_id, source_message_id, status, expires_at) VALUES (?, ?, ?, ?, ?, 'pending', datetime('now', '+10 minutes')) ON CONFLICT(idempotency_key) DO NOTHING"
+    ).bind(requestId, idempotencyKey, payload.owner_id, String(payload.chat_id), payload.source_message_id).run();
+    const row = await env.KAGECATCH_DB.prepare(
+      "SELECT request_id, status FROM panel_requests WHERE idempotency_key = ?"
+    ).bind(idempotencyKey).first();
+    if (!row) return json({ error: "panel_queue_unavailable" }, 503);
+    return json({ accepted: true, request_id: row.request_id, duplicate: row.request_id !== requestId, status: row.status }, 202);
+  } catch {
+    return json({ error: "panel_queue_unavailable" }, 503);
+  }
+}
+
+export async function processPanelQueue(env, sendTelegram) {
+  if (!env.KAGECATCH_DB || typeof sendTelegram !== "function") return { processed: 0 };
+  const rows = await env.KAGECATCH_DB.prepare(
+    "SELECT request_id FROM panel_requests WHERE status = 'pending' AND expires_at > CURRENT_TIMESTAMP AND attempts < 3 ORDER BY created_at LIMIT 10"
+  ).all();
+  let processed = 0;
+  for (const item of rows.results || []) {
+    const row = await env.KAGECATCH_DB.prepare(
+      "UPDATE panel_requests SET status = 'processing', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP RETURNING request_id, owner_id, chat_id, source_message_id, attempts"
+    ).bind(item.request_id).first();
+    if (!row) continue;
+    try {
+      const callback = (action) => "kp:" + row.request_id + ":" + action;
+      const sent = await sendTelegram("sendMessage", {
+        chat_id: Number(row.chat_id),
+        text: "🌸 <b>KageCatch — پنل گروه</b>\n━━━━━━━━━━━━━━\nوضعیت: آماده\nموتور Catch: خاموش\n\nاین پنل فقط برای سازنده قابل کنترل است.",
+        parse_mode: "HTML",
+        reply_markup: { inline_keyboard: [
+          [{ text: "📊 آمار", callback_data: callback("stats") }, { text: "🎯 موتور Catch", callback_data: callback("engine") }],
+          [{ text: "⚙️ تنظیمات", callback_data: callback("settings") }, { text: "🔄 بروزرسانی", callback_data: callback("refresh") }],
+          [{ text: "✖️ بستن پنل", callback_data: callback("close") }],
+        ] },
+      });
+      const messageId = sent?.message_id;
+      if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("invalid_telegram_message");
+      await env.KAGECATCH_DB.prepare(
+        "UPDATE panel_requests SET status = 'completed', panel_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
+      ).bind(messageId, row.request_id).run();
+      processed += 1;
+    } catch {
+      const nextStatus = row.attempts >= 3 ? "failed" : "pending";
+      await env.KAGECATCH_DB.prepare(
+        "UPDATE panel_requests SET status = ?, last_error_code = 'telegram_delivery_failed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
+      ).bind(nextStatus, row.request_id).run();
+    }
+  }
+  return { processed };
+}
+
+export function parsePanelCallback(data) {
+  if (typeof data !== "string") return null;
+  const match = data.match(/^kp:([a-f0-9]{32}):(stats|engine|settings|refresh|close)$/);
+  return match ? { requestId: match[1], action: match[2] } : null;
+}
+
+export async function handlePanelCallback(callback, env, telegramApi) {
+  const parsed = parsePanelCallback(callback?.data);
+  if (!parsed) return false;
+  const message = callback.message;
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  const actorId = callback.from?.id;
+  const deny = async () => telegramApi(env, "answerCallbackQuery", {
+    callback_query_id: callback.id,
+    text: "⛔ شما به این پنل دسترسی ندارید!",
+    show_alert: true,
+  });
+  if (!Number.isSafeInteger(chatId) || !Number.isSafeInteger(messageId) || !Number.isSafeInteger(actorId) || !env.KAGECATCH_DB) {
+    await deny();
+    return true;
+  }
+  let row;
+  try {
+    row = await env.KAGECATCH_DB.prepare(
+      "SELECT request_id, owner_id, chat_id, panel_message_id, status, expires_at FROM panel_requests WHERE request_id = ?"
+    ).bind(parsed.requestId).first();
+  } catch { row = null; }
+  if (!row || String(actorId) !== row.owner_id || String(chatId) !== row.chat_id
+    || messageId !== row.panel_message_id || row.status !== "completed"
+    || Date.parse(row.expires_at + "Z") <= Date.now()) {
+    await deny();
+    return true;
+  }
+  await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id });
+  if (parsed.action === "close") {
+    await env.KAGECATCH_DB.prepare(
+      "UPDATE panel_requests SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'completed'"
+    ).bind(parsed.requestId).run();
+    await telegramApi(env, "editMessageText", {
+      chat_id: chatId, message_id: messageId,
+      text: "🌸 پنل KageCatch بسته شد.",
+    });
+    return true;
+  }
+  const text = parsed.action === "stats" ? "📊 آمار پنل\n\nدرخواست‌های Catch: در حال آماده‌سازی"
+    : parsed.action === "engine" ? "🎯 موتور Catch\n\nوضعیت: خاموش\nارسال زنده فرمان فعال نیست."
+    : parsed.action === "settings" ? "⚙️ تنظیمات\n\nتنظیمات عملیاتی هنوز فعال نشده‌اند."
+    : "🌸 پنل بروزرسانی شد.\nموتور Catch: خاموش";
+  await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text });
+  return true;
+}
