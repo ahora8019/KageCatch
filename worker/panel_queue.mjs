@@ -147,6 +147,17 @@ export function parsePanelCallback(data) {
   return match ? { requestId: match[1], action: match[2] } : null;
 }
 
+async function readPanelQueueStats(db) {
+  const result = await db.prepare(
+    "SELECT status, COUNT(*) AS total FROM panel_requests GROUP BY status"
+  ).all();
+  const counts = { pending: 0, processing: 0, completed: 0, failed: 0, expired: 0, closed: 0 };
+  for (const row of result.results || []) {
+    if (Object.hasOwn(counts, row.status)) counts[row.status] = Number(row.total) || 0;
+  }
+  return counts;
+}
+
 export async function handlePanelCallback(callback, env, telegramApi) {
   const parsed = parsePanelCallback(callback?.data);
   if (!parsed) return false;
@@ -186,10 +197,35 @@ export async function handlePanelCallback(callback, env, telegramApi) {
     });
     return true;
   }
-  const text = parsed.action === "stats" ? "📊 آمار پنل\n\nدرخواست‌های Catch: در حال آماده‌سازی"
-    : parsed.action === "engine" ? "🎯 موتور Catch\n\nوضعیت: خاموش\nارسال زنده فرمان فعال نیست."
-    : parsed.action === "settings" ? "⚙️ تنظیمات\n\nتنظیمات عملیاتی هنوز فعال نشده‌اند."
-    : "🌸 پنل بروزرسانی شد.\nموتور Catch: خاموش";
-  await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text });
+
+  let text;
+  if (parsed.action === "stats") {
+    try {
+      const stats = await readPanelQueueStats(env.KAGECATCH_DB);
+      const total = Object.values(stats).reduce((sum, value) => sum + value, 0);
+      text = [
+        "📊 آمار زندهٔ پنل KageCatch",
+        "━━━━━━━━━━━━━━",
+        `درخواست‌های ثبت‌شده: ${total}`,
+        `⏳ در انتظار: ${stats.pending}`,
+        `⚙️ در حال پردازش: ${stats.processing}`,
+        `✅ تکمیل‌شده: ${stats.completed}`,
+        `❌ ناموفق: ${stats.failed}`,
+        `⌛ منقضی: ${stats.expired}`,
+        `🔒 بسته‌شده: ${stats.closed}`,
+      ].join("\\n");
+    } catch {
+      text = "⚠️ دریافت آمار از پایگاه داده ممکن نشد؛ دوباره بروزرسانی کن.";
+    }
+  } else if (parsed.action === "engine") {
+    text = "🎯 موتور Catch\\n━━━━━━━━━━━━━━\\nوضعیت: خاموش\\nاجرای زنده هنوز به موتور تشخیص و کنترل متصل نشده است؛ این دکمه فعلاً موتور را روشن نمی‌کند.";
+  } else if (parsed.action === "settings") {
+    text = "⚙️ تنظیمات پنل\\n━━━━━━━━━━━━━━\\nتنظیمات عملیاتی هنوز به ذخیره‌ساز متصل نشده‌اند. هیچ تغییری اعمال نشده است.";
+  } else {
+    text = "🌸 پنل KageCatch بروزرسانی شد.\\nوضعیت موتور Catch: خاموش";
+  }
+  await telegramApi(env, "editMessageText", {
+    chat_id: chatId, message_id: messageId, text,
+  });
   return true;
 }
