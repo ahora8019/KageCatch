@@ -45,7 +45,7 @@ class D1ManualReviewStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(body)["action"], "create")
         timestamp = request.headers["X-KageCatch-Timestamp"]
         nonce = request.headers["X-KageCatch-Nonce"]
-        expected_text = "\\n".join([
+        expected_text = "\n".join([
             timestamp, nonce, "POST", "/internal/manual-review",
             hashlib.sha256(body).hexdigest(),
         ])
