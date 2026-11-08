@@ -1,4 +1,6 @@
+import os
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -28,6 +30,24 @@ class CoreApiReviewLifecycleTests(unittest.TestCase):
         with TestClient(app):
             self.assertFalse(store.closed)
         self.assertTrue(store.closed)
+
+
+    def test_environment_configured_store_is_created_at_startup_and_closed(self):
+        with patch.dict(os.environ, {
+            "KAGECATCH_SESSION_STORE_URL": "https://control.example.test",
+            "KAGECATCH_CORE_SECRET": SECRET,
+        }):
+            app = create_app(
+                core_secret=SECRET, runtime=object(),
+                session_manager=object(),
+            )
+            self.assertIsNone(app.state.review_store)
+            with TestClient(app):
+                store = app.state.review_store
+                self.assertIsNotNone(store)
+                self.assertIsNotNone(app.state.review_queue)
+                self.assertFalse(store._client.is_closed)
+            self.assertTrue(store._client.is_closed)
 
     def test_review_pipeline_is_exposed_on_application_state(self):
         pipeline = object()
