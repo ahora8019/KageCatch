@@ -99,6 +99,9 @@ def create_app(
     auth_flow=None,
     nonce_store: NonceStore | None = None,
     clock=time.time,
+    review_store=None,
+    review_queue=None,
+    review_pipeline=None,
 ) -> FastAPI:
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
     logging.getLogger("kagecatch.core").info("Core configuration presence: %s", _configuration_presence(secret))
@@ -115,6 +118,11 @@ def create_app(
 
     replay_guard = nonce_store or InMemoryNonceStore(clock=clock)
     app = FastAPI(title="KageCatch Core", docs_url=None, redoc_url=None, openapi_url=None)
+    # Review persistence is an independent resource from Telegram sessions.
+    # Construct the network client during startup, never at module import time.
+    app.state.review_store = review_store
+    app.state.review_queue = review_queue
+    app.state.review_pipeline = review_pipeline
 
     async def require_core_auth(request: Request) -> None:
         if not secret:
@@ -141,6 +149,30 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid_signature")
         if not await replay_guard.claim(nonce, now + 120):
             raise HTTPException(status_code=409, detail="request_replayed")
+
+    @app.on_event("startup")
+    async def initialize_review_runtime() -> None:
+        if app.state.review_store is None:
+            store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
+            store_secret = os.getenv("KAGECATCH_CORE_SECRET", "")
+            if store_url and store_secret:
+                from .d1_manual_review_store import D1ManualReviewStore
+                app.state.review_store = D1ManualReviewStore(store_url, store_secret)
+        if app.state.review_queue is None and app.state.review_store is not None:
+            from .persistent_manual_review_queue import PersistentManualReviewQueue
+            app.state.review_queue = PersistentManualReviewQueue(store=app.state.review_store)
+
+    @app.on_event("shutdown")
+    async def close_review_runtime() -> None:
+        store = app.state.review_store
+        close = getattr(store, "close", None) if store is not None else None
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Manual review store shutdown failed"
+                )
 
     @app.on_event("startup")
     async def restore_authorized_sessions() -> None:
