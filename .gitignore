@@ -1,4 +1,6 @@
 # Local secrets and runtime state
+.dev.vars
+.dev.vars.*
 .env
 .env.*
 !.env.example
