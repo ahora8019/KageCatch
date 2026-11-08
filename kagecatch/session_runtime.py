@@ -93,6 +93,10 @@ class SessionRuntime:
                 failed += 1
         return {"connected": connected, "failed": failed}
 
+    async def reconnect_all(self) -> dict[str, int]:
+        """Compatibility entry point for restoring every saved authorized account."""
+        return await self.restore_saved_sessions()
+
     async def get_client(self, user_id: str) -> RuntimeClient | None:
         await self._user_lock(user_id)
         return self._clients.get(user_id)
