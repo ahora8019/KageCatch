@@ -1424,3 +1424,33 @@ test("webhook processing failures emit structured diagnostics without exposing e
     console.error = originalError;
   }
 });
+
+
+test("scheduled keepalive sends a lightweight GET to the Render Core liveness endpoint", async () => {
+  let captured;
+  const result = await worker.scheduled(
+    { cron: "*/10 * * * *", scheduledTime: Date.now() },
+    {
+      FETCH: async (url, init) => {
+        captured = { url, init };
+        return new Response(JSON.stringify({ service: "KageCatch Core", status: "alive" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    },
+  );
+  assert.equal(captured.url, "https://kagecatch-core-preview.onrender.com/healthz");
+  assert.equal(captured.init.method, "GET");
+  assert.equal(result.status, 200);
+  assert.equal(result.ok, true);
+});
+
+test("scheduled keepalive reports Render failures without crashing the Cron invocation", async () => {
+  const result = await worker.scheduled(
+    { cron: "*/10 * * * *", scheduledTime: Date.now() },
+    { FETCH: async () => new Response("unavailable", { status: 503 }) },
+  );
+  assert.equal(result.status, 503);
+  assert.equal(result.ok, false);
+});
