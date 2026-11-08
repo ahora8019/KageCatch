@@ -1384,3 +1384,43 @@ test("durable manual review endpoint atomically caps pending items at 100 per us
   assert.deepEqual(await overflow.json(), { error: "pending_queue_limit_reached" });
   assert.equal(db.rows.size, 100);
 });
+
+
+test("webhook processing failures emit structured diagnostics without exposing error messages or secrets", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  await store.fetch(new Request("https://do.internal/register", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }),
+  }));
+  const originalError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    const env = {
+      CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001",
+      TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+      FETCH: async () => { throw Object.assign(new Error("token=must-not-appear"), { status: 502 }); },
+    };
+    const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+      body: JSON.stringify({ update_id: 7654321, callback_query: {
+        id: "cb-failure", data: "menu:main", from: { id: 999001 },
+        message: { message_id: 12, chat: { id: 999001, type: "private" } },
+      } }),
+    }), env);
+    assert.equal(response.status, 502);
+    assert.equal(logs.length, 1);
+    const event = JSON.parse(logs[0]);
+    assert.equal(event.event, "telegram_webhook_processing_failed");
+    assert.equal(event.stage, "callback");
+    assert.equal(event.update_id, 7654321);
+    assert.equal(event.upstream_status, 502);
+    assert.equal(event.error_name, "Error");
+    assert.doesNotMatch(logs[0], /must-not-appear|test-token|hook-secret/);
+  } finally {
+    console.error = originalError;
+  }
+});
