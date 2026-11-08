@@ -2,6 +2,7 @@
 
 Required environment:
   KAGECATCH_PREVIEW_WORKER_URL=https://<preview-worker-host>
+  # For wrangler.preview.toml local execution: http://127.0.0.1:8787
   KAGECATCH_CORE_SECRET=<same value as Preview Worker's CORE_API_SECRET>
   KAGECATCH_PREVIEW_CONFIRM=I_AM_USING_PREVIEW_D1
 
