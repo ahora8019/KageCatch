@@ -213,16 +213,16 @@ export async function handlePanelCallback(callback, env, telegramApi) {
         `❌ ناموفق: ${stats.failed}`,
         `⌛ منقضی: ${stats.expired}`,
         `🔒 بسته‌شده: ${stats.closed}`,
-      ].join("\\n");
+      ].join("\n");
     } catch {
       text = "⚠️ دریافت آمار از پایگاه داده ممکن نشد؛ دوباره بروزرسانی کن.";
     }
   } else if (parsed.action === "engine") {
-    text = "🎯 موتور Catch\\n━━━━━━━━━━━━━━\\nوضعیت: خاموش\\nارسال زنده فرمان فعال نیست؛ موتور تشخیص و کنترل هنوز متصل نشده و این دکمه موتور را روشن نمی‌کند.";
+    text = "🎯 موتور Catch\n━━━━━━━━━━━━━━\nوضعیت: خاموش\nارسال زنده فرمان فعال نیست؛ موتور تشخیص و کنترل هنوز متصل نشده و این دکمه موتور را روشن نمی‌کند.";
   } else if (parsed.action === "settings") {
-    text = "⚙️ تنظیمات پنل\\n━━━━━━━━━━━━━━\\nتنظیمات عملیاتی هنوز به ذخیره‌ساز متصل نشده‌اند. هیچ تغییری اعمال نشده است.";
+    text = "⚙️ تنظیمات پنل\n━━━━━━━━━━━━━━\nتنظیمات عملیاتی هنوز به ذخیره‌ساز متصل نشده‌اند. هیچ تغییری اعمال نشده است.";
   } else {
-    text = "🌸 پنل KageCatch بروزرسانی شد.\\nوضعیت موتور Catch: خاموش";
+    text = "🌸 پنل KageCatch بروزرسانی شد.\nوضعیت موتور Catch: خاموش";
   }
   await telegramApi(env, "editMessageText", {
     chat_id: chatId, message_id: messageId, text,
