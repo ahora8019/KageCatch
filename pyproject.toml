@@ -16,3 +16,6 @@ test = []
 
 [tool.setuptools.packages.find]
 include = ["kagecatch*"]
+
+[tool.setuptools.package-data]
+kagecatch = ["data/*.json"]
