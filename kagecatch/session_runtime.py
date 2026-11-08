@@ -26,9 +26,11 @@ class SessionRuntime:
         *,
         session_manager: SessionManager,
         client_factory: ClientFactory,
+        handler_registrar=None,
     ) -> None:
         self._session_manager = session_manager
         self._client_factory = client_factory
+        self._handler_registrar = handler_registrar
         self._clients: dict[str, RuntimeClient] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
@@ -59,6 +61,8 @@ class SessionRuntime:
                 await client.connect()
                 if not await client.is_user_authorized():
                     raise PermissionError("stored Telegram session is no longer authorized")
+                if self._handler_registrar is not None:
+                    await self._handler_registrar(client, user_id)
             except Exception:
                 try:
                     await client.disconnect()
