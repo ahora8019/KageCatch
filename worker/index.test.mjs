@@ -1098,3 +1098,41 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
 test("unknown Telegram identities are denied until an Owner invitation is redeemed", () => {
   assert.equal(resolveRole(7654321, "999001"), "DENIED");
 });
+
+
+test("Owner invite screen renders real line breaks and keeps creation and back buttons visible", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }) }));
+  const calls = [];
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    FETCH: async (url, init) => { calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }); } };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 900002, callback_query: { id: "cb2", data: "owner:invites", from: { id: 999001 }, message: { message_id: 6, chat: { id: 999001, type: "private" } } } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(edit);
+  assert.doesNotMatch(edit.payload.text, /\\\\n/);
+  const rows = edit.payload.reply_markup.inline_keyboard;
+  assert.ok(rows.flat().some((button) => button.callback_data === "owner:invite:create:1"));
+  assert.ok(rows.flat().some((button) => button.callback_data === "owner:invite:create:10"));
+  assert.ok(rows.flat().some((button) => button.callback_data === "home:admin"));
+});
+
+test("Owner activity registry stores only action metadata and updates last-seen time", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const recorded = await store.fetch(new Request("https://do.internal/activity/record", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 500001, action: "account:list" }),
+  }));
+  assert.equal(recorded.status, 200);
+  const users = await store.fetch(new Request("https://do.internal/users", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+  const user = (await users.json()).users.find((item) => item.telegramUserId === 500001);
+  assert.equal(user.lastAction, "account:list");
+  assert.ok(Number.isFinite(user.lastSeenAt));
+  assert.equal(Object.hasOwn(user, "messageText"), false);
+});
