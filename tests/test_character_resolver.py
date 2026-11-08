@@ -101,5 +101,5 @@ class SuggestionFormatterTests(unittest.TestCase):
             format_character_suggestion(resolved, anime_name="KonoSuba", spawn_id=1)
 
 
-if __ __name__ == "__main__":
+if __name__ == "__main__":
     unittest.main()
