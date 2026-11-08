@@ -1455,3 +1455,27 @@ test("scheduled keepalive reports Render failures without crashing the Cron invo
   assert.equal(result.status, 503);
   assert.equal(result.ok, false);
 });
+
+
+test("scheduled keepalive never drains the panel queue or depends on D1", async () => {
+  let keepaliveCalls = 0;
+  let databaseCalls = 0;
+  const result = await worker.scheduled(
+    { cron: "*/10 * * * *", scheduledTime: Date.now() },
+    {
+      FETCH: async () => {
+        keepaliveCalls += 1;
+        return new Response("alive", { status: 200 });
+      },
+      KAGECATCH_DB: {
+        prepare() {
+          databaseCalls += 1;
+          throw new Error("scheduled keepalive must not touch the panel queue");
+        },
+      },
+    },
+  );
+  assert.equal(result.status, 200);
+  assert.equal(keepaliveCalls, 1);
+  assert.equal(databaseCalls, 0);
+});
