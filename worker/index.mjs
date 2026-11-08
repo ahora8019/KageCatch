@@ -202,7 +202,7 @@ export function buildStartMenu(role = "MEMBER") {
   return buildRoleMenu(role);
 }
 
-export function resolveRole(userId, ownerTelegramId, storedRole = "MEMBER", status = "active") {
+export function resolveRole(userId, ownerTelegramId, storedRole = "DENIED", status = "active") {
   if (status === "blocked") return "BLOCKED";
   if (!Number.isSafeInteger(userId)) return "DENIED";
   if (/^\d+$/.test(String(ownerTelegramId || "")) && String(userId) === String(ownerTelegramId)) return "OWNER";
