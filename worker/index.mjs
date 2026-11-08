@@ -551,7 +551,7 @@ export class ConnectionLinkStore {
       if (![1, 2, 5, 10, 25, 100].includes(maxUses) || ![3600, 86400, 604800].includes(ttlSeconds)) return json({ error: 'invalid_invite_options' }, 400);
       const bytes = crypto.getRandomValues(new Uint8Array(32));
       let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      const token = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      const token = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
       const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
       const idBytes = crypto.getRandomValues(new Uint8Array(9));
@@ -803,7 +803,7 @@ async function handleOwnerCallback(callback, env) {
     keyboard.push([{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
     return { text: '👥 اعضای KageCatch\\n\\n' + (lines.join('\\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
   }
-  const manage = data.match(/^owner:(block|unblock):(\\d+)$/);
+  const manage = data.match(/^owner:(block|unblock):(\d+)$/);
   if (manage) {
     const telegramUserId = Number(manage[2]);
     if (!Number.isSafeInteger(telegramUserId)) return { text: 'شناسه عضو معتبر نیست.', keyboard: BACK_MENU, alert: true };
@@ -951,7 +951,7 @@ async function handleWebhook(request, env) {
     if (command === "/start" || command === "/panel") {
       try {
         let actor = await getTelegramUser(env, message.from.id);
-        const startPayload = message.text.trim().split(/\\s+/, 2)[1] || '';
+        const startPayload = message.text.trim().split(/\s+/, 2)[1] || '';
         if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
           actor = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID });
         } else if (!actor && command === '/start' && startPayload.startsWith('inv_')) {
