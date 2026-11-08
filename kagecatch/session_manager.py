@@ -37,6 +37,14 @@ class SessionManager:
         encrypted = self._fernet.encrypt(session_string.encode("utf-8"))
         await self._store.put(user_id, encrypted)
 
+    async def save_session(self, user_id: str, session_string: str) -> None:
+        """Encrypt and persist an authorized Telethon StringSession."""
+        await self.save_authorized_session(user_id, session_string)
+
+    async def get_session(self, user_id: str) -> str | None:
+        """Load and decrypt a previously persisted Telethon StringSession."""
+        return await self.load_session(user_id)
+
     async def load_session(self, user_id: str) -> str | None:
         self._validate_user(user_id)
         encrypted = await self._store.get(user_id)
