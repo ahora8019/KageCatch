@@ -102,6 +102,8 @@ def create_app(
     review_store=None,
     review_queue=None,
     review_pipeline=None,
+    spawn_detector=None,
+    character_resolver=None,
 ) -> FastAPI:
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
     logging.getLogger("kagecatch.core").info("Core configuration presence: %s", _configuration_presence(secret))
@@ -154,13 +156,25 @@ def create_app(
     async def initialize_review_runtime() -> None:
         if app.state.review_store is None:
             store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
-            store_secret = os.getenv("KAGECATCH_CORE_SECRET", "")
+            store_secret = secret
             if store_url and store_secret:
                 from .d1_manual_review_store import D1ManualReviewStore
                 app.state.review_store = D1ManualReviewStore(store_url, store_secret)
         if app.state.review_queue is None and app.state.review_store is not None:
             from .persistent_manual_review_queue import PersistentManualReviewQueue
             app.state.review_queue = PersistentManualReviewQueue(store=app.state.review_store)
+        if (
+            app.state.review_pipeline is None
+            and app.state.review_queue is not None
+            and spawn_detector is not None
+            and character_resolver is not None
+        ):
+            from .review_pipeline import ReviewPipeline
+            app.state.review_pipeline = ReviewPipeline(
+                detector=spawn_detector,
+                resolver=character_resolver,
+                review_queue=app.state.review_queue,
+            )
 
     @app.on_event("shutdown")
     async def close_review_runtime() -> None:
