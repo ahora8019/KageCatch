@@ -81,10 +81,11 @@ class TelegramSelfbotTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(controller.is_enabled("12345"))
         self.assertIn("روشن", on_event.responses[0]["text"])
 
+        # In-chat panels are group-only and are rendered by the Control Bot.
+        # Saved Messages must not fall back to Telethon inline keyboards.
         panel_event = FakeMessageEvent(".پنل")
         await outgoing(panel_event)
-        self.assertIn("پنل سلف", panel_event.responses[0]["text"])
-        self.assertTrue(panel_event.responses[0]["buttons"])
+        self.assertEqual(panel_event.responses, [])
 
         off_event = FakeMessageEvent(".خاموش")
         await outgoing(off_event)
