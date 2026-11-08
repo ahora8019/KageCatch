@@ -95,6 +95,7 @@ def _configured_runtime():
         handler_registrar=selfbot.attach,
     )
     runtime._selfbot_controller = selfbot
+    runtime._panel_queue_client = panel_queue if panel_requester is not None else None
     from .telegram_auth_flow import TelegramAuthorizationFlow
     auth_flow = TelegramAuthorizationFlow(client_factory=lambda session_string="": factory(session_string), session_manager=manager)
     return manager, runtime, auth_flow
@@ -218,6 +219,15 @@ def create_app(
             except Exception:
                 logging.getLogger("kagecatch.core").exception(
                     "Manual review store shutdown failed"
+                )
+        panel_client = getattr(runtime, "_panel_queue_client", None) if runtime is not None else None
+        panel_close = getattr(panel_client, "close", None)
+        if panel_close is not None:
+            try:
+                await panel_close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Panel queue client shutdown failed"
                 )
 
     async def restore_authorized_sessions() -> None:
