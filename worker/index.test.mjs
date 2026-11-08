@@ -1197,3 +1197,160 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
   assert.match(edit.payload.text, /TestUser/);
   assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:monitor:user:500002"));
 });
+
+
+async function makeSignedManualReviewRequest(payload, secret, nonce = crypto.randomUUID().replaceAll("-", "")) {
+  const path = "/internal/manual-review";
+  const body = JSON.stringify(payload);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signingText = [timestamp, nonce, "POST", path, bodyHash].join("\n");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return new Request("https://kagecatch-control.ahora-project.workers.dev" + path, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-KageCatch-Timestamp": timestamp,
+      "X-KageCatch-Nonce": nonce,
+      "X-KageCatch-Signature": signature,
+    },
+    body,
+  });
+}
+
+function createFakeManualReviewDatabase() {
+  const rows = new Map();
+  return {
+    rows,
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            async run() {
+              if (sql.startsWith("INSERT INTO manual_review_items")) {
+                const [review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at] = values;
+                if (rows.has(review_id)) throw new Error("duplicate review id");
+                rows.set(review_id, {
+                  review_id, user_id, spawn_id, anime_name, candidates_json,
+                  created_at, expires_at, status: "pending", selected_character: null,
+                });
+                return { meta: { changes: 1 } };
+              }
+              if (sql.startsWith("UPDATE manual_review_items SET status = 'expired' WHERE status")) {
+                let changes = 0;
+                for (const row of rows.values()) {
+                  if (row.status === "pending" && row.expires_at <= values[0]) { row.status = "expired"; changes += 1; }
+                }
+                return { meta: { changes } };
+              }
+              if (sql.startsWith("UPDATE manual_review_items SET status = 'expired' WHERE user_id")) {
+                let changes = 0;
+                for (const row of rows.values()) {
+                  if (row.user_id === values[0] && row.status === "pending" && row.expires_at <= values[1]) { row.status = "expired"; changes += 1; }
+                }
+                return { meta: { changes } };
+              }
+              if (sql.startsWith("UPDATE manual_review_items SET status = 'expired' WHERE review_id")) {
+                const row = rows.get(values[0]);
+                if (row && row.user_id === values[1] && row.status === "pending") { row.status = "expired"; return { meta: { changes: 1 } }; }
+                return { meta: { changes: 0 } };
+              }
+              if (sql.startsWith("UPDATE manual_review_items SET status = ?")) {
+                const [status, selected_character, review_id, user_id, now] = values;
+                const row = rows.get(review_id);
+                if (row && row.user_id === user_id && row.status === "pending" && row.expires_at > now) {
+                  row.status = status; row.selected_character = selected_character;
+                  return { meta: { changes: 1 } };
+                }
+                return { meta: { changes: 0 } };
+              }
+              throw new Error("unexpected D1 run: " + sql);
+            },
+            async first() {
+              if (sql.startsWith("SELECT review_id, user_id")) {
+                const row = rows.get(values[0]);
+                return row && row.user_id === values[1] ? { ...row } : null;
+              }
+              throw new Error("unexpected D1 first: " + sql);
+            },
+            async all() {
+              if (sql.startsWith("SELECT review_id, user_id")) {
+                return { results: [...rows.values()]
+                  .filter((row) => row.user_id === values[0] && row.status === "pending")
+                  .sort((a, b) => a.created_at.localeCompare(b.created_at))
+                  .map((row) => ({ ...row })) };
+              }
+              throw new Error("unexpected D1 all: " + sql);
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+test("durable manual review endpoint creates, lists, and atomically approves only for the owning user", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const connectionStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = {
+    idFromName: () => "connection-links-v1",
+    get: () => ({ fetch: (input, init) => connectionStore.fetch(new Request(input, init)) }),
+  };
+  const db = createFakeManualReviewDatabase();
+  const secret = "manual-review-core-secret-with-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const item = {
+    action: "create", review_id: "a".repeat(32), user_id: "12345",
+    spawn_id: 77, anime_name: "KonoSuba", candidates: ["Megumin", "Aqua"],
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  };
+
+  const created = await worker.fetch(await makeSignedManualReviewRequest(item, secret), env);
+  assert.equal(created.status, 201);
+  const listed = await worker.fetch(await makeSignedManualReviewRequest({ action: "list", user_id: "12345" }, secret), env);
+  assert.equal(listed.status, 200);
+  assert.equal((await listed.json()).items.length, 1);
+  const hidden = await worker.fetch(await makeSignedManualReviewRequest({ action: "list", user_id: "99999" }, secret), env);
+  assert.deepEqual(await hidden.json(), { items: [] });
+
+  const approved = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "approve", user_id: "12345", review_id: "a".repeat(32), candidate_index: 1,
+  }, secret), env);
+  assert.equal(approved.status, 200);
+  const result = await approved.json();
+  assert.equal(result.item.status, "approved");
+  assert.equal(result.item.selected_character, "Aqua");
+  const secondApproval = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "approve", user_id: "12345", review_id: "a".repeat(32), candidate_index: 0,
+  }, secret), env);
+  assert.equal(secondApproval.status, 409);
+});
+
+test("durable manual review endpoint rejects invalid signatures and cross-user resolution", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const connectionStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = {
+    idFromName: () => "connection-links-v1",
+    get: () => ({ fetch: (input, init) => connectionStore.fetch(new Request(input, init)) }),
+  };
+  const db = createFakeManualReviewDatabase();
+  const secret = "manual-review-core-secret-with-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const item = {
+    action: "create", review_id: "b".repeat(32), user_id: "12345",
+    spawn_id: 77, anime_name: "KonoSuba", candidates: ["Megumin"],
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  };
+  await worker.fetch(await makeSignedManualReviewRequest(item, secret), env);
+  const wrongOwner = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "reject", user_id: "99999", review_id: "b".repeat(32),
+  }, secret), env);
+  assert.equal(wrongOwner.status, 404);
+  const unsigned = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/internal/manual-review", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "expire" }),
+  }), env);
+  assert.equal(unsigned.status, 401);
+});
