@@ -200,3 +200,28 @@ test("panel delivery retries are bounded and eventually mark the request failed"
     assert.equal(env.db.rows.get(requestId).status, attempt === 3 ? "failed" : "pending");
   }
 });
+
+
+test("accepted panel requests dispatch immediately through waitUntil without waiting for Cron", async () => {
+  const { enqueuePanelRequestAndDispatch } = await import("./panel_queue.mjs");
+  const env = envWithDb();
+  const sent = [];
+  let backgroundTask;
+  const response = await enqueuePanelRequestAndDispatch(
+    signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 777 }),
+    env,
+    { waitUntil(promise) { backgroundTask = promise; } },
+    async (method, payload) => {
+      sent.push({ method, payload });
+      return { message_id: 909 };
+    },
+  );
+  assert.equal(response.status, 202);
+  assert.equal(typeof backgroundTask?.then, "function");
+  await backgroundTask;
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].method, "sendMessage");
+  const row = [...env.db.rows.values()][0];
+  assert.equal(row.status, "completed");
+  assert.equal(row.panel_message_id, 909);
+});
