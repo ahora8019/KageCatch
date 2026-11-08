@@ -64,12 +64,14 @@ test("/panel opens the member feature menu directly as an explicit choice", () =
   assert.ok(callbacks.includes("account:list"));
 });
 
-test("owner start menu combines owner controls with the native member dashboard", () => {
+test("owner start menu contains only management actions and a separate member-panel entry", () => {
   const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("owner:stats"));
   assert.ok(callbacks.includes("owner:members"));
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
+  assert.ok(callbacks.includes("home:panel"));
+  assert.equal(callbacks.includes("catch:open"), false);
+  assert.equal(callbacks.includes("bots:open"), false);
+  assert.equal(callbacks.includes("account:connect"), false);
 });
 
 test("status and help remain available as slash-command shortcuts", () => {
@@ -1089,7 +1091,9 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
     body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
   }), env);
   assert.equal(response.status, 200);
-  assert.match(calls[0].text, /دعوتت تأیید شد/);
+  assert.equal(calls[0].reply_markup.remove_keyboard, true);
+  assert.match(calls[1].text, /بخش/);
+  assert.ok(calls[1].reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "account:connect"));
   const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 400001 }) }));
   assert.equal((await user.json()).user.role, "MEMBER");
 });
@@ -1263,4 +1267,54 @@ test("Owner access screen reuses safe member block and unblock controls", async 
   assert.ok(edit);
   assert.match(edit.payload.text, /دسترسی/);
   assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:block:500003"));
+});
+
+
+test("Owner /start clears the legacy reply keyboard, shows one short greeting, and avoids duplicate registry lookup", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const telegramCalls = [];
+  const registryCalls = [];
+  const env = {
+    CONNECT_LINKS: { idFromName: binding.idFromName, get: () => ({ fetch: async (input, init) => {
+      const path = new URL(input).pathname; registryCalls.push(path);
+      return store.fetch(new Request(input, init));
+    } }) },
+    OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    FETCH: async (url, init) => { telegramCalls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: telegramCalls.length } })); },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 990010, message: { text: "/start", from: { id: 999001, first_name: "Owner" }, chat: { id: 999001, type: "private" } } }),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.equal(telegramCalls.length, 2);
+  assert.equal(telegramCalls[0].reply_markup.remove_keyboard, true);
+  assert.equal(telegramCalls[0].text, "سلام Owner! پنل مدیریت آماده‌ست 🌸");
+  assert.equal(telegramCalls[1].text, "بخش مدیریتی موردنظرت رو انتخاب کن:");
+  const ownerLookupCount = registryCalls.filter((path) => path === "/user").length;
+  assert.equal(ownerLookupCount, 0);
+});
+
+test("Owner callback is acknowledged before registry writes and skips redundant owner lookup", async () => {
+  const events = [];
+  const env = {
+    OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CONNECT_LINKS: { idFromName: () => "connection-links-v1", get: () => ({ fetch: async (input, init) => {
+      events.push("registry:" + new URL(input).pathname);
+      return new Response(JSON.stringify({ ok: true, status: "active", user: { telegramUserId: 999001, role: "OWNER", status: "active" } }));
+    } }) },
+    FETCH: async (url, init) => {
+      const method = String(url).split("/").pop(); events.push("telegram:" + method);
+      return new Response(JSON.stringify({ ok: true, result: {} }));
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 990011, callback_query: { id: "fast-owner-cb", data: "owner:emergency", from: { id: 999001 }, message: { message_id: 11, chat: { id: 999001, type: "private" } } } }),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.equal(events[0], "telegram:answerCallbackQuery");
+  assert.equal(events.some((event) => event === "registry:/user"), false);
 });
