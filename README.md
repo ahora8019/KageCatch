@@ -40,6 +40,14 @@ The previous dashboard remains available at `/panel` temporarily as a fallback w
 
 See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md).
 
+## Durable group panel queue
+
+Group commands `.panel` and `.پنل` are accepted only from the authorized account owner in a group/supergroup. The Python Core sends a timestamped HMAC-signed request to `POST /internal/panel-requests`; the Worker stores it in the independent `panel_requests` D1 table with a deterministic idempotency key. The scheduled Worker claims pending requests, sends the Control Bot panel into the exact source group, and stores the resulting message ID. Abandoned claims are recovered after two minutes and delivery attempts are bounded to three.
+
+Every callback is bound to the stored request, owner Telegram ID, exact group ID, exact panel message ID, and active expiry. Non-owners receive an alert. Catch remains disabled in the panel; buttons currently expose status/configuration placeholders only.
+
+The schema is in `migrations/0002_panel_requests.sql`. The additive table has been created in the existing `kagecatch-sessions-preview` D1 database; the existing `telegram_sessions` table was not modified. The Core uses `KAGECATCH_PANEL_QUEUE_URL`, falling back to `KAGECATCH_SESSION_STORE_URL`, and the existing `KAGECATCH_CORE_SECRET` for HMAC signing. The Worker route and scheduled delivery code are committed but not deployed. Do not enable real group delivery until the Worker deployment and a controlled test group verification are explicitly approved.
+
 ## Durable session storage (Cloudflare D1)
 
 The preview D1 database is `kagecatch-sessions-preview` in the EU jurisdiction, primary region EEUR. It stores only Fernet-encrypted Telethon StringSession ciphertext. The Python Core encrypts before the request; the Worker accepts only HMAC-authenticated requests signed with the existing Core shared secret, checks timestamp and a Durable Object-backed one-time nonce, then uses parameterized D1 statements.
