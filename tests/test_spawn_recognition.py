@@ -111,8 +111,20 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
             frame_extractor=FakeFrameExtractor(),
             trace_client=FakeTraceClient(error=TimeoutError("timeout")),
         )
-        with self.assertRaises(TimeoutError):
+        from kagecatch.targets.senpai_catcher import MetadataLookupError
+        with self.assertRaises(MetadataLookupError):
             await adapter.extract_metadata(FakeEvent())
+
+    async def test_http_failure_is_converted_to_metadata_error(self):
+        import httpx
+        from kagecatch.targets.senpai_catcher import HttpxTraceMoeClient, MetadataLookupError
+
+        def respond(request):
+            return httpx.Response(503, request=request)
+
+        client = HttpxTraceMoeClient(transport=httpx.MockTransport(respond))
+        with self.assertRaises(MetadataLookupError):
+            await client.search(b"jpeg-frame")
 
     async def test_invalid_api_response_is_rejected(self):
         adapter = SenpaiCatcherAdapter(
@@ -120,7 +132,8 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
             frame_extractor=FakeFrameExtractor(),
             trace_client=FakeTraceClient(result={"result": "not-a-list"}),
         )
-        with self.assertRaises(ValueError):
+        from kagecatch.targets.senpai_catcher import MetadataLookupError
+        with self.assertRaises(MetadataLookupError):
             await adapter.extract_metadata(FakeEvent())
 
     async def test_catch_command_uses_documented_pick_format(self):
