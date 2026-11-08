@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - feat/pro-dashboard-mini-app
+      - fix/core-runtime-bootstrap
   pull_request:
     branches:
       - main
       - feat/catch-engine-foundation
+      - feat/pro-dashboard-mini-app
 
 jobs:
   verify:
