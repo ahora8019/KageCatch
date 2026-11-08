@@ -816,11 +816,11 @@ async function handleOwnerCallback(callback, env) {
     const alerts = [];
     if (snapshot.status !== 'webhook_ready' || snapshot.telegram_webhook !== 'configured') alerts.push('🔴 وب‌هوک تلگرام آماده نیست یا درست تنظیم نشده است.');
     if ((snapshot.pending_updates || 0) > 0) alerts.push('🟠 پیام‌های در انتظار تلگرام: ' + snapshot.pending_updates);
-    if (snapshot.last_telegram_error) alerts.push('🟠 آخرین خطای تلگرام: ' + String(snapshot.last_telegram_error).slice(0, 180));
+    if (snapshot.last_telegram_error) alerts.push('🟠 آخرین خطای گزارش‌شده تلگرام (ممکن است تاریخی باشد): ' + String(snapshot.last_telegram_error).slice(0, 180));
     if (snapshot.python_core !== 'connected') alerts.push('🔴 اتصال Python Core برقرار نیست (' + (snapshot.python_core || 'نامشخص') + ').');
     if (database !== 'connected') alerts.push('🔴 دیتابیس D1 در دسترس نیست (' + database + ').');
     return {
-      text: '🚨 مرکز هشدارهای KageCatch\n\n' + (alerts.join('\n\n') || '🟢 در بررسی فعلی هشدار فعالی پیدا نشد.') + '\n\nاین گزارش لحظه‌ای است و تاریخچهٔ هشدارها را ذخیره نمی‌کند.',
+      text: '🚨 مرکز هشدارهای KageCatch\n\n' + (alerts.join('\n\n') || '🟢 در بررسی فعلی هشدار فعالی پیدا نشد.') + '\n\nاین گزارش لحظه‌ای است؛ خطای آخر تلگرام ممکن است مربوط به قبل باشد و تاریخچهٔ هشدارها ذخیره نمی‌شود.',
       keyboard: { inline_keyboard: [[{ text: '🔄 بررسی دوباره', callback_data: 'owner:alerts' }, { text: '🩺 وضعیت سرویس‌ها', callback_data: 'owner:services' }], [{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]] },
     };
   }
