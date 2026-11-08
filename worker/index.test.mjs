@@ -1083,7 +1083,7 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
   const invite = await created.json();
   const calls = [];
   const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
-    FETCH: async (url, init) => { calls.push({ method, payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
+    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
     body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
