@@ -135,5 +135,20 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["session-a"])
 
 
+    async def test_reconnect_all_restores_saved_sessions_and_reports_counts(self):
+        manager = FakeSessionManager({"user-a": "session-a", "user-b": "session-b"})
+        manager.list_user_ids = lambda: None
+        async def list_user_ids():
+            return list(manager.sessions)
+        manager.list_user_ids = list_user_ids
+        runtime = SessionRuntime(
+            session_manager=manager,
+            client_factory=lambda session: FakeClient(authorized=session != "session-b"),
+        )
+        result = await runtime.reconnect_all()
+        self.assertEqual(result, {"connected": 1, "failed": 1})
+        self.assertEqual(runtime.active_user_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
