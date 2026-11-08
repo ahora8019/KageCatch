@@ -52,10 +52,8 @@ class CharacterResolverTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(result.confidence, 60.0)
 
     async def test_empty_candidate_mapping_is_rejected(self):
-        resolver = CharacterResolver(local_mapping={"KonoSuba": []})
-        self.assertIsNone(await resolver.resolve(
-            CharacterMetadata(anime_name="KonoSuba", source="trace.moe")
-        ))
+        with self.assertRaises(ValueError):
+            CharacterResolver(local_mapping={"KonoSuba": []})
 
 
 class SuggestionFormatterTests(unittest.TestCase):
