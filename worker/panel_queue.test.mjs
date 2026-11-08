@@ -188,3 +188,15 @@ test("only the owner can close a panel and closed panels reject later callbacks"
   await handlePanelCallback(later, env, telegram);
   assert.match(calls[0].payload.text, /دسترسی/);
 });
+
+
+test("panel delivery retries are bounded and eventually mark the request failed", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 654 }), env);
+  const requestId = (await accepted.json()).request_id;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await processPanelQueue(env, async () => { throw new Error("synthetic Telegram failure"); });
+    assert.equal(env.db.rows.get(requestId).attempts, attempt);
+    assert.equal(env.db.rows.get(requestId).status, attempt === 3 ? "failed" : "pending");
+  }
+});
