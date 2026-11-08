@@ -189,7 +189,7 @@ export function buildRoleMenu(role = "MEMBER") {
   if (role === "OWNER") return { inline_keyboard: [
     [{ text: "📊 نمای کلی", callback_data: "owner:stats" }, { text: "👁️ نظارت کاربران", callback_data: "owner:monitor" }],
     [{ text: "🚨 مرکز هشدارها", callback_data: "owner:alerts" }, { text: "🩺 وضعیت سرویس‌ها", callback_data: "owner:services" }],
-    [{ text: "🔐 مدیریت دسترسی", callback_data: "owner:access" }],
+    [{ text: "👥 فهرست اعضا", callback_data: "owner:members" }, { text: "🔐 مدیریت دسترسی", callback_data: "owner:access" }],
     [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
     [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
     [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
