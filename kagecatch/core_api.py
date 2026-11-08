@@ -8,6 +8,7 @@ raw session material is never accepted from or returned to the Worker.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import importlib.util
 import logging
@@ -119,7 +120,22 @@ def create_app(
         session_manager = getattr(runtime, "_session_manager", None)
 
     replay_guard = nonce_store or InMemoryNonceStore(clock=clock)
-    app = FastAPI(title="KageCatch Core", docs_url=None, redoc_url=None, openapi_url=None)
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            await initialize_review_runtime()
+            await restore_authorized_sessions()
+            yield
+        finally:
+            await close_review_runtime()
+
+    app = FastAPI(
+        title="KageCatch Core",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
     # Review persistence is an independent resource from Telegram sessions.
     # Construct the network client during startup, never at module import time.
     app.state.review_store = review_store
@@ -152,7 +168,6 @@ def create_app(
         if not await replay_guard.claim(nonce, now + 120):
             raise HTTPException(status_code=409, detail="request_replayed")
 
-    @app.on_event("startup")
     async def initialize_review_runtime() -> None:
         if app.state.review_store is None:
             store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
@@ -176,7 +191,6 @@ def create_app(
                 review_queue=app.state.review_queue,
             )
 
-    @app.on_event("shutdown")
     async def close_review_runtime() -> None:
         store = app.state.review_store
         close = getattr(store, "close", None) if store is not None else None
@@ -188,7 +202,6 @@ def create_app(
                     "Manual review store shutdown failed"
                 )
 
-    @app.on_event("startup")
     async def restore_authorized_sessions() -> None:
         restore = getattr(runtime, "restore_saved_sessions", None) if runtime is not None else None
         if restore is None:
