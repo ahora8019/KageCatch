@@ -56,7 +56,7 @@ class ReviewPipeline:
             # A failed durable write is never represented as a successful enqueue.
             # Keep the log free of event payloads, sessions, and credentials.
             logger.exception(
-                "Manual review persistence failed for user_id=%s spawn_id=%s",
+                "Manual review persistence failed for spawn_id=%s",
                 spawn.message_id,
             )
             return ReviewPipelineResult(
