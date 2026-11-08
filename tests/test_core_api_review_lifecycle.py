@@ -66,6 +66,16 @@ class CoreApiReviewLifecycleTests(unittest.TestCase):
                 self.assertFalse(store._client.is_closed)
             self.assertTrue(store._client.is_closed)
 
+
+    def test_review_resources_use_fastapi_lifespan_not_deprecated_event_hooks(self):
+        app = create_app(
+            core_secret=SECRET, runtime=object(),
+            session_manager=object(),
+        )
+
+        self.assertEqual(app.router.on_startup, [])
+        self.assertEqual(app.router.on_shutdown, [])
+
     def test_review_pipeline_is_exposed_on_application_state(self):
         pipeline = object()
         app = create_app(
