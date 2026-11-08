@@ -77,7 +77,15 @@ def _configured_runtime():
         store = SQLiteSessionStore(os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3"))
     manager = SessionManager(fernet_key=fernet_key, store=store)
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
-    runtime = SessionRuntime(session_manager=manager, client_factory=factory)
+    from .telegram_selfbot import TelegramSelfbotController
+    selfbot = TelegramSelfbotController(
+        panel_image_url=os.getenv("KAGECATCH_PANEL_IMAGE_URL") or None
+    )
+    runtime = SessionRuntime(
+        session_manager=manager,
+        client_factory=factory,
+        handler_registrar=selfbot.attach,
+    )
     from .telegram_auth_flow import TelegramAuthorizationFlow
     auth_flow = TelegramAuthorizationFlow(client_factory=lambda session_string="": factory(session_string), session_manager=manager)
     return manager, runtime, auth_flow
