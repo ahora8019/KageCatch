@@ -1,6 +1,6 @@
 # KageCatch
 
-Role-based multi-user Telegram character spawn recognition and catch orchestration. Current `/start` self-registers non-blocked users as MEMBER; invite-only approval/allowlist gating is not implemented yet and must be added before public rollout.
+Role-based multi-user Telegram character spawn recognition and catch orchestration. New users require an Owner-issued invitation before they can join. Existing members remain registered, and the configured numeric Telegram ID is always resolved as OWNER.
 
 ## Supported catcher targets
 
@@ -50,7 +50,7 @@ The D1 database and schema are provisioned for preview, but the Worker binding a
 
 ## Control bot roles
 
-`worker/index.mjs` defines a Ronin-style role model. `/start` registers a Telegram user as `MEMBER` by default; the numeric ID configured in the `OWNER_TELEGRAM_ID` Worker secret is always resolved as `OWNER`. Members see only personal account, security, and statistics controls. The Owner receives the member list, block/unblock controls, and broadcast. Global settings and emergency-stop actions remain unfinished placeholders. Role checks run again on every callback; blocked users are denied. `/admin` is Owner-only. `OWNER_TELEGRAM_ID` must remain a Cloudflare Secret and must never be committed to the repository. Never ask users to send Telegram login codes or 2FA passwords to the bot.
+`worker/index.mjs` defines a role-based access model. The numeric ID configured in the `OWNER_TELEGRAM_ID` Worker secret is always resolved as `OWNER`; existing registered members retain `MEMBER`. New users must redeem a short-lived Owner-issued invite link (`/start inv_…`) before they are registered. Invites are stored by token digest, have bounded use counts and expiry, and can be revoked. Members see only personal account, security, and statistics controls. The Owner receives the member list, block/unblock controls, invite management, system overview, and broadcast. Global settings and emergency-stop actions remain unfinished placeholders. Role checks run again on every callback; blocked users are denied. `/admin` is Owner-only. `OWNER_TELEGRAM_ID` must remain a Cloudflare Secret and must never be committed to the repository. Never ask users to send Telegram login codes or 2FA passwords to the bot.
 
 ## Development
 
