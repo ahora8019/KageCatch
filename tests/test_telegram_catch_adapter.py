@@ -71,5 +71,21 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.sent, [])
 
 
+    async def test_dispatch_is_disabled_by_default(self):
+        client = FakeClient()
+        adapter = TelethonCatchAdapter(client=client, source="henta_catcher")
+        with self.assertRaises(RuntimeError):
+            await adapter.send_catch(self.spawn(), "Sakura")
+        self.assertEqual(client.sent, [])
+
+    async def test_dispatch_requires_explicit_opt_in(self):
+        client = FakeClient()
+        adapter = TelethonCatchAdapter(
+            client=client, source="henta_catcher", dispatch_enabled=True
+        )
+        receipt = await adapter.send_catch(self.spawn(), "Sakura")
+        self.assertEqual(receipt.reference, "HentaCatcherBot:77")
+
+
 if __name__ == "__main__":
     unittest.main()
