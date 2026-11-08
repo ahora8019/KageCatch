@@ -34,18 +34,20 @@ class PersistentManualReviewQueue:
         candidates: Sequence[str],
     ) -> ReviewItem:
         ManualReviewQueue._validate_user_id(user_id)
-        if isinstance(spawn_id, bool) or not isinstance(spawn_id, int) or spawn_id < 0:
-            raise ValueError("spawn_id must be a non-negative integer")
-        if not isinstance(anime_name, str) or not anime_name.strip():
-            raise ValueError("anime_name is required")
+        if isinstance(spawn_id, bool) or not isinstance(spawn_id, int) or not 0 <= spawn_id <= (2**53 - 1):
+            raise ValueError("spawn_id must be a non-negative safe integer")
+        if not isinstance(anime_name, str) or not anime_name.strip() or len(anime_name.strip()) > 300:
+            raise ValueError("anime_name must contain 1 to 300 characters")
         if isinstance(candidates, (str, bytes)) or not isinstance(candidates, Sequence):
             raise ValueError("candidates must be a non-empty sequence of names")
         names = tuple(
             candidate.strip() for candidate in candidates
             if isinstance(candidate, str) and candidate.strip()
         )
-        if not names or len(names) != len(candidates):
-            raise ValueError("candidates must contain non-empty strings")
+        if not names or len(names) != len(candidates) or len(names) > 30:
+            raise ValueError("candidates must contain 1 to 30 non-empty strings")
+        if any(len(name) > 100 for name in names):
+            raise ValueError("candidate names must not exceed 100 characters")
         now = self._now()
         item = ReviewItem(
             review_id=uuid4().hex, user_id=user_id, spawn_id=spawn_id,

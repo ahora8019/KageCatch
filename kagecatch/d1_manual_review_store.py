@@ -8,7 +8,7 @@ import json
 import re
 import time
 import uuid
-from urllib.parse import quote
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -27,8 +27,20 @@ class D1ManualReviewStore:
         clock=time.time,
         nonce_factory=uuid.uuid4,
     ) -> None:
-        if not isinstance(base_url, str) or not base_url.startswith("https://"):
+        if not isinstance(base_url, str):
             raise ValueError("manual review store URL must use HTTPS")
+        parsed_url = urlsplit(base_url)
+        is_loopback_http = (
+            parsed_url.scheme == "http"
+            and parsed_url.hostname in {"localhost", "127.0.0.1", "::1"}
+            and parsed_url.port is not None
+            and parsed_url.username is None
+            and parsed_url.password is None
+            and not parsed_url.query
+            and not parsed_url.fragment
+        )
+        if parsed_url.scheme != "https" and not is_loopback_http:
+            raise ValueError("manual review store URL must use HTTPS except for loopback development")
         if not isinstance(secret, str) or len(secret.encode("utf-8")) < 32:
             raise ValueError("manual review store secret must contain at least 32 bytes")
         self._base_url = base_url.rstrip("/")
