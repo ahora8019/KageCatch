@@ -1,0 +1,18 @@
+# Local Worker execution with the isolated KageCatch Preview D1 binding.
+# Worker code and Durable Objects run locally; only KAGECATCH_DB is remote.
+# Never point this file at a production database.
+name = "kagecatch-control-preview-local"
+main = "worker/index.mjs"
+compatibility_date = "2026-11-03"
+workers_dev = false
+
+[[durable_objects.bindings]]
+name = "CONNECT_LINKS"
+class_name = "ConnectionLinkStore"
+id = "b5718f676c5b4d86932f8847491c0eb4"
+
+[[d1_databases]]
+binding = "KAGECATCH_DB"
+database_name = "kagecatch-sessions-preview"
+database_id = "ef313232-4bfb-43df-915b-d7b22b076fa2"
+remote = true

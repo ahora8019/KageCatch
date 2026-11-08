@@ -58,6 +58,18 @@ class TelegramSelfbotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.handlers[0][1].kwargs, {"incoming": True})
         self.assertEqual(client.handlers[1][1].kwargs, {"outgoing": True})
 
+    async def test_incoming_handler_can_be_attached_after_runtime_startup(self):
+        received = []
+        controller = TelegramSelfbotController()
+        controller.set_incoming_handler(lambda user_id, event: received.append((user_id, event)))
+        client = FakeClient()
+        await controller.attach(client, "12345")
+
+        event = object()
+        await client.handlers[0][0](event)
+
+        self.assertEqual(received, [("12345", event)])
+
     async def test_dot_commands_control_only_the_current_users_catch_state(self):
         controller = TelegramSelfbotController()
         client = FakeClient()

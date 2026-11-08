@@ -109,12 +109,16 @@ class D1ManualReviewStoreTests(unittest.IsolatedAsyncioTestCase):
             store = D1ManualReviewStore(BASE_URL, SECRET, client=client)
             self.assertEqual(await store.expire(), 3)
 
-    async def test_allows_http_only_for_loopback_development(self):
+
+    async def test_allows_plain_http_only_for_loopback_wrangler_dev(self):
         async with httpx.AsyncClient(transport=httpx.MockTransport(
             lambda request: httpx.Response(200, json={"items": []})
         )) as client:
-            store = D1ManualReviewStore("http://127.0.0.1:8787", SECRET, client=client)
+            store = D1ManualReviewStore(
+                "http://127.0.0.1:8787", SECRET, client=client
+            )
             self.assertEqual(store._base_url, "http://127.0.0.1:8787")
+            self.assertEqual(await store.list_pending("12345"), [])
 
     async def test_rejects_non_https_url_and_short_secret(self):
         with self.assertRaises(ValueError):

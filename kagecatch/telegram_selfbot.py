@@ -14,6 +14,11 @@ class TelegramSelfbotController:
         self._incoming_handler = incoming_handler
         self._panel_image_url = panel_image_url
 
+    def set_incoming_handler(self, handler) -> None:
+        if handler is not None and not callable(handler):
+            raise TypeError("incoming handler must be callable or None")
+        self._incoming_handler = handler
+
     def is_enabled(self, user_id: str) -> bool:
         return user_id in self.enabled_users
 
