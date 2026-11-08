@@ -1093,3 +1093,8 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
   const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 400001 }) }));
   assert.equal((await user.json()).user.role, "MEMBER");
 });
+
+
+test("unknown Telegram identities are denied until an Owner invitation is redeemed", () => {
+  assert.equal(resolveRole(7654321, "999001"), "DENIED");
+});
