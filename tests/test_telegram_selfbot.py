@@ -104,3 +104,114 @@ class TelegramSelfbotTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeGroupMessageEvent:
+    is_private = False
+    is_group = True
+    is_channel = False
+    chat_id = -100123456
+    sender_id = 12345
+    id = 987
+    raw_text = ".panel"
+
+    def __init__(self, text=".panel", sender_id=12345):
+        self.raw_text = text
+        self.sender_id = sender_id
+        self.deleted = False
+        self.responses = []
+
+    async def delete(self):
+        self.deleted = True
+
+    async def respond(self, text, buttons=None):
+        self.responses.append({"text": text, "buttons": buttons})
+
+
+class TelegramPanelTriggerTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.telethon = types.SimpleNamespace(Button=FakeButton, events=FakeEvents)
+        self.patch = patch.dict(sys.modules, {"telethon": self.telethon})
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    async def test_group_panel_is_queued_before_source_message_is_deleted(self):
+        calls = []
+        async def enqueue(**task):
+            calls.append(task)
+            return {"accepted": True, "request_id": "req-1"}
+
+        controller = TelegramSelfbotController(panel_requester=enqueue)
+        client = FakeClient()
+        await controller.attach(client, "12345")
+        event = FakeGroupMessageEvent(".panel")
+        await client.handlers[1][0](event)
+
+        self.assertEqual(calls, [{
+            "owner_id": "12345",
+            "chat_id": -100123456,
+            "source_message_id": 987,
+        }])
+        self.assertTrue(event.deleted)
+        self.assertEqual(event.responses, [])
+
+    async def test_persian_panel_command_uses_same_queue(self):
+        calls = []
+        async def enqueue(**task):
+            calls.append(task)
+            return {"accepted": True, "request_id": "req-2"}
+
+        controller = TelegramSelfbotController(panel_requester=enqueue)
+        client = FakeClient()
+        await controller.attach(client, "12345")
+        event = FakeGroupMessageEvent(".پنل")
+        await client.handlers[1][0](event)
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(event.deleted)
+
+    async def test_group_panel_command_is_not_deleted_when_queue_rejects(self):
+        async def enqueue(**task):
+            return {"accepted": False}
+
+        controller = TelegramSelfbotController(panel_requester=enqueue)
+        client = FakeClient()
+        await controller.attach(client, "12345")
+        event = FakeGroupMessageEvent()
+        await client.handlers[1][0](event)
+
+        self.assertFalse(event.deleted)
+        self.assertTrue(event.responses)
+
+    async def test_other_sender_cannot_trigger_this_session_panel(self):
+        calls = []
+        async def enqueue(**task):
+            calls.append(task)
+            return {"accepted": True}
+
+        controller = TelegramSelfbotController(panel_requester=enqueue)
+        client = FakeClient()
+        await controller.attach(client, "12345")
+        event = FakeGroupMessageEvent(sender_id=99999)
+        await client.handlers[1][0](event)
+
+        self.assertEqual(calls, [])
+        self.assertFalse(event.deleted)
+
+    async def test_private_chat_is_not_accepted_for_in_chat_bot_panel(self):
+        calls = []
+        async def enqueue(**task):
+            calls.append(task)
+            return {"accepted": True}
+
+        controller = TelegramSelfbotController(panel_requester=enqueue)
+        client = FakeClient()
+        await controller.attach(client, "12345")
+        event = FakeGroupMessageEvent()
+        event.is_group = False
+        event.is_private = True
+        event.chat_id = 12345
+        await client.handlers[1][0](event)
+
+        self.assertEqual(calls, [])
+        self.assertFalse(event.deleted)
