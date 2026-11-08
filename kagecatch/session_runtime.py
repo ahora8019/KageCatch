@@ -69,6 +69,26 @@ class SessionRuntime:
             self._clients[user_id] = client
             return client
 
+    async def restore_saved_sessions(self) -> dict[str, int]:
+        """Reconnect every previously authorized session without interactive login.
+
+        A failure for one account is isolated and does not prevent other saved
+        accounts from being restored. The returned object contains counts only.
+        """
+        list_user_ids = getattr(self._session_manager, "list_user_ids", None)
+        if list_user_ids is None:
+            raise RuntimeError("session manager does not support session restoration")
+        user_ids = await list_user_ids()
+        connected = 0
+        failed = 0
+        for user_id in user_ids:
+            try:
+                await self.connect_user(user_id)
+                connected += 1
+            except Exception:
+                failed += 1
+        return {"connected": connected, "failed": failed}
+
     async def get_client(self, user_id: str) -> RuntimeClient | None:
         await self._user_lock(user_id)
         return self._clients.get(user_id)
