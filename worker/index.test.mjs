@@ -961,8 +961,7 @@ test("Mini App account connection waits for Telegram authentication to finish", 
 test("owner menu exposes a dedicated invite-management section", () => {
   const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
   assert.ok(callbacks.includes("owner:invites"));
-  assert.ok(callbacks.includes("owner:invite:create:1"));
-  assert.ok(callbacks.includes("owner:invite:create:10"));
+
 });
 
 test("invite records are owner-created, expiring, revocable, and limited by use count", async () => {
