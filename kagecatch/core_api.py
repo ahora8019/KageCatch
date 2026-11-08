@@ -79,8 +79,15 @@ def _configured_runtime():
     manager = SessionManager(fernet_key=fernet_key, store=store)
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
     from .telegram_selfbot import TelegramSelfbotController
+    panel_requester = None
+    panel_queue_url = os.getenv("KAGECATCH_PANEL_QUEUE_URL") or os.getenv("KAGECATCH_SESSION_STORE_URL")
+    if panel_queue_url:
+        from .panel_queue_client import PanelQueueClient
+        panel_queue = PanelQueueClient(panel_queue_url, os.getenv("KAGECATCH_CORE_SECRET", ""))
+        panel_requester = panel_queue.enqueue
     selfbot = TelegramSelfbotController(
-        panel_image_url=os.getenv("KAGECATCH_PANEL_IMAGE_URL") or None
+        panel_image_url=os.getenv("KAGECATCH_PANEL_IMAGE_URL") or None,
+        panel_requester=panel_requester,
     )
     runtime = SessionRuntime(
         session_manager=manager,
