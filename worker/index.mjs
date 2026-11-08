@@ -820,7 +820,7 @@ async function handleOwnerCallback(callback, env) {
     if (snapshot.python_core !== 'connected') alerts.push('🔴 اتصال Python Core برقرار نیست (' + (snapshot.python_core || 'نامشخص') + ').');
     if (database !== 'connected') alerts.push('🔴 دیتابیس D1 در دسترس نیست (' + database + ').');
     return {
-      text: '🚨 مرکز هشدارهای KageCatch\\n\\n' + (alerts.join('\\n\\n') || '🟢 در بررسی فعلی هشدار فعالی پیدا نشد.') + '\\n\\nاین گزارش لحظه‌ای است و تاریخچهٔ هشدارها را ذخیره نمی‌کند.',
+      text: '🚨 مرکز هشدارهای KageCatch\n\n' + (alerts.join('\n\n') || '🟢 در بررسی فعلی هشدار فعالی پیدا نشد.') + '\n\nاین گزارش لحظه‌ای است و تاریخچهٔ هشدارها را ذخیره نمی‌کند.',
       keyboard: { inline_keyboard: [[{ text: '🔄 بررسی دوباره', callback_data: 'owner:alerts' }, { text: '🩺 وضعیت سرویس‌ها', callback_data: 'owner:services' }], [{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]] },
     };
   }
@@ -832,7 +832,7 @@ async function handleOwnerCallback(callback, env) {
     const databaseState = database === 'connected' ? '🟢 متصل' : '🔴 در دسترس نیست (' + database + ')';
     const pending = Number.isFinite(snapshot.pending_updates) ? snapshot.pending_updates : 'نامشخص';
     return {
-      text: '🩺 وضعیت سرویس‌های KageCatch\\n\\nControl Worker: ' + workerState + '\\nTelegram: ' + telegramState + '\\nPython Core: ' + coreState + '\\nD1 Database: ' + databaseState + '\\nپیام‌های در انتظار: ' + pending + '\\n\\nوضعیت بات‌های مقصد هنوز به‌صورت مستقل پایش نمی‌شود؛ اینجا دربارهٔ آن‌ها وضعیت ساختگی نمایش نمی‌دهیم.',
+      text: '🩺 وضعیت سرویس‌های KageCatch\n\nControl Worker: ' + workerState + '\nTelegram: ' + telegramState + '\nPython Core: ' + coreState + '\nD1 Database: ' + databaseState + '\nپیام‌های در انتظار: ' + pending + '\n\nوضعیت بات‌های مقصد هنوز به‌صورت مستقل پایش نمی‌شود؛ اینجا دربارهٔ آن‌ها وضعیت ساختگی نمایش نمی‌دهیم.',
       keyboard: { inline_keyboard: [[{ text: '🚨 مرکز هشدارها', callback_data: 'owner:alerts' }, { text: '🔄 بروزرسانی', callback_data: 'owner:services' }], [{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]] },
     };
   }
@@ -923,7 +923,7 @@ async function handleOwnerCallback(callback, env) {
     const keyboard = members.slice(0, 20).map((u) => [{ text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + (u.firstName || u.telegramUserId), callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId }]);
     keyboard.push([{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
     const title = data === 'owner:access' ? '🔐 مدیریت دسترسی کاربران' : '👥 اعضای KageCatch';
-    return { text: title + '\\n\\nفعال: ' + active + ' · مسدود: ' + blocked + '\\n\\n' + (lines.join('\\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
+    return { text: title + '\n\nفعال: ' + active + ' · مسدود: ' + blocked + '\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
   }
   const manage = data.match(/^owner:(block|unblock):(\d+)$/);
   if (manage) {
