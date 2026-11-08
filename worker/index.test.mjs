@@ -850,6 +850,12 @@ function createFakeD1SessionDatabase() {
     challengeRows,
     prepare(sql) {
       return {
+        async all() {
+          if (sql.startsWith("SELECT user_id FROM telegram_sessions")) {
+            return { results: [...rows.keys()].sort().map((user_id) => ({ user_id })) };
+          }
+          throw new Error("unexpected D1 statement");
+        },
         bind(...values) {
           return {
             async run() {
