@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 from kagecatch.targets.senpai_catcher import SenpaiCatcherAdapter
@@ -136,8 +137,61 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MetadataLookupError):
             await adapter.extract_metadata(FakeEvent())
 
-    async def test_catch_command_uses_documented_pick_format(self):
-        self.assertEqual(self.adapter.get_catch_command("Sakura"), "/pick Sakura")
+    async def test_catch_command_is_disabled_until_target_grammar_is_verified(self):
+        with self.assertRaises(RuntimeError):
+            self.adapter.get_catch_command("Sakura")
+
+    async def test_explicitly_configured_catch_template_is_formatted(self):
+        adapter = SenpaiCatcherAdapter(
+            sender_id=123, catch_command_template="/verified {character_name}",
+            frame_extractor=FakeFrameExtractor(), trace_client=self.trace,
+        )
+        self.assertEqual(adapter.get_catch_command("Sakura"), "/verified Sakura")
+
+    async def test_telethon_extractor_downloads_message_bytes_before_frame_extraction(self):
+        from kagecatch.targets.senpai_catcher import TelethonFrameExtractor
+
+        class Client:
+            def __init__(self):
+                self.downloaded = None
+
+            async def download_media(self, message, file):
+                self.downloaded = (message, file)
+                return b"downloaded-video"
+
+        class RecordingFrameExtractor:
+            def __init__(self):
+                self.video = None
+
+            async def extract_first_frame(self, event):
+                self.video = event.video_bytes
+                return b"jpeg-frame"
+
+        client = Client()
+        message = SimpleNamespace(file=SimpleNamespace(size=100), client=client)
+        event = SimpleNamespace(message=message, client=client)
+        frames = RecordingFrameExtractor()
+        extractor = TelethonFrameExtractor(frame_extractor=frames)
+
+        result = await extractor.extract_first_frame(event)
+
+        self.assertEqual(result, b"jpeg-frame")
+        self.assertEqual(client.downloaded, (message, bytes))
+        self.assertEqual(frames.video, b"downloaded-video")
+
+    async def test_telethon_extractor_rejects_oversized_media_before_download(self):
+        from kagecatch.targets.senpai_catcher import TelethonFrameExtractor, MetadataLookupError
+
+        class Client:
+            async def download_media(self, message, file):
+                raise AssertionError("oversized media must not be downloaded")
+
+        message = SimpleNamespace(file=SimpleNamespace(size=101), client=Client())
+        event = SimpleNamespace(message=message, client=message.client)
+        extractor = TelethonFrameExtractor(max_video_bytes=100)
+
+        with self.assertRaises(MetadataLookupError):
+            await extractor.extract_first_frame(event)
 
 
 class SpawnDetectorTests(unittest.IsolatedAsyncioTestCase):
