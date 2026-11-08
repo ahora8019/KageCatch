@@ -1229,8 +1229,9 @@ function createFakeManualReviewDatabase() {
           return {
             async run() {
               if (sql.startsWith("INSERT INTO manual_review_items")) {
-                const [review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at] = values;
+                const [review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, quota_user_id] = values;
                 if (rows.has(review_id)) throw new Error("duplicate review id");
+                if (quota_user_id && [...rows.values()].filter((row) => row.user_id === quota_user_id && row.status === "pending" && row.expires_at > values[8]).length >= 100) return { meta: { changes: 0 } };
                 rows.set(review_id, {
                   review_id, user_id, spawn_id, anime_name, candidates_json,
                   created_at, expires_at, status: "pending", selected_character: null,
@@ -1279,6 +1280,7 @@ function createFakeManualReviewDatabase() {
                 return { results: [...rows.values()]
                   .filter((row) => row.user_id === values[0] && row.status === "pending")
                   .sort((a, b) => a.created_at.localeCompare(b.created_at))
+                  .slice(0, 100)
                   .map((row) => ({ ...row })) };
               }
               throw new Error("unexpected D1 all: " + sql);
@@ -1353,4 +1355,32 @@ test("durable manual review endpoint rejects invalid signatures and cross-user r
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "expire" }),
   }), env);
   assert.equal(unsigned.status, 401);
+});
+
+test("durable manual review endpoint atomically caps pending items at 100 per user", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const connectionStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => connectionStore.fetch(new Request(input, init)) }) };
+  const db = createFakeManualReviewDatabase();
+  const secret = "manual-review-core-secret-with-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 60_000).toISOString();
+
+  for (let index = 0; index < 100; index += 1) {
+    const response = await worker.fetch(await makeSignedManualReviewRequest({
+      action: "create", review_id: index.toString(16).padStart(32, "0"),
+      user_id: "quota-user", spawn_id: index, anime_name: "KonoSuba",
+      candidates: ["Megumin"], created_at: createdAt, expires_at: expiresAt,
+    }, secret), env);
+    assert.equal(response.status, 201);
+  }
+  const overflow = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "create", review_id: "f".repeat(32), user_id: "quota-user",
+    spawn_id: 101, anime_name: "KonoSuba", candidates: ["Aqua"],
+    created_at: createdAt, expires_at: expiresAt,
+  }, secret), env);
+  assert.equal(overflow.status, 429);
+  assert.deepEqual(await overflow.json(), { error: "pending_queue_limit_reached" });
+  assert.equal(db.rows.size, 100);
 });
