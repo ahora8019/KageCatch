@@ -57,7 +57,7 @@ class ReviewPipeline:
             # Keep the log free of event payloads, sessions, and credentials.
             logger.exception(
                 "Manual review persistence failed for user_id=%s spawn_id=%s",
-                user_id, spawn.message_id,
+                spawn.message_id,
             )
             return ReviewPipelineResult(
                 status="review_persistence_failed", spawn_id=spawn.message_id,
