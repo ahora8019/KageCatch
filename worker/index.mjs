@@ -1,3 +1,4 @@
+import { enqueuePanelRequest, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -923,6 +924,7 @@ async function handleOwnerCallback(callback, env) {
 }
 
 async function handleCallback(callback, env) {
+  if (await handlePanelCallback(callback, env, telegramApi)) return;
   const chat = callback.message?.chat;
   if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id)) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "این بخش فقط در گفت‌وگوی خصوصی در دسترس است.", show_alert: true });
@@ -1429,10 +1431,13 @@ async function internalAuthChallengeStore(request, env) {
 
 export default {
   async scheduled(controller, env) {
-    return keepRenderCoreWarm(env, controller);
+    const warm = await keepRenderCoreWarm(env, controller);
+    const panelQueue = await processPanelQueue(env, (method, payload) => telegramApi(env, method, payload));
+    return { ...warm, panel_queue: panelQueue };
   },
   async fetch(request, env) {    const url = new URL(request.url);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
+    if (url.pathname === "/internal/panel-requests") return enqueuePanelRequest(request, env);
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
