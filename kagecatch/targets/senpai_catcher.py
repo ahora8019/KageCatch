@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from types import SimpleNamespace
 from typing import Any, Mapping, Protocol
 
 from ..models.spawn import CharacterMetadata
@@ -71,6 +72,54 @@ class FFmpegFrameExtractor:
         return stdout
 
 
+class TelethonFrameExtractor:
+    """Download a Telethon message's video safely, then extract its first frame."""
+
+    def __init__(
+        self,
+        *,
+        frame_extractor: FrameExtractor | None = None,
+        download_timeout: float = 60.0,
+        max_video_bytes: int = 25 * 1024 * 1024,
+    ) -> None:
+        if download_timeout <= 0 or max_video_bytes <= 0:
+            raise ValueError("download_timeout and max_video_bytes must be positive")
+        self.frame_extractor = frame_extractor or FFmpegFrameExtractor()
+        self.download_timeout = download_timeout
+        self.max_video_bytes = max_video_bytes
+
+    async def extract_first_frame(self, event: Any) -> bytes:
+        message = getattr(event, "message", event)
+        client = getattr(event, "client", None) or getattr(message, "client", None)
+        download_media = getattr(client, "download_media", None)
+        if not callable(download_media):
+            raise MetadataLookupError("Telethon client is unavailable for media download")
+
+        media_file = getattr(message, "file", None)
+        declared_size = getattr(media_file, "size", None)
+        if isinstance(declared_size, int) and declared_size > self.max_video_bytes:
+            raise MetadataLookupError("Video exceeds the configured download size limit")
+
+        try:
+            video = await asyncio.wait_for(
+                download_media(message, file=bytes),
+                timeout=self.download_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise MetadataLookupError("Telegram video download timed out") from exc
+        except Exception as exc:
+            raise MetadataLookupError("Telegram video download failed") from exc
+
+        if not isinstance(video, (bytes, bytearray)) or not video:
+            raise MetadataLookupError("Telegram returned no video bytes")
+        if len(video) > self.max_video_bytes:
+            raise MetadataLookupError("Downloaded video exceeds the configured size limit")
+
+        return await self.frame_extractor.extract_first_frame(
+            SimpleNamespace(video_bytes=bytes(video))
+        )
+
+
 class HttpxTraceMoeClient:
     """Small async HTTP boundary for trace.moe."""
 
@@ -112,13 +161,20 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
 
     def __init__(self, *, sender_id: int | None = None, sender_username: str | None = None,
                  frame_extractor: FrameExtractor | None = None,
-                 trace_client: TraceMoeClient | None = None) -> None:
+                 trace_client: TraceMoeClient | None = None,
+                 catch_command_template: str | None = None) -> None:
         if sender_id is None and not sender_username:
             raise ValueError("Configure sender_id or sender_username for SenpaiCatcher")
         self.sender_id = sender_id
         self.sender_username = sender_username.lstrip("@").casefold() if sender_username else None
-        self.frame_extractor = frame_extractor or FFmpegFrameExtractor()
+        self.frame_extractor = frame_extractor or TelethonFrameExtractor()
         self.trace_client = trace_client or HttpxTraceMoeClient()
+        if catch_command_template is not None:
+            if not isinstance(catch_command_template, str) or "{character_name}" not in catch_command_template:
+                raise ValueError("catch_command_template must contain {character_name}")
+            self.catch_command_template = catch_command_template
+        else:
+            self.catch_command_template = None
 
     @staticmethod
     def _message(event: Any) -> Any:
@@ -217,4 +273,6 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         name = character_name.strip()
         if not name or any(ord(char) < 32 for char in name):
             raise ValueError("character_name must be non-empty and contain no control characters")
-        return f"/pick {name}"
+        if self.catch_command_template is None:
+            raise RuntimeError("Catch command is disabled until the target bot command is verified")
+        return self.catch_command_template.format(character_name=name)
