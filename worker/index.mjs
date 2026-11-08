@@ -548,7 +548,7 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/invite/create') {
       const { maxUses, ttlSeconds } = body || {};
-      if (![1, 5, 10, 25, 100].includes(maxUses) || ![3600, 86400, 604800].includes(ttlSeconds)) return json({ error: 'invalid_invite_options' }, 400);
+      if (![1, 2, 5, 10, 25, 100].includes(maxUses) || ![3600, 86400, 604800].includes(ttlSeconds)) return json({ error: 'invalid_invite_options' }, 400);
       const bytes = crypto.getRandomValues(new Uint8Array(32));
       let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
       const token = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
@@ -730,7 +730,7 @@ async function registryRequest(env, path, payload) {
   if (!env.CONNECT_LINKS) throw new Error('User registry unavailable');
   const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName('connection-links-v1'));
   const response = await stub.fetch('https://connect-links.internal' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
-  if (!response.ok) throw new Error('User registry unavailable');
+  if (!response.ok) { const error = new Error('User registry unavailable'); error.status = response.status; throw error; }
   return response.json();
 }
 
@@ -955,8 +955,12 @@ async function handleWebhook(request, env) {
         if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
           actor = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID });
         } else if (!actor && command === '/start' && startPayload.startsWith('inv_')) {
-          const redemption = await registryRequest(env, '/invite/consume', { telegramUserId: message.from.id, token: startPayload.slice(4) });
-          actor = redemption.user;
+          try {
+            const redemption = await registryRequest(env, '/invite/consume', { telegramUserId: message.from.id, token: startPayload.slice(4) });
+            actor = redemption.user;
+          } catch (error) {
+            if (error.status !== 410 && error.status !== 403) throw error;
+          }
         }
         const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
         const reply = role === 'BLOCKED' || role === 'DENIED'
