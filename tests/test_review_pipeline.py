@@ -76,7 +76,7 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         result = await pipeline.process(event=object(), user_id="12345")
 
-        self.assertEqual(result.status, "no_spawn")
+        self.assertEqual(result["status"], "no_spawn")
         self.assertEqual(queue.items, [])
 
     async def test_unknown_character_candidates_do_not_create_review_item(self):
@@ -92,7 +92,7 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         result = await pipeline.process(event=object(), user_id="12345")
 
-        self.assertEqual(result.status, "no_candidates")
+        self.assertEqual(result["status"], "no_candidates")
         self.assertEqual(queue.items, [])
 
     async def test_d1_failure_is_reported_without_crashing_the_pipeline(self):
@@ -104,7 +104,7 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         result = await pipeline.process(event=object(), user_id="12345")
 
-        self.assertEqual(result.status, "review_persistence_failed")
+        self.assertEqual(result["status"], "review_persistence_failed")
         self.assertIsNone(result.get("review_item"))
         self.assertEqual(queue.items, [])
 
@@ -199,7 +199,7 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         result = await pipeline.process(event=type("Event", (), {"id": 92})(), user_id="12345")
         pending = await queue.get_pending(user_id="12345")
 
-        self.assertEqual(result.status, "review_queued")
+        self.assertEqual(result["status"], "review_queued")
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].spawn_id, 92)
         self.assertEqual(pending[0].candidates, ("Megumin", "Aqua"))
