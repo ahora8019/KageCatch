@@ -106,13 +106,24 @@ class CatchEngine:
         if not spawn.candidates:
             return CatchResult(status="no_match")
 
-        valid = [
-            candidate
-            for candidate in spawn.candidates
-            if candidate.name.strip()
-            and math.isfinite(candidate.confidence)
-            and 0.0 <= candidate.confidence <= 1.0
-        ]
+        valid = []
+        for candidate in spawn.candidates:
+            name = getattr(candidate, "name", None)
+            confidence = getattr(candidate, "confidence", None)
+            if not isinstance(name, str):
+                continue
+            normalized_name = name.strip()
+            if (
+                not normalized_name
+                or len(normalized_name) > 100
+                or any(ord(char) < 32 for char in normalized_name)
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(confidence)
+                or not 0.0 <= confidence <= 1.0
+            ):
+                continue
+            valid.append(Candidate(name=normalized_name, confidence=float(confidence)))
         if not valid:
             return CatchResult(status="no_match")
 
