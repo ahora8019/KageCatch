@@ -903,6 +903,8 @@ async function handleCallback(callback, env) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ این بخش فقط برای Owner است.", show_alert: true });
     return;
   }
+  // Acknowledge before Core/Durable Object work so Telegram does not time out long monitoring callbacks.
+  try { await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id }); } catch {}
   try { await registryRequest(env, '/activity/record', { telegramUserId: callback.from.id, action: callback.data || 'message', firstName: callback.from.first_name, username: callback.from.username }); } catch {}
   let result;
   if (callback.data === "home:panel") {
@@ -928,10 +930,9 @@ async function handleCallback(callback, env) {
       keyboard: { inline_keyboard: [[{ text: '🌸 اتصال امن حساب', url: link }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] },
     };
   }
-  await telegramApi(env, "answerCallbackQuery", {
-    callback_query_id: callback.id,
-    ...(result.alert ? { text: result.text, show_alert: true } : {}),
-  });
+  if (result.alert) {
+    // The callback was already acknowledged; the message itself carries the validation notice.
+  }
   await telegramApi(env, "editMessageText", {
     chat_id: chat.id,
     message_id: callback.message.message_id,
