@@ -52,8 +52,8 @@ async def main() -> None:
     result = await pipeline.process(event=event, user_id="demo-user")
     pending = await queue.get_pending(user_id="demo-user")
     print(json.dumps({
-        "pipeline_status": result.status,
-        "spawn_id": result.spawn_id,
+        "pipeline_status": result["status"],
+        "spawn_id": result.get("spawn_id"),
         "review_count": len(pending),
         "review_status": pending[0].status.value if pending else None,
         "candidates": list(pending[0].candidates) if pending else [],
