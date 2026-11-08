@@ -33,6 +33,7 @@ class TelethonCatchAdapter:
         client: Any,
         source: str,
         response_verifier: ResponseVerifier | None = None,
+        dispatch_enabled: bool = False,
     ) -> None:
         target = TARGETS.get(source)
         if target is None:
@@ -44,9 +45,13 @@ class TelethonCatchAdapter:
         self.media_kind = target.media_kind
         self.target_username = target.username
         self.response_verifier = response_verifier
+        # Live Telegram commands require a deliberate opt-in at composition time.
+        self.dispatch_enabled = bool(dispatch_enabled)
         self._sent: dict[str, Any] = {}
 
     async def send_catch(self, spawn: Spawn, character_name: str) -> CatchReceipt:
+        if not self.dispatch_enabled:
+            raise RuntimeError("live catch dispatch is disabled")
         if spawn.source != self.source or spawn.media_kind != self.media_kind:
             raise ValueError("spawn does not match this catcher")
         command = build_catch_command(self.source, character_name)
