@@ -164,7 +164,7 @@ test("simultaneous owners in separate groups receive independent panel queue rec
     return { message_id: 5000 + sent.length };
   });
   assert.equal(result.processed, 2);
-  assert.deepEqual(sent.sort(), [-100654321, -100123456]);
+  assert.deepEqual(sent.sort((a, b) => a - b), [-100654321, -100123456]);
   assert.equal(env.db.rows.get(firstId).status, "completed");
   assert.equal(env.db.rows.get(secondId).status, "completed");
 });
