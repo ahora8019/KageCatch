@@ -225,3 +225,24 @@ test("accepted panel requests dispatch immediately through waitUntil without wai
   assert.equal(row.status, "completed");
   assert.equal(row.panel_message_id, 909);
 });
+
+
+test("stats callback edits the group panel with live persisted queue counts", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  const telegram = async (_env, method, payload) => calls.push({ method, payload });
+  const callback = {
+    id: "cb-stats", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":stats",
+  };
+  await handlePanelCallback(callback, env, telegram);
+  assert.equal(calls.filter((call) => call.method === "answerCallbackQuery").length, 1);
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(edit, "stats should update the visible panel message");
+  assert.match(edit.payload.text, /درخواست‌های ثبت‌شده: 1/);
+  assert.match(edit.payload.text, /تکمیل‌شده: 1/);
+});
