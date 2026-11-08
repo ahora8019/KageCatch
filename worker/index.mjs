@@ -187,11 +187,10 @@ export function buildRoleMenu(role = "MEMBER") {
     [{ text: "❓ راهنما", callback_data: "help:open" }],
   ];
   if (role === "OWNER") return { inline_keyboard: [
-    [{ text: "👑 نظارت کل سامانه", callback_data: "owner:stats" }],
-    [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
-    [{ text: "⚙️ تنظیمات کل برنامه", callback_data: "owner:settings" }],
-    [{ text: "📣 پیام به همه", callback_data: "owner:broadcast" }],
-    [{ text: "🛑 توقف فوری", callback_data: "owner:emergency" }],
+    [{ text: "📊 نمای کلی", callback_data: "owner:stats" }, { text: "👥 اعضا", callback_data: "owner:members" }],
+    [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
+    [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
+    [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
     ...memberRows,
   ] };
   return { inline_keyboard: memberRows };
@@ -547,6 +546,66 @@ export class ConnectionLinkStore {
       });
       return claimed ? json({ claimed: true }) : json({ error: 'request_replayed' }, 409);
     }
+    if (url.pathname === '/invite/create') {
+      const { maxUses, ttlSeconds } = body || {};
+      if (![1, 5, 10, 25, 100].includes(maxUses) || ![3600, 86400, 604800].includes(ttlSeconds)) return json({ error: 'invalid_invite_options' }, 400);
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
+      const token = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+      const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const idBytes = crypto.getRandomValues(new Uint8Array(9));
+      const id = Array.from(idBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const record = { id, tokenHash, maxUses, uses: 0, createdAt: Date.now(), expiresAt: Date.now() + ttlSeconds * 1000, revokedAt: null };
+      await this.state.storage.put('invite:' + id, record);
+      await this.state.storage.put('invite-token:' + tokenHash, id);
+      return json({ token, id, maxUses, expiresIn: ttlSeconds }, 201);
+    }
+    if (url.pathname === '/invite/list') {
+      const entries = await this.state.storage.list({ prefix: 'invite:' });
+      const invites = Array.from(entries.values()).map(({ id, maxUses, uses, createdAt, expiresAt, revokedAt }) => ({ id, maxUses, uses, createdAt, expiresAt, revokedAt }));
+      invites.sort((a, b) => b.createdAt - a.createdAt);
+      return json({ invites: invites.slice(0, 30) });
+    }
+    if (url.pathname === '/invite/revoke') {
+      const id = body?.id;
+      if (typeof id !== 'string' || !/^[a-f0-9]{18}$/.test(id)) return json({ error: 'invalid_invite_id' }, 400);
+      const key = 'invite:' + id;
+      const record = await this.state.storage.get(key);
+      if (!record) return json({ error: 'not_found' }, 404);
+      if (!record.revokedAt) {
+        record.revokedAt = Date.now();
+        await this.state.storage.put(key, record);
+        await this.state.storage.delete('invite-token:' + record.tokenHash);
+      }
+      return json({ status: 'revoked' });
+    }
+    if (url.pathname === '/invite/consume') {
+      const { token, telegramUserId } = body || {};
+      if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(token) || !Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return json({ error: 'invalid_invite' }, 400);
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+      const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const result = await this.state.storage.transaction(async (txn) => {
+        const userKey = 'user:' + telegramUserId;
+        const existingUser = await txn.get(userKey);
+        if (existingUser) return existingUser.status === 'blocked' ? { error: 'blocked' } : { user: existingUser, existing: true };
+        const id = await txn.get('invite-token:' + tokenHash);
+        if (!id) return { error: 'invalid_or_expired_invite' };
+        const inviteKey = 'invite:' + id;
+        const invite = await txn.get(inviteKey);
+        if (!invite || invite.revokedAt || invite.expiresAt <= Date.now() || invite.uses >= invite.maxUses) return { error: 'invalid_or_expired_invite' };
+        const user = { telegramUserId, role: 'MEMBER', status: 'active', createdAt: Date.now(), updatedAt: Date.now(), invitedBy: 'OWNER' };
+        invite.uses += 1;
+        invite.updatedAt = Date.now();
+        await txn.put(inviteKey, invite);
+        if (invite.uses >= invite.maxUses) await txn.delete('invite-token:' + tokenHash);
+        await txn.put(userKey, user);
+        return { user, existing: false };
+      });
+      if (result.error === 'blocked') return json({ error: 'blocked' }, 403);
+      if (result.error) return json({ error: result.error }, 410);
+      return json({ user: result.user, existing: result.existing }, 200);
+    }
     if (url.pathname === '/register') {
       const { telegramUserId, ownerTelegramId } = body || {};
       if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return json({ error: 'invalid_request' }, 400);
@@ -682,14 +741,39 @@ async function getTelegramUser(env, userId) {
 
 async function handleOwnerCallback(callback, env) {
   const data = callback.data || '';
-  if (data === 'owner:stats') return { text: '👑 نظارت کل سامانه\n\nنمای کلی کاربران و سرویس‌ها در حال آماده‌سازی است.', keyboard: BACK_MENU };
-  if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
+  if (data === 'owner:stats') {
+    const { users = [] } = await registryRequest(env, '/users', {});
+    const active = users.filter((user) => user.status === 'active' && user.role === 'MEMBER').length;
+    const blocked = users.filter((user) => user.status === 'blocked').length;
+    const { invites = [] } = await registryRequest(env, '/invite/list', {});
+    const usable = invites.filter((invite) => !invite.revokedAt && invite.expiresAt > Date.now() && invite.uses < invite.maxUses).length;
+    return { text: '👑 نمای کلی KageCatch\\n\\n👥 اعضای فعال: ' + active + '\\n🚫 مسدود: ' + blocked + '\\n🎟️ دعوت‌های معتبر: ' + usable + '\\n\\nوضعیت Catch: خاموش · بدون اجرای زنده', keyboard: { inline_keyboard: [[{ text: '👥 اعضا', callback_data: 'owner:members' }, { text: '🎟️ دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
+  }
+  if (data === 'owner:invites') {
+    const { invites = [] } = await registryRequest(env, '/invite/list', {});
+    const usable = invites.filter((invite) => !invite.revokedAt && invite.expiresAt > Date.now() && invite.uses < invite.maxUses);
+    const lines = usable.slice(0, 10).map((invite) => '• ' + invite.id.slice(0, 8) + ' — ' + invite.uses + '/' + invite.maxUses + ' استفاده');
+    const revokeRows = usable.slice(0, 10).map((invite) => [{ text: 'لغو دعوت ' + invite.id.slice(0, 6), callback_data: 'owner:invite:revoke:' + invite.id }]);
+    return { text: '🎟️ مدیریت دعوت‌ها\\n\\nدعوت جدید بساز و لینک رو برای کاربر بفرست. لینک‌ها تعداد استفاده و تاریخ انقضا دارن.\\n\\nدعوت‌های فعال:\\n' + (lines.join('\\n') || 'دعوت فعالی وجود نداره.'), keyboard: { inline_keyboard: [[{ text: '＋ دعوت ۱ نفره · ۲۴ ساعت', callback_data: 'owner:invite:create:1' }, { text: '＋ دعوت ۱۰ نفره · ۷ روز', callback_data: 'owner:invite:create:10' }], ...revokeRows, [{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]] } };
+  }
+  const createInviteMatch = data.match(/^owner:invite:create:(1|10)$/);
+  if (createInviteMatch) {
+    const maxUses = Number(createInviteMatch[1]);
+    const ttlSeconds = maxUses === 1 ? 86400 : 604800;
+    const invite = await registryRequest(env, '/invite/create', { maxUses, ttlSeconds });
+    const link = 'https://t.me/KageCatchBot?start=inv_' + invite.token;
+    const duration = maxUses === 1 ? '۲۴ ساعت' : '۷ روز';
+    return { text: '✅ لینک دعوت ساخته شد\\n\\nظرفیت: ' + maxUses + ' نفر\\nاعتبار: ' + duration + '\\n\\n' + link + '\\n\\nاین لینک رو فقط برای افراد مورداعتماد بفرست.', keyboard: { inline_keyboard: [[{ text: '🔗 باز کردن لینک دعوت', url: link }], [{ text: '🎟️ مدیریت دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
+  }
+  const revokeInviteMatch = data.match(/^owner:invite:revoke:([a-f0-9]{18})$/);
+  if (revokeInviteMatch) {
+    await registryRequest(env, '/invite/revoke', { id: revokeInviteMatch[1] });
+    return { text: '🗑️ لینک دعوت لغو شد و دیگه قابل استفاده نیست.', keyboard: { inline_keyboard: [[{ text: '🎟️ مدیریت دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
+  }
+  if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\\n\\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
   if (data === 'owner:broadcast') {
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'begin' });
-    return {
-      text: '📣 پیام همگانی\n\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.',
-      keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] },
-    };
+    return { text: '📣 پیام همگانی\\n\\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.', keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] } };
   }
   if (data === 'owner:broadcast:cancel') {
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
@@ -701,36 +785,25 @@ async function handleOwnerCallback(callback, env) {
     if (typeof messageText !== 'string') return { text: 'پیش‌نویس معتبری برای ارسال وجود ندارد.', keyboard: BACK_MENU, alert: true };
     const { users = [] } = await registryRequest(env, '/users', {});
     const recipients = users.filter((user) => user.role === 'MEMBER' && user.status === 'active' && Number.isSafeInteger(user.telegramUserId));
-    let delivered = 0;
-    let failed = 0;
+    let delivered = 0; let failed = 0;
     for (const recipient of recipients) {
-      try {
-        await telegramApi(env, 'sendMessage', { chat_id: recipient.telegramUserId, text: messageText });
-        delivered += 1;
-      } catch {
-        failed += 1;
-      }
+      try { await telegramApi(env, 'sendMessage', { chat_id: recipient.telegramUserId, text: messageText }); delivered += 1; }
+      catch { failed += 1; }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
-    return {
-      text: '📣 ارسال همگانی تمام شد.\n\nموفق: ' + delivered + '\nناموفق: ' + failed + '\nمخاطبان فعال: ' + recipients.length,
-      keyboard: BACK_MENU,
-    };
+    return { text: '📣 ارسال همگانی تمام شد.\\n\\nموفق: ' + delivered + '\\nناموفق: ' + failed + '\\nمخاطبان فعال: ' + recipients.length, keyboard: BACK_MENU };
   }
-  if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\n\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
+  if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\\n\\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
   if (data === 'owner:members') {
     const result = await registryRequest(env, '/users', {});
     const users = result.users || [];
     const lines = users.map((u) => '• ' + u.telegramUserId + ' — ' + u.role + ' — ' + u.status);
-    const keyboard = users.filter((u) => u.role !== 'OWNER').slice(0, 20).map((u) => [{
-      text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + u.telegramUserId,
-      callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId,
-    }]);
-    keyboard.push([{ text: '⬅️ منوی اصلی', callback_data: 'menu:main' }]);
-    return { text: '👥 اعضای KageCatch\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
+    const keyboard = users.filter((u) => u.role !== 'OWNER').slice(0, 20).map((u) => [{ text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + u.telegramUserId, callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId }]);
+    keyboard.push([{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
+    return { text: '👥 اعضای KageCatch\\n\\n' + (lines.join('\\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
   }
-  const manage = data.match(/^owner:(block|unblock):(\d+)$/);
+  const manage = data.match(/^owner:(block|unblock):(\\d+)$/);
   if (manage) {
     const telegramUserId = Number(manage[2]);
     if (!Number.isSafeInteger(telegramUserId)) return { text: 'شناسه عضو معتبر نیست.', keyboard: BACK_MENU, alert: true };
@@ -877,11 +950,18 @@ async function handleWebhook(request, env) {
     const command = message.text.trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
     if (command === "/start" || command === "/panel") {
       try {
-        const registered = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID || "" });
-        const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, registered.role, registered.status);
+        let actor = await getTelegramUser(env, message.from.id);
+        const startPayload = message.text.trim().split(/\\s+/, 2)[1] || '';
+        if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
+          actor = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID });
+        } else if (!actor && command === '/start' && startPayload.startsWith('inv_')) {
+          const redemption = await registryRequest(env, '/invite/consume', { telegramUserId: message.from.id, token: startPayload.slice(4) });
+          actor = redemption.user;
+        }
+        const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
         const reply = role === 'BLOCKED' || role === 'DENIED'
-          ? { text: "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." }
-          : { text: role === 'OWNER' ? "🌸 خوش آمدی Owner؛ از منوی شروع بخش موردنظرت را انتخاب کن." : "🌸 خوش آمدی به KageCatch؛ برای ادامه یکی از گزینه‌ها را انتخاب کن.", reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role) };
+          ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
+          : { text: role === 'OWNER' ? "🌸 خوش آمدی Owner؛ پنل مدیریت آماده‌ست." : "🌸 دعوتت تأیید شد! به KageCatch خوش اومدی 😎", reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role) };
         await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
       } catch { return new Response("User registry unavailable", { status: 503 }); }
       return new Response("OK", { status: 200 });
