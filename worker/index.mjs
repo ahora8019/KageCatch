@@ -193,7 +193,6 @@ export function buildRoleMenu(role = "MEMBER") {
     [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
     [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
     [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
-    ...memberRows,
   ] };
   return { inline_keyboard: memberRows };
 }
@@ -941,8 +940,9 @@ async function handleCallback(callback, env) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "این بخش فقط در گفت‌وگوی خصوصی در دسترس است.", show_alert: true });
     return;
   }
-  const actor = await getTelegramUser(env, callback.from.id);
-  const role = resolveRole(callback.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+  const isOwner = /^\d+$/.test(String(env.OWNER_TELEGRAM_ID || "")) && String(callback.from.id) === String(env.OWNER_TELEGRAM_ID);
+  const actor = isOwner ? null : await getTelegramUser(env, callback.from.id);
+  const role = isOwner ? "OWNER" : resolveRole(callback.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
   if (role === 'BLOCKED' || role === 'DENIED') {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ دسترسی شما مجاز نیست.", show_alert: true });
     return;
@@ -956,7 +956,7 @@ async function handleCallback(callback, env) {
   try { await registryRequest(env, '/activity/record', { telegramUserId: callback.from.id, action: callback.data || 'message', firstName: callback.from.first_name, username: callback.from.username }); } catch {}
   let result;
   if (callback.data === "home:panel") {
-    result = { text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:", keyboard: buildRoleMenu(role) };
+    result = { text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:", keyboard: buildRoleMenu("MEMBER") };
   } else if (callback.data === "home:admin" && role === "OWNER") {
     result = { text: "👑 پنل مدیریت KageCatch\n\nبخش مدیریتی موردنظرت را انتخاب کن:", keyboard: buildRoleMenu("OWNER") };
   } else if (callback.data === "home:status") {
@@ -1077,11 +1077,12 @@ async function handleWebhook(request, env) {
     const command = message.text.trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
     if (command === "/start" || command === "/panel") {
       try {
-        let actor = await getTelegramUser(env, message.from.id);
+        const isOwner = /^\d+$/.test(String(env.OWNER_TELEGRAM_ID || '')) && String(message.from.id) === String(env.OWNER_TELEGRAM_ID);
+        let actor = isOwner
+          ? await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID })
+          : await getTelegramUser(env, message.from.id);
         const startPayload = message.text.trim().split(/\s+/, 2)[1] || '';
-        if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
-          actor = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID });
-        } else if (!actor && command === '/start' && startPayload.startsWith('inv_')) {
+        if (!isOwner && !actor && command === '/start' && startPayload.startsWith('inv_')) {
           try {
             const redemption = await registryRequest(env, '/invite/consume', { telegramUserId: message.from.id, token: startPayload.slice(4) });
             actor = redemption.user;
@@ -1091,10 +1092,17 @@ async function handleWebhook(request, env) {
         }
         const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
         if (actor && role !== 'DENIED' && role !== 'BLOCKED') { try { await registryRequest(env, '/activity/record', { telegramUserId: message.from.id, action: command === '/panel' ? 'panel' : 'start', firstName: message.from.first_name, username: message.from.username }); } catch {} }
-        const reply = role === 'BLOCKED' || role === 'DENIED'
-          ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
-          : { text: role === 'OWNER' ? "🌸 خوش آمدی Owner؛ پنل مدیریت آماده‌ست." : "🌸 دعوتت تأیید شد! به KageCatch خوش اومدی 😎", reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role) };
-        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
+        if (role === 'BLOCKED' || role === 'DENIED') {
+          const text = actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن.";
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text, reply_markup: { remove_keyboard: true } });
+        } else if (command === "/start") {
+          const greeting = role === 'OWNER' ? "سلام Owner! پنل مدیریت آماده‌ست 🌸" : "سلام! به KageCatch خوش اومدی 🌸";
+          const prompt = role === 'OWNER' ? "بخش مدیریتی موردنظرت رو انتخاب کن:" : "یکی از بخش‌ها رو انتخاب کن:";
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: greeting, reply_markup: { remove_keyboard: true } });
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: prompt, reply_markup: buildStartMenu(role) });
+        } else {
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: role === 'OWNER' ? "پنل مدیریت آماده‌ست 🌸" : "به KageCatch خوش اومدی 🌸", reply_markup: buildRoleMenu(role) });
+        }
       } catch { return new Response("User registry unavailable", { status: 503 }); }
       return new Response("OK", { status: 200 });
     }
@@ -1135,7 +1143,8 @@ async function handleWebhook(request, env) {
       return new Response("OK", { status: 200 });
     }
     if (command === "/admin") {
-      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "👑 پنل مدیریت KageCatch", reply_markup: buildRoleMenu("OWNER") });
+      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "منوی قبلی به‌روزرسانی شد.", reply_markup: { remove_keyboard: true } });
+      await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "بخش مدیریتی موردنظرت رو انتخاب کن:", reply_markup: buildRoleMenu("OWNER") });
       return new Response("OK", { status: 200 });
     }
     if (command === "/status" && role === "MEMBER") {
