@@ -77,6 +77,16 @@ export async function enqueuePanelRequest(request, env) {
 
 export async function processPanelQueue(env, sendTelegram) {
   if (!env.KAGECATCH_DB || typeof sendTelegram !== "function") return { processed: 0 };
+  // Recover claims abandoned by a Worker restart, while bounding retries.
+  await env.KAGECATCH_DB.prepare(
+    "UPDATE panel_requests SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND updated_at < datetime('now', '-2 minutes') AND attempts < 3"
+  ).run();
+  await env.KAGECATCH_DB.prepare(
+    "UPDATE panel_requests SET status = 'failed', last_error_code = 'delivery_attempts_exhausted', updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND updated_at < datetime('now', '-2 minutes') AND attempts >= 3"
+  ).run();
+  await env.KAGECATCH_DB.prepare(
+    "UPDATE panel_requests SET status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND expires_at <= CURRENT_TIMESTAMP"
+  ).run();
   const rows = await env.KAGECATCH_DB.prepare(
     "SELECT request_id FROM panel_requests WHERE status = 'pending' AND expires_at > CURRENT_TIMESTAMP AND attempts < 3 ORDER BY created_at LIMIT 10"
   ).all();
