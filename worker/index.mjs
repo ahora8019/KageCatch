@@ -215,11 +215,11 @@ export function resolveCallback(data) {
   switch (data) {
     case "account:connect":
       return {
-        text: "🟢 وصل کردن حساب\n\nبرای وصل کردن اکانتت، پنل رو باز کن و از بخش «حساب‌ها» روی اتصال بزن. کد ورود و رمز دومرحله‌ای فقط داخل فرم امن پنل وارد می‌شن؛ اینجا توی چت نفرستشون.",
+        text: "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
         keyboard: BACK_MENU,
       };
     case "account:list":
-      return { text: "👤 حساب‌های متصل\n\nهنوز حسابی وصل نکردی. از پنل می‌تونی حسابت رو اضافه کنی.", keyboard: BACK_MENU };
+      return { text: "👤 حساب‌های متصل\n\nبرای اضافه کردن حساب، از گزینهٔ «اتصال حساب» استفاده کن.", keyboard: BACK_MENU };
     case "catch:open":
       return {
         text: "🎯 بخش Catch\n\nهنوز آمادهٔ شکار واقعی نیستیم 😅\nداریم بخش تشخیص و گرفتن کاراکترها رو تکمیل می‌کنیم. تا وقتی همه‌چیز تست نشه، چیزی به‌صورت خودکار اجرا نمی‌شه.",
@@ -246,7 +246,7 @@ export function resolveCallback(data) {
       return { text: "❌ حساب متصلی ثبت نشده است.", keyboard: BACK_MENU };
     case "help:open":
       return {
-        text: "❓ راهنمای کوچیک KageCatch\n\n🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌هایی که پشتیبانی می‌شن\n👤 حساب من — وصل و مدیریت حسابت\n📊 آمار من — نتیجهٔ Catchها\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
+        text: "❓ راهنمای کوچیک KageCatch\n\n🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌هایی که پشتیبانی می‌شن\n👤 حساب من — اتصال و مدیریت حسابت\n📊 آمار من — نتیجهٔ Catchها\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
         keyboard: BACK_MENU,
       };
     case "menu:main":
@@ -627,14 +627,33 @@ export class ConnectionLinkStore {
       if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(token)) return json({ error: 'invalid_link' }, 400);
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
       const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
+      const sessionToken = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+      const sessionDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sessionToken));
+      const sessionKey = 'browser:' + Array.from(new Uint8Array(sessionDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
       const record = await this.state.storage.transaction(async (txn) => {
         const value = await txn.get(key);
-        if (value) await txn.delete(key);
+        if (!value) return null;
+        await txn.delete(key);
+        if (value.expiresAt <= Date.now()) return null;
+        await txn.put(sessionKey, { telegramUserId: value.telegramUserId, expiresAt: Date.now() + 10 * 60 * 1000 });
         return value;
       });
-      if (!record) return json({ error: 'invalid_or_used_link' }, 410);
-      if (record.expiresAt <= Date.now()) return json({ error: 'expired_link' }, 410);
-      return json({ valid: true }, 200);
+      if (!record) return json({ error: 'invalid_or_expired_link' }, 410);
+      return json({ sessionToken, expiresIn: 600 }, 200);
+    }
+    if (url.pathname === '/browser-session') {
+      const sessionToken = body?.sessionToken;
+      if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(sessionToken)) return json({ error: 'invalid_session' }, 401);
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sessionToken));
+      const key = 'browser:' + Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      const record = await this.state.storage.get(key);
+      if (!record || record.expiresAt <= Date.now()) {
+        if (record) await this.state.storage.delete(key);
+        return json({ error: 'invalid_or_expired_session' }, 401);
+      }
+      return json({ telegramUserId: record.telegramUserId }, 200);
     }
     return json({ error: 'not_found' }, 404);
   }
@@ -755,9 +774,10 @@ async function handleCallback(callback, env) {
     }
   }
   if (callback.data === 'account:connect') {
+    const link=await createConnectionLink(env,callback.from.id);
     result = {
-      text: '🟢 برای اتصال امن حساب، پنل حرفه‌ای KageCatch را باز کن. شماره، کد ورود و در صورت نیاز رمز دومرحله‌ای فقط در پنل امن وارد می‌شوند.',
-      keyboard: { inline_keyboard: [[{ text: '🌸 باز کردن پنل اتصال', web_app: { url: PANEL_URL } }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] },
+      text: '🟢 بزن بریم حسابت رو وصل کنیم! لینک امن مخصوص خودت آماده شد؛ تا ۵ دقیقه اعتبار داره.',
+      keyboard: { inline_keyboard: [[{ text: '🌸 اتصال امن حساب', url: link }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] },
     };
   }
   await telegramApi(env, "answerCallbackQuery", {
@@ -772,19 +792,61 @@ async function handleCallback(callback, env) {
   });
 }
 
+const CONNECTION_LOGIN_HTML = `<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow,noarchive"><title>اتصال حساب | KageCatch</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#100d17;color:#f7edf7}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:22px;background:radial-gradient(ellipse at top,#382039 0,transparent 55%),#100d17}.card{width:min(100%,440px);padding:26px;border:1px solid #553c58;border-radius:24px;background:#1b1622;box-shadow:0 20px 70px #0008}h1{font-size:24px;margin:0 0 10px}p{color:#c5b5c9;line-height:1.9}.field{display:grid;gap:8px;margin:18px 0}label{font-weight:650}input{width:100%;padding:15px;border-radius:13px;border:1px solid #59455e;background:#120e19;color:white;font-size:17px}button{width:100%;padding:15px;border:0;border-radius:14px;background:#e98fc8;color:#271426;font-weight:750;font-size:16px;margin-top:12px}button:disabled{opacity:.55}.hint{font-size:13px;color:#a99bad}.status{min-height:52px;margin-top:16px;color:#f2b7df;line-height:1.8}.hidden{display:none}.brand{color:#eea0d1;font-size:12px;letter-spacing:3px;margin-bottom:18px}
+</style></head><body><main class="card"><div class="brand">KAGECATCH · SECURE LOGIN</div><h1>اتصال حساب تلگرام 🌸</h1><p id="intro">شماره‌ات رو وارد کن تا کد ورود تلگرام برات ارسال بشه.</p>
+<form id="login"><div class="field" id="phone-field"><label for="phone">شماره تلفن</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+989..." required></div>
+<div class="field hidden" id="code-field"><label for="code">کد ورود تلگرام</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"></div>
+<div class="field hidden" id="password-field"><label for="password">رمز دومرحله‌ای</label><input id="password" name="password" type="password" autocomplete="off" maxlength="256"></div>
+<button id="submit" type="submit">ارسال کد</button></form><div id="status" class="status" role="status" aria-live="polite"></div><p class="hint">این صفحه فقط برای اتصال حساب KageCatch است. کد و رمزت ذخیره یا در چت بات فرستاده نمی‌شوند.</p></main>
+<script>
+(()=>{const form=document.querySelector("#login"),status=document.querySelector("#status"),intro=document.querySelector("#intro"),submit=document.querySelector("#submit"),phoneField=document.querySelector("#phone-field"),codeField=document.querySelector("#code-field"),passwordField=document.querySelector("#password-field");let stage="phone",sessionToken="",busy=false;submit.disabled=true;
+const show=(next,message)=>{stage=next;phoneField.classList.toggle("hidden",next!=="phone");codeField.classList.toggle("hidden",next!=="code");passwordField.classList.toggle("hidden",next!=="password");document.querySelector("#phone").required=next==="phone";document.querySelector("#code").required=next==="code";document.querySelector("#password").required=next==="password";submit.textContent=next==="phone"?"ارسال کد":next==="code"?"تأیید کد":"تأیید و اتصال";intro.textContent=next==="phone"?"شماره‌ات رو وارد کن تا کد ورود تلگرام برات ارسال بشه.":next==="code"?"کدی که تلگرام فرستاده رو همین‌جا وارد کن.": "رمز دومرحله‌ای تلگرامت رو وارد کن.";status.textContent=message||"";};
+const api=async(action,data={})=>{const r=await fetch("/connect/api",{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+sessionToken},body:JSON.stringify({action,...data}),cache:"no-store"});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||"request_failed");return body;};
+(async()=>{const linkToken=location.pathname.split("/").pop();if(!/^[A-Za-z0-9_-]{40,}$/.test(linkToken)){show("phone","لینک اتصال معتبر نیست.");submit.disabled=true;return;}try{const r=await fetch("/connect/exchange",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:linkToken}),cache:"no-store"});const body=await r.json();if(!r.ok)throw new Error(body.error||"link_expired");sessionToken=body.sessionToken;history.replaceState(null,"","/connect");submit.disabled=false;status.textContent="لینک امن تأیید شد؛ می‌تونیم شروع کنیم."; }catch{show("phone","این لینک منقضی شده یا قبلاً استفاده شده. از داخل بات یه لینک تازه بگیر.");submit.disabled=true;}})();
+form.addEventListener("submit",async event=>{event.preventDefault();if(busy||!sessionToken)return;busy=true;submit.disabled=true;const submittedStage=stage;try{let result;if(stage==="phone"){const phone=document.querySelector("#phone").value.trim();if(!/^\\+[1-9]\\d{7,14}$/.test(phone))throw new Error("invalid_phone");result=await api("start",{phone});if(result.status==="already_authorized"){await api("reconnect");show("phone","حسابت از قبل مجاز بود؛ اتصال دوباره برقرار شد. 🎉");form.classList.add("hidden");return;}show("code","کد ورود ارسال شد. فقط همین‌جا واردش کن.");}else if(stage==="code"){result=await api("code",{code:document.querySelector("#code").value.trim()});if(result.status==="password_required"){show("password","حساب تلگرامت رمز دومرحله‌ای داره.");return;}show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}else{result=await api("password",{password:document.querySelector("#password").value});show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}}catch(error){const messages={invalid_phone:"شماره رو با کد کشور وارد کن.",telegram_code_request_failed:"تلگرام فعلاً نتونست کد بفرسته؛ کمی بعد دوباره امتحان کن.",invalid_telegram_code:"کد ورود درست نیست؛ دوباره بررسیش کن.",authorization_expired:"مهلت ورود تموم شد. از بات لینک تازه بگیر.",invalid_2fa_password:"رمز دومرحله‌ای درست نیست.",core_unavailable:"ارتباط با سرویس برقرار نشد؛ دوباره تلاش کن."};status.textContent=messages[error.message]||"اتصال انجام نشد. دوباره تلاش کن."; }finally{if(submittedStage==="code")document.querySelector("#code").value="";if(submittedStage==="password")document.querySelector("#password").value="";if(submittedStage==="phone"&&form.classList.contains("hidden"))document.querySelector("#phone").value="";busy=false;submit.disabled=!sessionToken||form.classList.contains("hidden");}});
+})();
+</script></body></html>`;
+function securePageHeaders(extra={}){return { "content-type":"text/html; charset=utf-8","cache-control":"no-store, max-age=0","referrer-policy":"no-referrer","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'","permissions-policy":"camera=(), microphone=(), geolocation=()","x-robots-tag":"noindex, nofollow, noarchive",...extra};}
 async function connectionLanding(request, env, token) {
+  if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
   if (!/^[A-Za-z0-9_-]{40,}$/.test(token)) return new Response("Invalid link", { status: 404 });
-  if (request.method === "GET") {
-    const html = "<!doctype html><html lang=fa dir=rtl><meta charset=utf-8><title>KageCatch</title><body><h1>اتصال KageCatch</h1><p>این لینک یک‌بارمصرف است. این مرحله فقط اعتبار لینک را بررسی می‌کند؛ ورود و ساخت Session هنوز فعال نیست. کد ورود یا رمز دومرحله‌ای وارد نکن.</p><form method=post><input type=hidden name=token value=" + token + "><button>بررسی لینک</button></form></body></html>";
-    return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff" } });
-  }
-  if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
-  const form = await request.formData();
-  if (form.get("token") !== token || !env.CONNECT_LINKS) return new Response("Invalid link", { status: 410 });
-  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
-  const response = await stub.fetch("https://connect-links.internal/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
-  if (!response.ok) return new Response("لینک منقضی شده یا قبلاً مصرف شده است.", { status: 410, headers: { "cache-control": "no-store" } });
-  return new Response("لینک تأیید شد. این به معنی اتصال حساب تلگرام نیست؛ احراز هویت و ساخت Session هنوز فعال نشده است.", { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+  return new Response(CONNECTION_LOGIN_HTML, { headers: securePageHeaders() });
+}
+async function connectionExchange(request, env) {
+  if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+  if(!(request.headers.get("content-type")||"").toLowerCase().startsWith("application/json"))return json({error:"unsupported_media_type"},415);
+  let body;try{body=await request.json();}catch{return json({error:"invalid_request"},400);}
+  if(typeof body?.token!=="string"||body.token.length>128||! /^[A-Za-z0-9_-]{40,}$/.test(body.token)||!env.CONNECT_LINKS)return json({error:"invalid_link"},400);
+  const stub=env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const response=await stub.fetch("https://connect-links.internal/consume",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:body.token})});
+  if(!response.ok)return json({error:"invalid_or_expired_link"},410);
+  return json(await response.json());
+}
+async function standaloneConnectApi(request,env){
+  if(request.method!=="POST")return json({error:"method_not_allowed"},405);
+  if(!(request.headers.get("content-type")||"").toLowerCase().startsWith("application/json"))return json({error:"unsupported_media_type"},415);
+  const bearer=(request.headers.get("authorization")||"").match(/^Bearer ([A-Za-z0-9_-]{40,})$/);
+  if(!bearer||!env.CONNECT_LINKS)return json({error:"unauthorized"},401);
+  let body;try{body=await request.json();}catch{return json({error:"invalid_request"},400);}
+  const stub=env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const sessionResponse=await stub.fetch("https://connect-links.internal/browser-session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionToken:bearer[1]})});
+  if(!sessionResponse.ok)return json({error:"session_expired"},401);
+  const {telegramUserId}=await sessionResponse.json();
+  const path="/v1/accounts/"+telegramUserId;
+  const action=body?.action;
+  const spec=action==="status"?{method:"GET",path}
+    :action==="start"?{method:"POST",path:path+"/connect",payload:{phone:body.phone}}
+    :action==="code"?{method:"POST",path:path+"/connect/code",payload:{code:body.code}}
+    :action==="password"?{method:"POST",path:path+"/connect/password",payload:{password:body.password}}
+    :action==="reconnect"?{method:"POST",path:path+"/reconnect"}
+    :action==="cancel"?{method:"POST",path:path+"/connect/cancel"}:null;
+  if(!spec)return json({error:"unknown_action"},400);
+  const result=await coreRequest(env,spec.method,spec.path,spec.payload??null);
+  if(result.status<200||result.status>=300)return json({error:result.data?.error||result.data?.detail||"core_request_failed"},result.status);
+  return json(result.data,result.status);
 }
 
 async function handleWebhook(request, env) {
@@ -1007,6 +1069,8 @@ export default {
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
+    if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
+    if (url.pathname === "/connect/api") return standaloneConnectApi(request, env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
     if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
     if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
