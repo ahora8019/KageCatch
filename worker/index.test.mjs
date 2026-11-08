@@ -117,7 +117,7 @@ test("connection link exchanges once for a short-lived browser session bound to 
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ telegramUserId: 987654321, ttlSeconds: 300 }),
   }));
-  const { token } = await created.json();
+  const { token, id } = await created.json();
   const consume = () => store.fetch(new Request("https://do.internal/consume", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
   }));
@@ -955,4 +955,146 @@ test("Mini App account connection waits for Telegram authentication to finish", 
   assert.match(html, /let authPromise\s*=\s*null/);
   assert.match(html, /if\(!session\s*&&\s*authPromise\)\s*await authPromise/);
   assert.match(html, /authPromise\s*=\s*authenticate\(\)/);
+});
+
+
+test("owner menu exposes a dedicated invite-management section", () => {
+  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("owner:invites"));
+
+});
+
+test("invite records are owner-created, expiring, revocable, and limited by use count", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const create = () => store.fetch(new Request("https://do.internal/invite/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ maxUses: 2, ttlSeconds: 86400 }),
+  }));
+  const created = await create();
+  assert.equal(created.status, 201);
+  const invite = await created.json();
+  assert.match(invite.token, /^[A-Za-z0-9_-]{40,}$/);
+  assert.equal(invite.maxUses, 2);
+  assert.equal(invite.expiresIn, 86400);
+  const consume = (telegramUserId) => store.fetch(new Request("https://do.internal/invite/consume", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: invite.token, telegramUserId }),
+  }));
+  const first = await consume(100001);
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).user.status, "active");
+  const second = await consume(100002);
+  assert.equal(second.status, 200);
+  assert.equal((await second.json()).user.status, "active");
+  assert.equal((await consume(100003)).status, 410);
+});
+
+test("invite store rejects invalid tokens, duplicate member redemption, and supports revocation", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/invite/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ maxUses: 1, ttlSeconds: 3600 }),
+  }));
+  const { token, id } = await created.json();
+  const consume = (telegramUserId, value = token) => store.fetch(new Request("https://do.internal/invite/consume", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: value, telegramUserId }),
+  }));
+  assert.equal((await consume(200001, "invalid-token")).status, 400);
+  assert.equal((await consume(200001)).status, 200);
+  assert.equal((await consume(200001)).status, 200);
+  const revoked = await store.fetch(new Request("https://do.internal/invite/revoke", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id }),
+  }));
+  assert.equal(revoked.status, 200);
+  const second = await store.fetch(new Request("https://do.internal/invite/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ maxUses: 10, ttlSeconds: 3600 }),
+  }));
+  const secondInvite = await second.json();
+  assert.equal((await store.fetch(new Request("https://do.internal/invite/revoke", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: secondInvite.id }),
+  }))).status, 200);
+  const secondToken = secondInvite.token;
+  assert.equal((await consume(200002, secondToken)).status, 410);
+});
+
+test("new Telegram users cannot self-register without a valid invitation", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
+    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
+  const denied = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 300001, message: { chat: { id: 300001, type: "private" }, from: { id: 300001 }, text: "/start" } }),
+  }), env);
+  assert.equal(denied.status, 200);
+  assert.match(calls[0].text, /لینک دعوت نیاز داری/);
+  const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 300001 }) }));
+  assert.equal((await user.json()).user, null);
+});
+
+test("valid invite deep link grants MEMBER access exactly once and remains usable for its configured capacity", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const create = await store.fetch(new Request("https://do.internal/invite/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUses: 1, ttlSeconds: 86400 }) }));
+  const invite = await create.json();
+  const redeemed = await store.fetch(new Request("https://do.internal/invite/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite.token, telegramUserId: 400001 }) }));
+  assert.equal(redeemed.status, 200);
+  assert.equal((await redeemed.json()).user.role, "MEMBER");
+  const duplicate = await store.fetch(new Request("https://do.internal/invite/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite.token, telegramUserId: 400001 }) }));
+  assert.equal(duplicate.status, 200);
+  const otherUser = await store.fetch(new Request("https://do.internal/invite/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite.token, telegramUserId: 400002 }) }));
+  assert.equal(otherUser.status, 410);
+});
+
+
+test("Owner can create an invitation from the private owner menu", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }) }));
+  const calls = [];
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token",
+    FETCH: async (url, init) => { calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }); } };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 900001, callback_query: { id: "cb1", data: "owner:invite:create:1", from: { id: 999001 }, message: { message_id: 5, chat: { id: 999001, type: "private" } } } }),
+  }), { ...env, TELEGRAM_WEBHOOK_SECRET: "hook-secret" });
+  assert.equal(response.status, 200);
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.match(edit.payload.text, /لینک دعوت ساخته شد/);
+  assert.match(edit.payload.reply_markup.inline_keyboard[0][0].url, /start=inv_/);
+  const listing = await store.fetch(new Request("https://do.internal/invite/list", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+  assert.equal((await listing.json()).invites.length, 1);
+});
+
+test("a valid Telegram invite deep link on /start creates a member record", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const created = await store.fetch(new Request("https://do.internal/invite/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUses: 1, ttlSeconds: 86400 }) }));
+  const invite = await created.json();
+  const calls = [];
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
+    FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.match(calls[0].text, /دعوتت تأیید شد/);
+  const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 400001 }) }));
+  assert.equal((await user.json()).user.role, "MEMBER");
+});
+
+
+test("unknown Telegram identities are denied until an Owner invitation is redeemed", () => {
+  assert.equal(resolveRole(7654321, "999001"), "DENIED");
 });
