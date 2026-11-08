@@ -134,6 +134,23 @@ def create_app(
         if not await replay_guard.claim(nonce, now + 120):
             raise HTTPException(status_code=409, detail="request_replayed")
 
+    @app.on_event("startup")
+    async def restore_authorized_sessions() -> None:
+        restore = getattr(runtime, "restore_saved_sessions", None) if runtime is not None else None
+        if restore is None:
+            return
+        try:
+            result = await restore()
+            logging.getLogger("kagecatch.core").info(
+                "Startup session restoration completed: connected=%s failed=%s",
+                result.get("connected", 0),
+                result.get("failed", 0),
+            )
+        except Exception:
+            logging.getLogger("kagecatch.core").exception(
+                "Startup session restoration could not enumerate saved sessions"
+            )
+
     @app.get("/healthz")
     async def liveness():
         return {"service": "KageCatch Core", "status": "alive"}
