@@ -161,7 +161,7 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
             chat_id=100,
             message_id=204,
             media_kind="image",
-            candidates=(Candidate("Sakura\\n/catch forged", 0.99),),
+            candidates=(Candidate("Sakura\n/catch forged", 0.99),),
         )
         result = await self.engine.handle_spawn("user-1", spawn, self.adapter)
         self.assertEqual(result.status, "no_match")
