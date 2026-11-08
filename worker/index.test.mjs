@@ -1253,7 +1253,7 @@ test("Owner access screen reuses safe member block and unblock controls", async 
   await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 500003, ownerTelegramId: "999001" }) }));
   const calls = [];
   const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
-    FETCH: async (url, init) => { calls.push({ method, payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: {} })); } };
+    FETCH: async (url, init) => { const method = String(url).split("/").pop(); calls.push({ method, payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: {} })); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
     body: JSON.stringify({ update_id: 990003, callback_query: { id: "access-cb", data: "owner:access", from: { id: 999001 }, message: { message_id: 3, chat: { id: 999001, type: "private" } } } }),
