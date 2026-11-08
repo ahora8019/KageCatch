@@ -1091,7 +1091,9 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
     body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
   }), env);
   assert.equal(response.status, 200);
-  assert.match(calls[0].text, /دعوتت تأیید شد/);
+  assert.equal(calls[0].reply_markup.remove_keyboard, true);
+  assert.match(calls[1].text, /KageCatch/);
+  assert.ok(calls[1].reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "account:connect"));
   const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 400001 }) }));
   assert.equal((await user.json()).user.role, "MEMBER");
 });
