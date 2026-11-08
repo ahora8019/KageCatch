@@ -1147,11 +1147,14 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
   await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 500002, ownerTelegramId: "999001" }) }));
   await store.fetch(new Request("https://do.internal/activity/record", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 500002, action: "account:list", firstName: "TestUser" }) }));
   const calls = [];
+  const sequence = [];
   const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
     CORE_API_URL: "https://core.example", CORE_API_SECRET: "a".repeat(40),
     FETCH: async (url, init) => {
-      if (String(url).endsWith("/v1/accounts/500002")) return new Response(JSON.stringify({ status: "authorized", session_saved: true, connected: false }), { status: 200 });
-      calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) });
+      if (String(url).endsWith("/v1/accounts/500002")) { sequence.push("core"); return new Response(JSON.stringify({ status: "authorized", session_saved: true, connected: false }), { status: 200 }); }
+      const method = String(url).split("/").pop();
+      if (method === "answerCallbackQuery") sequence.push("ack");
+      calls.push({ method, payload: JSON.parse(init.body) });
       return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
     } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
@@ -1159,6 +1162,7 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
     body: JSON.stringify({ update_id: 900003, callback_query: { id: "cb3", data: "owner:monitor", from: { id: 999001 }, message: { message_id: 7, chat: { id: 999001, type: "private" } } } }),
   }), env);
   assert.equal(response.status, 200);
+  assert.ok(sequence.indexOf("ack") >= 0 && sequence.indexOf("ack") < sequence.indexOf("core"), "callback must be acknowledged before slow Core status lookups");
   const edit = calls.find((call) => call.method === "editMessageText");
   assert.match(edit.payload.text, /نشست مجاز ذخیره است؛ کلاینت اجرا نیست/);
   assert.match(edit.payload.text, /TestUser/);
