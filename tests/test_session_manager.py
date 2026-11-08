@@ -77,5 +77,12 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             await self.manager.load_session("")
 
 
+    async def test_public_session_api_aliases_round_trip_and_revoke(self):
+        await self.manager.save_session("user-1", "alias-session")
+        self.assertEqual(await self.manager.get_session("user-1"), "alias-session")
+        await self.manager.revoke_session("user-1")
+        self.assertIsNone(await self.manager.get_session("user-1"))
+
+
 if __name__ == "__main__":
     unittest.main()
