@@ -763,6 +763,25 @@ async function getTelegramUser(env, userId) {
   return result.user;
 }
 
+
+function activityLabel(action) {
+  const labels = {
+    start: "شروع بات", panel: "باز کردن پنل", message: "ارسال پیام (بدون ذخیره متن)", command: "اجرای دستور",
+    "catch:open": "ورود به کنترل Catch", "bots:open": "مشاهده بات‌های مقصد", "account:connect": "اتصال حساب تلگرام",
+    "account:list": "مشاهده حساب متصل", "stats:open": "مشاهده آمار", "settings:open": "باز کردن تنظیمات",
+    "security:open": "مشاهده امنیت حساب", "account:disconnect": "قطع اتصال حساب", "help:open": "مشاهده راهنما",
+    "home:panel": "بازگشت به پنل کاربری", "home:admin": "باز کردن پنل Owner", "owner:monitor": "باز کردن نظارت کاربران",
+    "owner:invites": "مدیریت دعوت‌ها", "owner:members": "مدیریت اعضا", "owner:stats": "مشاهده نمای کلی",
+  };
+  if (labels[action]) return labels[action];
+  if (action.startsWith("owner:invite:create:")) return "ساخت لینک دعوت";
+  if (action.startsWith("owner:invite:revoke:")) return "لغو لینک دعوت";
+  if (action.startsWith("owner:monitor:user:")) return "مشاهده جزئیات عضو";
+  if (action.startsWith("owner:block:")) return "مسدودسازی عضو";
+  if (action.startsWith("owner:unblock:")) return "رفع مسدودی عضو";
+  return action.startsWith("owner:") ? "فعالیت مدیریتی" : action;
+}
+
 async function handleOwnerCallback(callback, env) {
   const data = callback.data || '';
   if (data === 'owner:stats') {
@@ -784,7 +803,7 @@ async function handleOwnerCallback(callback, env) {
       const name = user.firstName || (user.username ? '@' + user.username : 'کاربر ' + user.telegramUserId);
       const accountLabel = !account ? '⚪ وضعیت حساب نامشخص (Core در دسترس نیست)' : account.connected ? '🟢 آنلاین و متصل' : account.session_saved ? '🟡 نشست ذخیره است؛ فعلاً آفلاین' : '🔴 حساب متصل نیست';
       const seen = user.lastSeenAt ? new Date(user.lastSeenAt).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) : 'هنوز فعالیتی ثبت نشده';
-      const action = user.lastAction || '—';
+      const action = user.lastAction ? activityLabel(user.lastAction) : '—';
       return '👤 ' + name + '\n' + accountLabel + '\n🕒 آخرین فعالیت: ' + seen + '\n⚡ آخرین بخش: ' + action;
     });
     const rows = members.map((user) => [{ text: 'جزئیات ' + (user.firstName || user.telegramUserId), callback_data: 'owner:monitor:user:' + user.telegramUserId }]);
@@ -801,7 +820,7 @@ async function handleOwnerCallback(callback, env) {
     const { events = [] } = await registryRequest(env, '/activity/list', { telegramUserId });
     const account = status.status >= 200 && status.status < 300 ? status.data : null;
     const state = !account ? 'نامشخص؛ Core در دسترس نیست' : account.connected ? 'متصل و آنلاین' : account.session_saved ? 'نشست مجاز ذخیره شده، اما آفلاین' : 'متصل نیست';
-    const history = events.map((event) => '• ' + new Date(event.at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + event.action).join('\n') || 'رویدادی ثبت نشده است.';
+    const history = events.map((event) => '• ' + new Date(event.at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + activityLabel(event.action)).join('\n') || 'رویدادی ثبت نشده است.';
     return { text: '👤 جزئیات کاربر\n\nشناسه: ' + telegramUserId + '\nنام: ' + (user.firstName || 'ثبت نشده') + '\nنام کاربری: ' + (user.username ? '@' + user.username : 'ثبت نشده') + '\nوضعیت دسترسی: ' + user.status + '\nوضعیت حساب: ' + state + '\nنشست ذخیره‌شده: ' + (account ? (account.session_saved ? 'بله' : 'خیر') : 'نامشخص') + '\n\n📜 آخرین فعالیت‌ها\n' + history, keyboard: { inline_keyboard: [[{ text: '⬅️ بازگشت به نظارت', callback_data: 'owner:monitor' }], ...BACK_MENU.inline_keyboard] } };
   }
   if (data === 'owner:invites') {
@@ -975,6 +994,9 @@ async function standaloneConnectApi(request,env){
   if(!spec)return json({error:"unknown_action"},400);
   const result=await coreRequest(env,spec.method,spec.path,spec.payload??null);
   if(result.status<200||result.status>=300)return json({error:result.data?.error||result.data?.detail||"core_request_failed"},result.status);
+  if (["start", "code", "password", "reconnect"].includes(action)) {
+    try { await registryRequest(env, "/activity/record", { telegramUserId, action: "account:connect" }); } catch {}
+  }
   return json(result.data,result.status);
 }
 
