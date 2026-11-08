@@ -75,10 +75,11 @@ class HttpxTraceMoeClient:
     """Small async HTTP boundary for trace.moe."""
 
     def __init__(self, *, endpoint: str = TRACE_MOE_URL, timeout: float = 12.0,
-                 max_response_bytes: int = 2_000_000) -> None:
+                 max_response_bytes: int = 2_000_000, transport: Any = None) -> None:
         self.endpoint = endpoint
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
+        self.transport = transport
 
     async def search(self, image: bytes) -> Mapping[str, Any]:
         try:
@@ -86,7 +87,8 @@ class HttpxTraceMoeClient:
         except ImportError as exc:  # pragma: no cover - environment-specific
             raise MetadataLookupError("Install the project API dependencies to use trace.moe") from exc
         try:
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False,
+                                         transport=self.transport) as client:
                 response = await client.post(
                     self.endpoint,
                     files={"image": ("frame.jpg", image, "image/jpeg")},
