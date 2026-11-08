@@ -117,7 +117,7 @@ test("connection link exchanges once for a short-lived browser session bound to 
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ telegramUserId: 987654321, ttlSeconds: 300 }),
   }));
-  const { token } = await created.json();
+  const { token, id } = await created.json();
   const consume = () => store.fetch(new Request("https://do.internal/consume", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
   }));
@@ -1008,18 +1008,19 @@ test("invite store rejects invalid tokens, duplicate member redemption, and supp
   assert.equal((await consume(200001)).status, 200);
   const revoked = await store.fetch(new Request("https://do.internal/invite/revoke", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ id }),
   }));
   assert.equal(revoked.status, 200);
   const second = await store.fetch(new Request("https://do.internal/invite/create", {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ maxUses: 3, ttlSeconds: 3600 }),
+    body: JSON.stringify({ maxUses: 10, ttlSeconds: 3600 }),
   }));
   const secondInvite = await second.json();
   assert.equal((await store.fetch(new Request("https://do.internal/invite/revoke", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ id: secondInvite.id }),
   }))).status, 200);
+  const secondToken = secondInvite.token;
   assert.equal((await consume(200002, secondToken)).status, 410);
 });
 
@@ -1038,4 +1039,18 @@ test("new Telegram users cannot self-register without a valid invitation", async
   assert.match(calls[0].text, /لینک دعوت نیاز داری/);
   const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 300001 }) }));
   assert.equal((await user.json()).user, null);
+});
+
+test("valid invite deep link grants MEMBER access exactly once and remains usable for its configured capacity", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const create = await store.fetch(new Request("https://do.internal/invite/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUses: 1, ttlSeconds: 86400 }) }));
+  const invite = await create.json();
+  const redeemed = await store.fetch(new Request("https://do.internal/invite/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite.token, telegramUserId: 400001 }) }));
+  assert.equal(redeemed.status, 200);
+  assert.equal((await redeemed.json()).user.role, "MEMBER");
+  const duplicate = await store.fetch(new Request("https://do.internal/invite/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite.token, telegramUserId: 400001 }) }));
+  assert.equal(duplicate.status, 200);
+  const otherUser = await store.fetch(new Request("https://do.internal/invite/consume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: invite.token, telegramUserId: 400002 }) }));
+  assert.equal(otherUser.status, 410);
 });
