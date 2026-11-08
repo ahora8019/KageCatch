@@ -74,7 +74,7 @@ class TelegramSelfbotController:
             data = bytes(getattr(event, "data", b"")).decode("utf-8", "ignore")
             if data == "kagecatch:enable":
                 self.set_enabled(user_id, True)
-                await event.answer("Catch روشن شد")
+                await event.answer("حالت روشن شد؛ موتور Catch هنوز آماده اجرا نیست")
                 await event.edit(self._panel_text(user_id), buttons=[
                     [Button.inline("⏸ خاموش کردن Catch", b"kagecatch:disable")],
                     [Button.inline("📊 وضعیت", b"kagecatch:status")],
@@ -102,7 +102,8 @@ class TelegramSelfbotController:
             "🌸 KageCatch — پنل سلف\n"
             "━━━━━━━━━━━━━━\n"
             f"وضعیت Catch: {status}\n"
-            "حساب: متصل\n\n"
+            "حساب: متصل\n"
+            "موتور Catch: در انتظار اتصال Spawn Detector\n\n"
             "از دکمه‌ها برای کنترل حالت Catch استفاده کن. "
             "این پنل فقط روی پیام‌های خودت در Saved Messages کار می‌کند."
         )
