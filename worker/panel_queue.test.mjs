@@ -144,3 +144,47 @@ test("panel callback payload is short, strict and rejects modified data", () => 
   assert.equal(parsePanelCallback("kp:" + "a".repeat(32) + ":owner"), null);
   assert.ok(Buffer.byteLength("kp:" + "a".repeat(32) + ":settings") <= 64);
 });
+
+
+test("simultaneous owners in separate groups receive independent panel queue records", async () => {
+  const env = envWithDb();
+  const payloads = [
+    { owner_id: "12345", chat_id: -100123456, source_message_id: 1001 },
+    { owner_id: "67890", chat_id: -100654321, source_message_id: 2002 },
+  ];
+  const [first, second] = await Promise.all(payloads.map((payload, index) =>
+    enqueuePanelRequest(signedRequest(env, payload, String(index + 1).repeat(32)), env)
+  ));
+  const firstId = (await first.json()).request_id;
+  const secondId = (await second.json()).request_id;
+  assert.notEqual(firstId, secondId);
+  const sent = [];
+  const result = await processPanelQueue(env, async (_method, payload) => {
+    sent.push(payload.chat_id);
+    return { message_id: 5000 + sent.length };
+  });
+  assert.equal(result.processed, 2);
+  assert.deepEqual(sent.sort(), [-100654321, -100123456]);
+  assert.equal(env.db.rows.get(firstId).status, "completed");
+  assert.equal(env.db.rows.get(secondId).status, "completed");
+});
+
+test("only the owner can close a panel and closed panels reject later callbacks", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  const telegram = async (_env, method, payload) => calls.push({ method, payload });
+  const close = {
+    id: "cb-close", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":close",
+  };
+  assert.equal(await handlePanelCallback(close, env, telegram), true);
+  assert.equal(env.db.rows.get(requestId).status, "closed");
+  calls.length = 0;
+  const later = { ...close, id: "cb-after-close", data: "kp:" + requestId + ":stats" };
+  await handlePanelCallback(later, env, telegram);
+  assert.match(calls[0].payload.text, /دسترسی/);
+});
