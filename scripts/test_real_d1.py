@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -62,7 +63,7 @@ def _configuration() -> tuple[str, str]:
 
 async def main() -> None:
     base_url, secret = _configuration()
-    unique = __import__("uuid").uuid4().hex
+    unique = uuid.uuid4().hex
     user_id = "preview-test-" + unique
     now = datetime.now(timezone.utc)
 
@@ -141,6 +142,7 @@ async def main() -> None:
         "queue_instances": 2,
         "telegram_connected": False,
         "catch_executed": False,
+        "cleanup_confirmed": cleanup_confirmed,
     }, ensure_ascii=False, indent=2))
 
 
