@@ -69,15 +69,30 @@ class ReviewPipeline:
             }
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
-            if status_code == 401:
+            try:
+                worker_error = exc.response.json().get("error")
+            except (ValueError, AttributeError):
+                worker_error = None
+
+            if status_code == 401 and worker_error == "invalid_signature":
+                error = "D1 HMAC signature invalid"
+            elif status_code == 401:
                 error = "D1 authentication failed"
+            elif worker_error == "storage_not_configured":
+                error = "D1 binding misconfigured"
+            elif worker_error == "storage_auth_not_configured":
+                error = "Worker HMAC secret missing"
+            elif worker_error == "replay_guard_unavailable":
+                error = "Worker replay guard unavailable"
             elif status_code >= 500:
                 error = "D1 unreachable"
             else:
                 error = "D1 request rejected"
+
             logger.error(
-                "Manual review Worker returned HTTP %s (spawn_id=%s)",
+                "Manual review Worker returned HTTP %s error=%s (spawn_id=%s)",
                 status_code,
+                worker_error or "unspecified",
                 spawn.message_id,
             )
             return {
