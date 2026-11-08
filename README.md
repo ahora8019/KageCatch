@@ -46,7 +46,7 @@ Group commands `.panel` and `.پنل` are accepted only from the authorized acco
 
 Every callback is bound to the stored request, owner Telegram ID, exact group ID, exact panel message ID, and active expiry. Non-owners receive an alert. Catch remains disabled in the panel; buttons currently expose status/configuration placeholders only.
 
-The schema is in `migrations/0002_panel_requests.sql`. The additive table has been created in the existing `kagecatch-sessions-preview` D1 database; the existing `telegram_sessions` table was not modified. The Core uses `KAGECATCH_PANEL_QUEUE_URL`, falling back to `KAGECATCH_SESSION_STORE_URL`, and the existing `KAGECATCH_CORE_SECRET` for HMAC signing. The Worker route and scheduled delivery code are committed but not deployed. Do not enable real group delivery until the Worker deployment and a controlled test group verification are explicitly approved.
+The schema is in `migrations/0004_panel_requests.sql`. The additive table has been created in the existing `kagecatch-sessions-preview` D1 database; the existing `telegram_sessions` table was not modified. The Core uses `KAGECATCH_PANEL_QUEUE_URL`, falling back to `KAGECATCH_SESSION_STORE_URL`, and the existing `KAGECATCH_CORE_SECRET` for HMAC signing. The Worker route and scheduled delivery code are committed but not deployed. Do not enable real group delivery until the Worker deployment and a controlled test group verification are explicitly approved.
 
 ## Durable session storage (Cloudflare D1)
 
