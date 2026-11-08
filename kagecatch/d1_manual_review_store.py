@@ -34,9 +34,16 @@ class D1ManualReviewStore:
             parsed_url.scheme == "http"
             and parsed_url.hostname in {"localhost", "127.0.0.1"}
         )
-        if (
-            parsed_url.scheme != "https" and not loopback_http
-        ) or not parsed_url.netloc or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment or parsed_url.path not in {"", "/"}:
+        invalid_url = (
+            (parsed_url.scheme != "https" and not loopback_http)
+            or not parsed_url.netloc
+            or bool(parsed_url.username)
+            or bool(parsed_url.password)
+            or bool(parsed_url.query)
+            or bool(parsed_url.fragment)
+            or parsed_url.path not in {"", "/"}
+        )
+        if invalid_url:
             raise ValueError(
                 "manual review store URL must use HTTPS (HTTP is allowed only for loopback Wrangler dev)"
             )
