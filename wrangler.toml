@@ -12,3 +12,6 @@ id = "b5718f676c5b4d86932f8847491c0eb4"
 binding = "KAGECATCH_DB"
 database_name = "kagecatch-sessions-preview"
 database_id = "ef313232-4bfb-43df-915b-d7b22b076fa2"
+
+[triggers]
+crons = ["*/10 * * * *"]
