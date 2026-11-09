@@ -283,6 +283,45 @@ def create_app(
             "connected": connected,
         }
 
+    @app.get("/v1/accounts/{telegram_user_id}/catch", dependencies=[Depends(require_core_auth)])
+    async def catch_status(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
+        if controller is None or not callable(getattr(controller, "is_enabled", None)):
+            raise HTTPException(status_code=503, detail="catch_controller_not_configured")
+        if runtime is None or await runtime.get_client(str(telegram_user_id)) is None:
+            raise HTTPException(status_code=409, detail="telegram_account_not_connected")
+        return {
+            "telegram_user_id": telegram_user_id,
+            "enabled": bool(controller.is_enabled(str(telegram_user_id))),
+            "execution_ready": app.state.review_pipeline is not None,
+        }
+
+    @app.put("/v1/accounts/{telegram_user_id}/catch", dependencies=[Depends(require_core_auth)])
+    async def set_catch_status(telegram_user_id: int, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
+        setter = getattr(controller, "set_enabled", None) if controller is not None else None
+        if not callable(setter):
+            raise HTTPException(status_code=503, detail="catch_controller_not_configured")
+        if runtime is None or await runtime.get_client(str(telegram_user_id)) is None:
+            raise HTTPException(status_code=409, detail="telegram_account_not_connected")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        enabled = payload.get("enabled") if isinstance(payload, dict) else None
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled_boolean_required")
+        result = bool(setter(str(telegram_user_id), enabled))
+        return {
+            "telegram_user_id": telegram_user_id,
+            "enabled": result,
+            "execution_ready": app.state.review_pipeline is not None,
+        }
+
     @app.post("/v1/accounts/{telegram_user_id}/connect", dependencies=[Depends(require_core_auth)])
     async def connect_account(telegram_user_id: int, request: Request):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
