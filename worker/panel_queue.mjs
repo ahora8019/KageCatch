@@ -143,8 +143,56 @@ export async function processPanelQueue(env, sendTelegram) {
 
 export function parsePanelCallback(data) {
   if (typeof data !== "string") return null;
-  const match = data.match(/^kp:([a-f0-9]{32}):(stats|engine|settings|refresh|close)$/);
+  const match = data.match(/^kp:([a-f0-9]{32}):(stats|engine|engine_on|engine_off|settings|refresh|close)$/);
   return match ? { requestId: match[1], action: match[2] } : null;
+}
+
+async function requestCore(env, method, path, payload) {
+  if (!env.CORE_API_URL || !env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) {
+    throw new Error("core_api_not_configured");
+  }
+  const body = payload === undefined ? "" : JSON.stringify(payload);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signingText = [timestamp, nonce, method, path, bodyHash].join("\n");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signatureBytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText)));
+  const signature = Array.from(signatureBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const fetcher = env.CORE_API_FETCH || fetch;
+  const response = await fetcher(env.CORE_API_URL.replace(/\/$/, "") + path, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      "X-KageCatch-Timestamp": timestamp,
+      "X-KageCatch-Nonce": nonce,
+      "X-KageCatch-Signature": signature,
+    },
+    body,
+  });
+  let result = {};
+  try { result = await response.json(); } catch {}
+  if (!response.ok) throw new Error(result.detail || "core_api_request_failed");
+  return result;
+}
+
+function engineKeyboard(requestId, enabled) {
+  return { inline_keyboard: [[
+    { text: enabled ? "⏸ خاموش کردن حالت" : "🟢 روشن کردن حالت", callback_data: "kp:" + requestId + (enabled ? ":engine_off" : ":engine_on") },
+    { text: "🔄 بروزرسانی", callback_data: "kp:" + requestId + ":engine" },
+  ], [{ text: "⚙️ تنظیمات", callback_data: "kp:" + requestId + ":settings" }]] };
+}
+
+function engineText(state) {
+  return [
+    "🎯 کنترل موتور Catch",
+    "━━━━━━━━━━━━━━",
+    "وضعیت حالت: " + (state.enabled ? "🟢 روشن" : "⚪ خاموش"),
+    "موتور اجرایی: " + (state.execution_ready ? "آماده" : "آماده نیست"),
+    state.execution_ready
+      ? "پردازش رویدادها به خط لولهٔ بررسی متصل است."
+      : "تغییر حالت ثبت می‌شود، اما تشخیص و اجرای خودکار تا اتصال کامل موتور فعال نیست.",
+  ].join("\n");
 }
 
 async function readPanelQueueStats(db) {
@@ -199,7 +247,34 @@ export async function handlePanelCallback(callback, env, telegramApi) {
   }
 
   let text;
-  if (parsed.action === "stats") {
+  let replyMarkup;
+  if (["engine", "engine_on", "engine_off", "settings"].includes(parsed.action)) {
+    try {
+      const path = "/v1/accounts/" + row.owner_id + "/catch";
+      let state;
+      if (parsed.action === "engine_on" || parsed.action === "engine_off") {
+        state = await requestCore(env, "PUT", path, { enabled: parsed.action === "engine_on" });
+      } else {
+        state = await requestCore(env, "GET", path);
+      }
+      if (parsed.action === "settings") {
+        text = [
+          "⚙️ وضعیت تنظیمات KageCatch",
+          "━━━━━━━━━━━━━━",
+          "حالت Catch: " + (state.enabled ? "روشن" : "خاموش"),
+          "اتصال حساب: برقرار",
+          "موتور اجرایی: " + (state.execution_ready ? "آماده" : "متصل نیست"),
+          "تغییرات حالت از Core خوانده می‌شوند.",
+        ].join("\\n");
+        replyMarkup = engineKeyboard(parsed.requestId, state.enabled);
+      } else {
+        text = engineText(state);
+        replyMarkup = engineKeyboard(parsed.requestId, state.enabled);
+      }
+    } catch {
+      text = "⚠️ Core در دسترس نیست یا حساب متصل نیست؛ هیچ تغییری تأیید نشد. کمی بعد دوباره تلاش کن.";
+    }
+  } else if (parsed.action === "stats") {
     try {
       const stats = await readPanelQueueStats(env.KAGECATCH_DB);
       const total = Object.values(stats).reduce((sum, value) => sum + value, 0);
