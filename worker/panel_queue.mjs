@@ -271,7 +271,8 @@ export async function handlePanelCallback(callback, env, telegramApi) {
         text = engineText(state);
         replyMarkup = engineKeyboard(parsed.requestId, state.enabled);
       }
-    } catch {
+    } catch (error) {
+      if (env.CORE_API_DEBUG === true) env.CORE_API_DEBUG_ERROR = String(error?.message || error?.name || "unknown");
       text = "⚠️ Core در دسترس نیست یا حساب متصل نیست؛ هیچ تغییری تأیید نشد. کمی بعد دوباره تلاش کن.";
     }
   } else if (parsed.action === "stats") {
