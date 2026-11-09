@@ -278,7 +278,7 @@ test("engine panel reads real Core state and renders explicit enable/disable con
   assert.match(edit.payload.text, /وضعیت حالت: ⚪ خاموش/);
   assert.match(edit.payload.text, /موتور اجرایی: آماده نیست/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_on");
-  assert.equal(edit.payload.reply_markup.inline_keyboard[0][1].callback_data, "kp:" + requestId + ":refresh");
+  assert.equal(edit.payload.reply_markup.inline_keyboard[0][1].callback_data, "kp:" + requestId + ":engine");
 });
 
 test("engine callback refuses to claim a mode change when Core is unavailable", async () => {
