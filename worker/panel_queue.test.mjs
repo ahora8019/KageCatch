@@ -125,6 +125,8 @@ test("scheduler claims a queued request once and stores the delivered panel mess
 
 test("panel callback is bound to owner, exact group and exact message", async () => {
   const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_FETCH = async () => Response.json({ telegram_user_id: 12345, enabled: false, execution_ready: false });
   const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
   const requestId = (await accepted.json()).request_id;
   const row = env.db.rows.get(requestId); Object.assign(row, { status: "completed", panel_message_id: 444 });
@@ -141,7 +143,7 @@ test("panel callback is bound to owner, exact group and exact message", async ()
   assert.match(calls[0].payload.text, /دسترسی/);
   calls.length = 0;
   assert.equal(await handlePanelCallback(callback(12345, -100123456, 444), env, telegram), true);
-  assert.match(calls.at(-1).payload.text, /ارسال زنده فرمان فعال نیست/);
+  assert.match(calls.at(-1).payload.text, /موتور اجرایی: آماده نیست/);
 });
 
 test("panel callback payload is short, strict and rejects modified data", () => {
