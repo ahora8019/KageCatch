@@ -274,7 +274,7 @@ test("engine panel reads real Core state and renders explicit enable/disable con
     data: "kp:" + requestId + ":engine",
   }, env, async (_env, method, payload) => calls.push({ method, payload }));
   const edit = calls.find((call) => call.method === "editMessageText");
-  assert.match(edit.payload.text, /وضعیت حالت: خاموش/);
+  assert.match(edit.payload.text, /وضعیت حالت: ⚪ خاموش/);
   assert.match(edit.payload.text, /موتور اجرایی: آماده نیست/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_on");
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][1].callback_data, "kp:" + requestId + ":refresh");
@@ -302,14 +302,12 @@ test("engine enable callback sends an authenticated Core state change and refres
   const env = envWithDb();
   env.CORE_API_URL = "https://core.example";
   env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  let captured;
   env.CORE_API_FETCH = async (url, init) => {
-    assert.equal(url, "https://core.example/v1/accounts/12345/catch");
-    assert.equal(init.method, "PUT");
-    assert.deepEqual(JSON.parse(init.body), { enabled: true });
-    const headers = new Headers(init.headers);
-    assert.match(headers.get("X-KageCatch-Signature"), /^[a-f0-9]{64}$/);
-    assert.match(headers.get("X-KageCatch-Nonce"), /^[a-f0-9]{32}$/);
-    return Response.json({ telegram_user_id: 12345, enabled: true, execution_ready: false });
+    captured = { url, init };
+    return new Response(JSON.stringify({ telegram_user_id: 12345, enabled: true, execution_ready: false }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
   };
   const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
   const requestId = (await accepted.json()).request_id;
@@ -321,6 +319,12 @@ test("engine enable callback sends an authenticated Core state change and refres
     data: "kp:" + requestId + ":engine_on",
   }, env, async (_env, method, payload) => calls.push({ method, payload }));
   const edit = calls.find((call) => call.method === "editMessageText");
+  assert.equal(captured.url, "https://core.example/v1/accounts/12345/catch");
+  assert.equal(captured.init.method, "PUT");
+  assert.deepEqual(JSON.parse(captured.init.body), { enabled: true });
+  const signedHeaders = new Headers(captured.init.headers);
+  assert.match(signedHeaders.get("X-KageCatch-Signature"), /^[a-f0-9]{64}$/);
+  assert.match(signedHeaders.get("X-KageCatch-Nonce"), /^[a-f0-9]{32}$/);
   assert.match(edit.payload.text, /وضعیت حالت: 🟢 روشن/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_off");
 });
