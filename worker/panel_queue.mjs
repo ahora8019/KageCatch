@@ -302,6 +302,7 @@ export async function handlePanelCallback(callback, env, telegramApi) {
   }
   await telegramApi(env, "editMessageText", {
     chat_id: chatId, message_id: messageId, text,
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
   });
   return true;
 }
