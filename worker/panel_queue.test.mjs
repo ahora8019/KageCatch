@@ -259,6 +259,7 @@ test("engine panel reads real Core state and renders explicit enable/disable con
   const env = envWithDb();
   env.CORE_API_URL = "https://core.example";
   env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  env.CORE_API_DEBUG = true;
   env.CORE_API_FETCH = async (url, init) => {
     assert.equal(url, "https://core.example/v1/accounts/12345/catch");
     assert.equal(init.method, "GET");
@@ -302,6 +303,7 @@ test("engine enable callback sends an authenticated Core state change and refres
   const env = envWithDb();
   env.CORE_API_URL = "https://core.example";
   env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  env.CORE_API_DEBUG = true;
   let captured;
   env.CORE_API_FETCH = async (url, init) => {
     captured = { url, init };
@@ -319,6 +321,7 @@ test("engine enable callback sends an authenticated Core state change and refres
     data: "kp:" + requestId + ":engine_on",
   }, env, async (_env, method, payload) => calls.push({ method, payload }));
   const edit = calls.find((call) => call.method === "editMessageText");
+  assert.equal(env.CORE_API_DEBUG_ERROR, undefined);
   assert.equal(captured.url, "https://core.example/v1/accounts/12345/catch");
   assert.equal(captured.init.method, "PUT");
   assert.deepEqual(JSON.parse(captured.init.body), { enabled: true });
