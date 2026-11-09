@@ -153,7 +153,7 @@ async function requestCore(env, method, path, payload) {
   }
   const body = payload === undefined ? "" : JSON.stringify(payload);
   const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), (byte) => byte.toString(16).padStart(2, "0")).join("");
   const signingText = [timestamp, nonce, method, path, bodyHash].join("\n");
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
