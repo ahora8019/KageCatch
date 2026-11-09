@@ -287,11 +287,11 @@ def create_app(
     async def catch_status(telegram_user_id: int):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
             raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
-        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
-        if controller is None or not callable(getattr(controller, "is_enabled", None)):
-            raise HTTPException(status_code=503, detail="catch_controller_not_configured")
         if runtime is None or await runtime.get_client(str(telegram_user_id)) is None:
             raise HTTPException(status_code=409, detail="telegram_account_not_connected")
+        controller = getattr(runtime, "_selfbot_controller", None)
+        if controller is None or not callable(getattr(controller, "is_enabled", None)):
+            raise HTTPException(status_code=503, detail="catch_controller_not_configured")
         return {
             "telegram_user_id": telegram_user_id,
             "enabled": bool(controller.is_enabled(str(telegram_user_id))),
@@ -302,12 +302,12 @@ def create_app(
     async def set_catch_status(telegram_user_id: int, request: Request):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
             raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
-        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
+        if runtime is None or await runtime.get_client(str(telegram_user_id)) is None:
+            raise HTTPException(status_code=409, detail="telegram_account_not_connected")
+        controller = getattr(runtime, "_selfbot_controller", None)
         setter = getattr(controller, "set_enabled", None) if controller is not None else None
         if not callable(setter):
             raise HTTPException(status_code=503, detail="catch_controller_not_configured")
-        if runtime is None or await runtime.get_client(str(telegram_user_id)) is None:
-            raise HTTPException(status_code=409, detail="telegram_account_not_connected")
         try:
             payload = await request.json()
         except Exception as exc:
