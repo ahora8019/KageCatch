@@ -262,3 +262,45 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.json()["status"], "revoked")
         self.assertNotIn("2001", self.sessions.sessions)
         self.assertEqual(self.runtime.revoked, ["2001"])
+
+
+    def test_catch_status_reports_controller_state_for_connected_owner(self):
+        class Selfbot:
+            def __init__(self):
+                self.enabled = set()
+            def is_enabled(self, user_id):
+                return user_id in self.enabled
+            def set_enabled(self, user_id, enabled):
+                if enabled: self.enabled.add(user_id)
+                else: self.enabled.discard(user_id)
+                return enabled
+        self.runtime._selfbot_controller = Selfbot()
+        path = "/v1/accounts/2001/catch"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"telegram_user_id": 2001, "enabled": False, "execution_ready": False})
+
+    def test_owner_can_toggle_catch_mode_without_claiming_execution_is_ready(self):
+        class Selfbot:
+            def __init__(self):
+                self.enabled = set()
+            def is_enabled(self, user_id):
+                return user_id in self.enabled
+            def set_enabled(self, user_id, enabled):
+                if enabled: self.enabled.add(user_id)
+                else: self.enabled.discard(user_id)
+                return enabled
+        self.runtime._selfbot_controller = Selfbot()
+        path = "/v1/accounts/2001/catch"
+        body = json.dumps({"enabled": True}).encode()
+        response = self.client.put(path, content=body, headers=signed_headers("PUT", path, body))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"telegram_user_id": 2001, "enabled": True, "execution_ready": False})
+        self.assertIn("2001", self.runtime._selfbot_controller.enabled)
+
+    def test_catch_toggle_requires_a_connected_account_and_valid_boolean(self):
+        self.runtime.clients.clear()
+        path = "/v1/accounts/2001/catch"
+        body = json.dumps({"enabled": True}).encode()
+        response = self.client.put(path, content=body, headers=signed_headers("PUT", path, body))
+        self.assertEqual(response.status_code, 409)
