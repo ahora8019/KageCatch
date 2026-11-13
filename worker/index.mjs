@@ -137,8 +137,8 @@ async function coreRequest(env, method, path, payload = null) {
   }
 }
 
-async function loadRuntimeStatus(env, telegramUserId) {
-  const unavailable = { core: "unavailable", account: "unknown", catchEnabled: null, executionReady: null };
+async function loadRuntimeStatus(env, telegramUserId, includeAccountInfo = false) {
+  const unavailable = { core: "unavailable", account: "unknown", catchEnabled: null, executionReady: null, accountInfo: null };
   if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return unavailable;
   const [health, account] = await Promise.all([
     coreRequest(env, "GET", "/v1/health"),
@@ -150,12 +150,21 @@ async function loadRuntimeStatus(env, telegramUserId) {
       : health.status === 503 ? "degraded" : "unavailable";
   const accountStatus = account.status >= 200 && account.status < 300
     ? account.data?.status : "unknown";
-  const result = { core, account: accountStatus, catchEnabled: null, executionReady: null };
+  const result = { core, account: accountStatus, catchEnabled: null, executionReady: null, accountInfo: null };
   if (accountStatus === "connected") {
-    const catcher = await coreRequest(env, "GET", "/v1/accounts/" + telegramUserId + "/catch");
+    const requests = [coreRequest(env, "GET", "/v1/accounts/" + telegramUserId + "/catch")];
+    if (includeAccountInfo) requests.push(coreRequest(env, "GET", "/v1/accounts/" + telegramUserId + "/info"));
+    const [catcher, info] = await Promise.all(requests);
     if (catcher.status >= 200 && catcher.status < 300) {
       result.catchEnabled = catcher.data?.enabled === true;
       result.executionReady = catcher.data?.execution_ready === true;
+    }
+    if (includeAccountInfo && info?.status >= 200 && info.status < 300) {
+      result.accountInfo = {
+        sessionHealth: typeof info.data?.session_health === "string" ? info.data.session_health : "unknown",
+        phoneMasked: typeof info.data?.phone_masked === "string" ? info.data.phone_masked : null,
+        lastActive: typeof info.data?.last_active === "string" ? info.data.last_active : null,
+      };
     }
   }
   return result;
@@ -336,17 +345,29 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         text: "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
         keyboard: BACK_MENU,
       };
-    case "account:list":
-      return {
-        text: "👤 <b>ACCOUNT STATUS</b>\n\n🔐 Session: <b>" + runtimeLabels(status).account + "</b>\n\nبرای افزودن حساب از اتصال امن استفاده کن.",
-        parse_mode: "HTML",
-        keyboard: { inline_keyboard: [
-          [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
-          [{ text: "🔄 Refresh", callback_data: "account:list" }],
-          [{ text: "🔒 امنیت حساب", callback_data: "security:open" }],
-          ...BACK_MENU.inline_keyboard,
-        ] },
-      };
+    case "account:list": {
+      const accountInfo = status.accountInfo || {};
+      const healthLabel = ({ valid: "Valid", expired: "Expired", revoked: "Revoked", unknown: "Unknown", not_connected: "Not connected" })[accountInfo.sessionHealth] || "Unknown";
+      const coreOffline = status.core === "unavailable" || status.core === "not_configured";
+      const lines = [
+        "👤 <b>ACCOUNT DETAILS</b>",
+        "<code>━━━━━━━━━━━━━━━━━━━━</code>",
+        "🔐 Session: <b>" + runtimeLabels(status).account + "</b>",
+        "🛡️ Session health: <b>" + healthLabel + "</b>",
+        "📱 Phone: <code>" + escapeHtml(accountInfo.phoneMasked || "Unavailable") + "</code>",
+        "🕒 Last active: <code>" + escapeHtml(accountInfo.lastActive || "Unavailable") + "</code>",
+      ];
+      if (coreOffline) lines.push("", "⚠️ Core Offline — account details are unavailable.");
+      const keyboard = [];
+      if (status.account === "not_connected" || status.account === "unknown") {
+        keyboard.push([{ text: "🟢 اتصال حساب", callback_data: "account:connect" }]);
+      } else if (accountInfo.sessionHealth === "expired" || accountInfo.sessionHealth === "revoked") {
+        keyboard.push([{ text: "🔁 اتصال دوباره", callback_data: "account:connect" }]);
+      }
+      if (!coreOffline) keyboard.push([{ text: "🔄 Refresh", callback_data: "account:list" }]);
+      keyboard.push([{ text: "🔒 امنیت حساب", callback_data: "security:open" }], ...BACK_MENU.inline_keyboard);
+      return { text: lines.join("\n"), parse_mode: "HTML", keyboard: { inline_keyboard: keyboard } };
+    }
     case "catch:open":
       return {
         text: buildCatcherText(status),
@@ -1094,7 +1115,7 @@ async function handleCallback(callback, env) {
   } else {
     const needsRuntimeStatus = ["overview:open", "catch:open", "account:list"].includes(callback.data) || callback.data === "menu:main";
     const runtimeStatus = needsRuntimeStatus
-      ? await loadRuntimeStatus(env, callback.from.id)
+      ? await loadRuntimeStatus(env, callback.from.id, callback.data === "account:list")
       : {};
     const resolvedData = callback.data === "menu:main" ? "overview:open" : callback.data;
     result = resolveCallback(resolvedData, callback.from.first_name, role, runtimeStatus);
