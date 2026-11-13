@@ -9,7 +9,7 @@ import asyncio
 from typing import Callable, Protocol
 
 from .session_manager import SessionManager
-from .core_api import emit_monitor_event
+from .monitoring import emit_monitor_event
 
 
 class RuntimeClient(Protocol):
