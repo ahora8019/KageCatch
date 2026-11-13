@@ -35,6 +35,7 @@ class MonitorEventHandler(logging.Handler):
 
 _handler = MonitorEventHandler()
 _core_logger = logging.getLogger("kagecatch.core")
+_core_logger.setLevel(logging.INFO)
 _core_logger.addHandler(_handler)
 _monitor_logger = logging.getLogger("kagecatch.monitor")
 _monitor_logger.setLevel(logging.INFO)
