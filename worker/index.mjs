@@ -1,4 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
+import { normalizeLanguage, translate, languageKeyboard } from "./i18n.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -403,22 +404,23 @@ async function telegramApi(env, method, payload = {}) {
   return result.result;
 }
 
-export function buildRoleMenu(role = "MEMBER") {
+export function buildRoleMenu(role = "MEMBER", language = "fa") {
+  const locale = normalizeLanguage(language);
   if (role === "OWNER") return { inline_keyboard: [
     [{ text: "👑 Owner Panel", callback_data: "owner:stats" }],
     [{ text: "👁️ Monitoring", callback_data: "owner:monitor" }, { text: "👥 Members", callback_data: "owner:members" }],
     [{ text: "🎟️ Invites", callback_data: "owner:invites" }, { text: "⚙️ Settings", callback_data: "owner:settings" }],
   ] };
   return { inline_keyboard: [
-    [{ text: "📊 Overview", callback_data: "overview:open" }, { text: "🎯 Catcher", callback_data: "catch:open" }],
-    [{ text: "⚙️ Settings", callback_data: "settings:open" }, { text: "👤 Account", callback_data: "account:open" }],
+    [{ text: translate("menu.overview", locale), callback_data: "overview:open" }, { text: translate("menu.catcher", locale), callback_data: "catch:open" }],
+    [{ text: translate("menu.settings", locale), callback_data: "settings:open" }, { text: translate("menu.account", locale), callback_data: "account:open" }],
   ] };
 }
 
-export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
+export function buildMainMenu(language = "fa") { return buildRoleMenu("MEMBER", language); }
 
-export function buildStartMenu(role = "MEMBER") {
-  return buildRoleMenu(role);
+export function buildStartMenu(role = "MEMBER", language = "fa") {
+  return buildRoleMenu(role, language);
 }
 
 export function resolveRole(userId, ownerTelegramId, storedRole = "DENIED", status = "active") {
@@ -473,8 +475,14 @@ export function buildCatcherText(status = {}) {
   ].join("\n");
 }
 
-export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBER", status = {}) {
+export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBER", status = {}, language = "fa") {
+  const locale = normalizeLanguage(language);
   switch (data) {
+    case "language:open":
+      return { text: translate("language.title", locale) + "\n\n" + translate("language.description", locale), parse_mode: "HTML", keyboard: languageKeyboard(locale) };
+    case "language:selected:fa":
+    case "language:selected:en":
+      return { text: translate("language.selected." + data.slice("language:selected:".length), locale), keyboard: { inline_keyboard: [[{ text: translate("settings.title", locale).replace(/<[^>]*>/g, ""), callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] } };
     case "overview:open":
       return {
         text: buildDashboardText(userLabel, status),
@@ -541,11 +549,12 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       };
     case "settings:open":
       return {
-        text: "⚙️ <b>SETTINGS</b>\n\nتنظیمات پیشرفته به‌صورت مرحله‌ای فعال می‌شوند؛ گزینهٔ قفل‌شده هیچ تغییری در حساب ایجاد نمی‌کند.",
+        text: translate("settings.title", locale) + "\n\n" + translate("settings.description", locale),
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
-          [{ text: "🔒 Security", callback_data: "security:open" }],
-          [{ text: "❓ Help", callback_data: "help:open" }],
+          [{ text: translate("settings.language", locale), callback_data: "language:open" }],
+          [{ text: translate("settings.security", locale), callback_data: "security:open" }],
+          [{ text: translate("settings.help", locale), callback_data: "help:open" }],
           ...BACK_MENU.inline_keyboard,
         ] },
       };
@@ -955,7 +964,7 @@ export class ConnectionLinkStore {
       const isOwner = /^\d+$/.test(String(ownerTelegramId || '')) && String(telegramUserId) === String(ownerTelegramId);
       const record = existing?.status === 'blocked' && !isOwner
         ? existing
-        : { telegramUserId, role: isOwner ? 'OWNER' : 'MEMBER', status: 'active', createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() };
+        : { ...existing, telegramUserId, role: isOwner ? 'OWNER' : 'MEMBER', status: 'active', createdAt: existing?.createdAt || Date.now(), updatedAt: Date.now() };
       await this.state.storage.put(key, record);
       return json(record);
     }
@@ -963,6 +972,17 @@ export class ConnectionLinkStore {
       const id = body?.telegramUserId;
       if (!Number.isSafeInteger(id) || id <= 0) return json({ error: 'invalid_request' }, 400);
       return json({ user: await this.state.storage.get('user:' + id) || null });
+    }
+    if (url.pathname === '/language/set') {
+      const { telegramUserId, language } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !['fa', 'en'].includes(language)) return json({ error: 'invalid_language' }, 400);
+      const key = 'user:' + telegramUserId;
+      const record = await this.state.storage.get(key);
+      if (!record) return json({ error: 'user_not_found' }, 404);
+      record.language = language;
+      record.updatedAt = Date.now();
+      await this.state.storage.put(key, record);
+      return json({ language: record.language });
     }
     if (url.pathname === '/activity/record') {
       const { telegramUserId, action, firstName, username } = body || {};
@@ -1280,6 +1300,7 @@ async function handleCallback(callback, env) {
   }
   const actor = await getTelegramUser(env, callback.from.id);
   const role = resolveRole(callback.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+  let locale = normalizeLanguage(actor?.language);
   if (role === 'BLOCKED' || role === 'DENIED') {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ دسترسی شما مجاز نیست.", show_alert: true });
     return;
@@ -1292,7 +1313,12 @@ async function handleCallback(callback, env) {
   try { await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id }); } catch {}
   try { await registryRequest(env, '/activity/record', { telegramUserId: callback.from.id, action: callback.data || 'message', firstName: callback.from.first_name, username: callback.from.username }); } catch {}
   let result;
-  if (callback.data === "home:panel") {
+  const languageChoice = callback.data?.match(/^language:set:(fa|en)$/);
+  if (languageChoice) {
+    const saved = await registryRequest(env, "/language/set", { telegramUserId: callback.from.id, language: languageChoice[1] });
+    locale = normalizeLanguage(saved.language);
+    result = resolveCallback("language:selected:" + locale, callback.from.first_name, role, {}, locale);
+  } else if (callback.data === "home:panel") {
     const memberMenu = buildRoleMenu("MEMBER");
     if (role === "OWNER") memberMenu.inline_keyboard.push([{ text: "⬅️ پنل Owner", callback_data: "home:admin" }]);
     result = { text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:", keyboard: memberMenu };
@@ -1314,7 +1340,7 @@ async function handleCallback(callback, env) {
       ? await loadRuntimeStatus(env, callback.from.id, callback.data === "account:list")
       : {};
     const resolvedData = callback.data === "menu:main" ? "overview:open" : callback.data;
-    result = resolveCallback(resolvedData, callback.from.first_name, role, runtimeStatus);
+    result = resolveCallback(resolvedData, callback.from.first_name, role, runtimeStatus, locale);
   }
   if (callback.data === 'account:connect') {
     const link=await createConnectionLink(env,callback.from.id);
@@ -1449,12 +1475,13 @@ async function handleWebhook(request, env) {
         }
         const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
         if (actor && role !== 'DENIED' && role !== 'BLOCKED') { try { await registryRequest(env, '/activity/record', { telegramUserId: message.from.id, action: command === '/panel' ? 'panel' : 'start', firstName: message.from.first_name, username: message.from.username }); } catch {} }
+        const locale = normalizeLanguage(actor?.language);
         const reply = role === 'BLOCKED' || role === 'DENIED'
           ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
           : {
               text: buildDashboardText(message.from.first_name, await loadRuntimeStatus(env, message.from.id)),
               parse_mode: "HTML",
-              reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role),
+              reply_markup: command === "/start" ? buildStartMenu(role, locale) : buildRoleMenu(role, locale),
             };
         await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
       } catch (error) {
