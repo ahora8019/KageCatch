@@ -434,7 +434,7 @@ class CoreApiTests(unittest.TestCase):
         self.assertTrue(item["spawn_context_available"])
         self.assertFalse(response.json()["approval_available"])
         self.assertNotIn("-1001234567890", response.text)
-        self.assertEqual(foreign.json(), {"items": []})
+        self.assertEqual(foreign.json(), {"approval_available": False, "items": []})
 
     def test_review_reject_is_user_scoped_and_approve_fails_closed_without_execution_service(self):
         from types import SimpleNamespace
