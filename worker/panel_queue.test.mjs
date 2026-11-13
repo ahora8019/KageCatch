@@ -331,3 +331,18 @@ test("engine enable callback sends an authenticated Core state change and refres
   assert.match(edit.payload.text, /وضعیت حالت: 🟢 روشن/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_off");
 });
+
+
+test("review callback payloads are strict and stay within Telegram's 64-byte limit", () => {
+  const reviewId = "b".repeat(32);
+  assert.deepEqual(parsePanelCallback("kr:" + reviewId + ":a:2"), {
+    kind: "review", reviewId, action: "approve", candidateIndex: 2,
+  });
+  assert.deepEqual(parsePanelCallback("kr:" + reviewId + ":r"), {
+    kind: "review", reviewId, action: "reject",
+  });
+  assert.equal(parsePanelCallback("kr:" + reviewId + ":a:-1"), null);
+  assert.equal(parsePanelCallback("kr:" + reviewId + ":owner"), null);
+  assert.ok(Buffer.byteLength("kr:" + reviewId + ":a:29") <= 64);
+});
+
