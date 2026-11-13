@@ -1,4 +1,5 @@
 import unittest
+import logging
 
 from kagecatch.session_runtime import SessionRuntime
 
@@ -151,3 +152,13 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    async def test_authorized_reconnect_emits_structured_monitor_event_without_session_data(self):
+        with self.assertLogs("kagecatch.core", level="INFO") as captured:
+            await SessionRuntime(
+                session_manager=FakeSessionManager({"user-a": "sensitive-session"}),
+                client_factory=lambda session: FakeClient(),
+            ).connect_user("user-a")
+        events = [record for record in captured.records if getattr(record, "event_type", None) == "session_reconnected"]
+        self.assertEqual(len(events), 1)
+        self.assertNotIn("sensitive-session", events[0].getMessage())
