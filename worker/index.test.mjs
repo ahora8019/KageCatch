@@ -1,7 +1,7 @@
 import "./panel_queue.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, buildCatcherText, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, buildCatcherText, buildOwnerDashboard, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
@@ -119,6 +119,33 @@ test("owner start menu is compact and keeps owner-only controls", () => {
   const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
   assert.deepEqual(callbacks, ["owner:stats", "owner:monitor", "owner:members", "owner:invites", "owner:settings"]);
   assert.ok(buttons.length <= 5);
+});
+
+test("Owner HQ formats real statistics, has the requested four-row keyboard, and hides Refresh offline", () => {
+  const live = buildOwnerDashboard({
+    available: true,
+    totalUsers: 10,
+    activeSessions: 8,
+    totalCatches: 1245,
+    uptime: 475200,
+  });
+  assert.match(live.text, /<pre>/);
+  assert.match(live.text, /Total Users: 10/);
+  assert.match(live.text, /Active Sessions: 8/);
+  assert.match(live.text, /Total Catches: 1,245/);
+  assert.match(live.text, /System Uptime: 5d 12h/);
+  assert.equal(live.keyboard.inline_keyboard.length, 4);
+  assert.deepEqual(live.keyboard.inline_keyboard.map(row => row.map(button => button.callback_data)), [
+    ["owner:members", "owner:logs"],
+    ["owner:catch", "owner:global-settings"],
+    ["owner:stats:refresh"],
+    ["home:panel"],
+  ]);
+
+  const offline = buildOwnerDashboard({ available: false });
+  assert.match(offline.text, /Core Offline/);
+  assert.equal(offline.keyboard.inline_keyboard.length, 3);
+  assert.equal(offline.keyboard.inline_keyboard.flat().some(button => button.callback_data === "owner:stats:refresh"), false);
 });
 
 test("status and help remain available as slash-command shortcuts", () => {
