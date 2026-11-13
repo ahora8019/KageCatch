@@ -1906,3 +1906,20 @@ test("account screens follow the saved locale for labels, session health, and na
   assert.ok(accountButtons.some((label) => label.includes("Connect account")));
   assert.ok(accountButtons.some((label) => label.includes("My account")));
 });
+
+test("English locale covers account, security, statistics, help, and main navigation", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const account = resolveCallback("account:open", "Ahora", "MEMBER", {}, "en");
+  assert.match(account.text, /Account/);
+  assert.ok(account.keyboard.inline_keyboard.flat().some(button => /Connect account/.test(button.text)));
+  const details = resolveCallback("account:list", "Ahora", "MEMBER", {
+    account: "connected",
+    accountInfo: { sessionHealth: "valid", phoneMasked: "+9891******67", lastActive: "2026-11-13T12:00:00Z" }
+  }, "en");
+  assert.match(details.text, /ACCOUNT DETAILS/);
+  assert.match(details.text, /Session health: <b>Valid/);
+  assert.match(resolveCallback("security:open", "Ahora", "MEMBER", {}, "en").text, /two-step verification/);
+  assert.match(resolveCallback("stats:open", "Ahora", "MEMBER", {}, "en").text, /Your statistics/);
+  assert.match(resolveCallback("help:open", "Ahora", "MEMBER", {}, "en").text, /KageCatch help/);
+  assert.match(resolveCallback("menu:main", "Ahora", "MEMBER", {}, "en").text, /Welcome to KageCatch/);
+});
