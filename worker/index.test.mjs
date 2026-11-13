@@ -988,7 +988,7 @@ test("Telegram bot menus explain Catch and target bot readiness without claiming
   assert.match(bots.text, /HentaCatcherBot/);
   assert.match(bots.text, /Character_Catcher_Bot/);
   assert.match(bots.text, /SenpaiCatcherBot/);
-  assert.match(bots.text, /هنوز تست واقعی نگرفتیم/);
+  assert.match(bots.text, /هنوز تست واقعی نگرفته‌ایم/);
 });
 
 test("settings callback is reachable and clearly separates unavailable controls", () => {
