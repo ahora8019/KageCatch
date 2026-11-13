@@ -165,7 +165,7 @@ async function requestCore(env, method, path, payload) {
   const signatureBytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText)));
   const signature = Array.from(signatureBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   const fetcher = env.CORE_API_FETCH || fetch;
-  const response = await fetcher(env.CORE_API_URL.replace(/\/$/, "") + path, {
+  const requestInit = {
     method,
     headers: {
       "content-type": "application/json",
@@ -173,8 +173,9 @@ async function requestCore(env, method, path, payload) {
       "X-KageCatch-Nonce": nonce,
       "X-KageCatch-Signature": signature,
     },
-    body,
-  });
+  };
+  if (method !== "GET" && method !== "HEAD") requestInit.body = body;
+  const response = await fetcher(env.CORE_API_URL.replace(/\/$/, "") + path, requestInit);
   let result = {};
   try { result = await response.json(); } catch {}
   if (!response.ok) throw new Error(result.detail || "core_api_request_failed");
