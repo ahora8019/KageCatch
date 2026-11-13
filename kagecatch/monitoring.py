@@ -23,6 +23,8 @@ class MonitorEventHandler(logging.Handler):
             if event_type not in _EVENT_MESSAGES:
                 return
             message = record.getMessage()
+            if message != _EVENT_MESSAGES[event_type]:
+                return
             RECENT_MONITOR_EVENTS.append({
                 "timestamp": int(record.created),
                 "level": record.levelname if record.levelname in {"DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"} else "INFO",
