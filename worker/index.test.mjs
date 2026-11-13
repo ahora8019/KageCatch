@@ -56,7 +56,7 @@ test("account details render only masked identity data and hide refresh when Cor
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /Session: <b>نامشخص<\/b>/);
+  assert.match(resolveCallback("account:list").text, /نشست: <b>نامشخص<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
@@ -1337,7 +1337,7 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
     body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
   }), env);
   assert.equal(response.status, 200);
-  assert.match(calls[0].text, /KAGECATCH \| DASHBOARD/);
+  assert.match(calls[0].text, /KAGECATCH \| داشبورد/);
   const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 400001 }) }));
   assert.equal((await user.json()).user.role, "MEMBER");
 });
