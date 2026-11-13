@@ -289,7 +289,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       };
     case "account:list":
       return {
-        text: "👤 حساب‌های متصل\n\nوضعیت نشست فقط پس از بررسی Core نمایش داده می‌شود. برای افزودن حساب از اتصال امن استفاده کن.",
+        text: "👤 حساب‌های متصل\n\nوضعیت نشست فقط پس از بررسی Core نمایش داده می‌شود. برای افزودن حساب، از گزینهٔ «اتصال حساب» استفاده کن.",
         keyboard: { inline_keyboard: [
           [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
           [{ text: "🔒 امنیت حساب", callback_data: "security:open" }],
