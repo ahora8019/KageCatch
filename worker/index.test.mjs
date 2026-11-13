@@ -58,7 +58,7 @@ test("account details render only masked identity data and hide refresh when Cor
 test("account and security callbacks disclose only current unavailable state", () => {
   assert.match(resolveCallback("account:list").text, /نشست: <b>نامشخص<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
-  assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
+  assert.match(resolveCallback("account:disconnect").text, /متصل نیست/);
 });
 
 test("unknown callback is rejected safely", () => {
