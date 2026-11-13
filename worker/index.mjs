@@ -1561,9 +1561,9 @@ function reviewRowToItem(row) {
     try { spawnContext = JSON.parse(row.spawn_context_json); }
     catch { throw new Error("invalid stored spawn context"); }
     if (!spawnContext || typeof spawnContext !== "object" || Array.isArray(spawnContext)
-      || typeof spawnContext.source !== "string"
+      || typeof spawnContext.source !== "string" || !/^[A-Za-z0-9_.-]{1,80}$/.test(spawnContext.source)
       || !Number.isSafeInteger(spawnContext.chat_id)
-      || !Number.isSafeInteger(spawnContext.message_id)
+      || !Number.isSafeInteger(spawnContext.message_id) || spawnContext.message_id !== row.spawn_id
       || !["photo", "video", "document", "animation", "audio"].includes(spawnContext.media_kind)) {
       throw new Error("invalid stored spawn context");
     }
