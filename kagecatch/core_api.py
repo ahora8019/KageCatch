@@ -213,14 +213,7 @@ def create_app(
         # reads this handler dynamically.
         controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
         set_handler = getattr(controller, "set_incoming_handler", None)
-        if bool(
-                app.state.review_approval_service is not None
-                and getattr(
-                    getattr(app.state.review_approval_service, "engine", None),
-                    "enabled",
-                    False,
-                )
-            ) and callable(set_handler):
+        if app.state.review_pipeline is not None and callable(set_handler)
             async def process_incoming(user_id: str, event) -> None:
                 await app.state.review_pipeline.process(event=event, user_id=user_id)
             set_handler(process_incoming)
