@@ -134,17 +134,18 @@ test("Owner HQ formats real statistics, has the requested four-row keyboard, and
   assert.match(live.text, /Active Sessions: 8/);
   assert.match(live.text, /Total Catches: 1,245/);
   assert.match(live.text, /System Uptime: 5d 12h/);
-  assert.equal(live.keyboard.inline_keyboard.length, 4);
+  assert.equal(live.keyboard.inline_keyboard.length, 5);
   assert.deepEqual(live.keyboard.inline_keyboard.map(row => row.map(button => button.callback_data)), [
     ["owner:members", "owner:logs"],
     ["owner:catch", "owner:global-settings"],
     ["owner:stats:refresh"],
+    ["owner:monitor"],
     ["home:panel"],
   ]);
 
   const offline = buildOwnerDashboard({ available: false });
   assert.match(offline.text, /Core Offline/);
-  assert.equal(offline.keyboard.inline_keyboard.length, 3);
+  assert.equal(offline.keyboard.inline_keyboard.length, 4);
   assert.equal(offline.keyboard.inline_keyboard.flat().some(button => button.callback_data === "owner:stats:refresh"), false);
 });
 
@@ -578,6 +579,44 @@ test("member cannot invoke owner-only callbacks through the webhook", async () =
   assert.ok(calls.some((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true));
   assert.ok(!calls.some((call) => call.method === "editMessageText"));
   assert.ok(!calls.some((call) => call.url?.includes("/v1/owner/stats")));
+});
+
+test("member cannot invoke the live monitor before any Core request", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+    OWNER_TELEGRAM_ID: "1001",
+    CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      calls.push({ method: url.split("/").pop(), payload: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const update = {
+    update_id: 88,
+    callback_query: {
+      id: "callback-monitor-88", from: { id: 2002 },
+      message: { message_id: 9, chat: { id: 2002, type: "private" } },
+      data: "owner:monitor",
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.ok(calls.some((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true));
+  assert.ok(!calls.some((call) => call.method === "editMessageText"));
+  assert.ok(!calls.some((call) => call.url?.includes("/v1/owner/monitoring")));
 });
 
 
