@@ -22,6 +22,26 @@ class CharacterMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class SpawnContext:
+    """Minimal trusted Telegram origin metadata needed by the execution adapter."""
+
+    source: str
+    chat_id: int
+    message_id: int
+    media_kind: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, str) or not self.source or len(self.source) > 80:
+            raise ValueError("source must contain 1 to 80 characters")
+        if isinstance(self.chat_id, bool) or not isinstance(self.chat_id, int) or abs(self.chat_id) > (2**53 - 1):
+            raise ValueError("chat_id must be a safe integer")
+        if isinstance(self.message_id, bool) or not isinstance(self.message_id, int) or not 0 <= self.message_id <= (2**53 - 1):
+            raise ValueError("message_id must be a non-negative safe integer")
+        if self.media_kind not in {"photo", "video", "document", "animation", "audio"}:
+            raise ValueError("unsupported media_kind")
+
+
+@dataclass(frozen=True, slots=True)
 class SpawnEvent:
     """Normalized spawn candidate emitted by a target adapter."""
 
@@ -31,3 +51,4 @@ class SpawnEvent:
     metadata: CharacterMetadata
     target_name: str
     timestamp: datetime | None = None
+    spawn_context: SpawnContext | None = None
