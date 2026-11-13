@@ -9,6 +9,7 @@ import asyncio
 from typing import Callable, Protocol
 
 from .session_manager import SessionManager
+from .core_api import emit_monitor_event
 
 
 class RuntimeClient(Protocol):
@@ -71,6 +72,7 @@ class SessionRuntime:
                 raise
 
             self._clients[user_id] = client
+            emit_monitor_event("session_reconnected")
             return client
 
     async def restore_saved_sessions(self) -> dict[str, int]:
@@ -107,6 +109,7 @@ class SessionRuntime:
             client = self._clients.pop(user_id, None)
             if client is not None:
                 await client.disconnect()
+                emit_monitor_event("session_disconnected")
 
     async def revoke_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
