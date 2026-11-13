@@ -1150,7 +1150,7 @@ async function handleOwnerCallback(callback, env) {
     text: '⚙️ GLOBAL SETTINGS\n\nRead-only preview. Global configuration changes are not enabled in this release.',
     keyboard: { inline_keyboard: [[{ text: '👑 Owner HQ', callback_data: 'owner:stats' }], ...BACK_MENU.inline_keyboard] },
   };
-  if (data === 'owner:monitor') {
+  if (data === 'owner:members:monitor') {
     const { users = [] } = await registryRequest(env, '/users', {});
     const members = users.filter((user) => user.role !== 'OWNER').sort((a, b) => (b.lastSeenAt || b.createdAt || 0) - (a.lastSeenAt || a.createdAt || 0)).slice(0, 12);
     const statuses = await Promise.all(members.map(async (user) => {
@@ -1164,8 +1164,8 @@ async function handleOwnerCallback(callback, env) {
       const action = user.lastAction ? activityLabel(user.lastAction) : '—';
       return '👤 ' + name + '\n' + accountLabel + '\n🕒 آخرین فعالیت: ' + seen + '\n⚡ آخرین بخش: ' + action;
     });
-    const rows = members.map((user) => [{ text: 'جزئیات ' + (user.firstName || user.telegramUserId), callback_data: 'owner:monitor:user:' + user.telegramUserId }]);
-    rows.push([{ text: '🔄 بروزرسانی', callback_data: 'owner:monitor' }, { text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
+    const rows = members.map((user) => [{ text: 'جزئیات ' + (user.firstName || user.telegramUserId), callback_data: 'owner:members:monitor:user:' + user.telegramUserId }]);
+    rows.push([{ text: '🔄 بروزرسانی', callback_data: 'owner:members:monitor' }, { text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
     return { text: '👁️ نظارت کاربران KageCatch\n\n' + (lines.join('\n\n') || 'هنوز عضوی وجود ندارد.') + '\n\nاین وضعیت، فعال‌بودن کلاینت در Core را نشان می‌دهد؛ ذخیره‌بودن نشست به‌تنهایی به معنی اجرای کلاینت نیست.', keyboard: { inline_keyboard: rows } };
   }
   const monitorUser = data.match(/^owner:monitor:user:(\d+)$/);
@@ -1179,7 +1179,7 @@ async function handleOwnerCallback(callback, env) {
     const account = status.status >= 200 && status.status < 300 ? status.data : null;
     const state = !account ? 'نامشخص؛ Core در دسترس نیست' : account.connected ? 'کلاینت تلگرام در Core فعال است' : account.session_saved ? 'نشست مجاز ذخیره شده، اما کلاینت اجرا نیست' : 'متصل نیست';
     const history = events.map((event) => '• ' + new Date(event.at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + activityLabel(event.action)).join('\n') || 'رویدادی ثبت نشده است.';
-    return { text: '👤 جزئیات کاربر\n\nشناسه: ' + telegramUserId + '\nنام: ' + (user.firstName || 'ثبت نشده') + '\nنام کاربری: ' + (user.username ? '@' + user.username : 'ثبت نشده') + '\nوضعیت دسترسی: ' + user.status + '\nوضعیت حساب: ' + state + '\nنشست ذخیره‌شده: ' + (account ? (account.session_saved ? 'بله' : 'خیر') : 'نامشخص') + '\n\n📜 آخرین فعالیت‌ها\n' + history, keyboard: { inline_keyboard: [[{ text: '⬅️ بازگشت به نظارت', callback_data: 'owner:monitor' }], ...BACK_MENU.inline_keyboard] } };
+    return { text: '👤 جزئیات کاربر\n\nشناسه: ' + telegramUserId + '\nنام: ' + (user.firstName || 'ثبت نشده') + '\nنام کاربری: ' + (user.username ? '@' + user.username : 'ثبت نشده') + '\nوضعیت دسترسی: ' + user.status + '\nوضعیت حساب: ' + state + '\nنشست ذخیره‌شده: ' + (account ? (account.session_saved ? 'بله' : 'خیر') : 'نامشخص') + '\n\n📜 آخرین فعالیت‌ها\n' + history, keyboard: { inline_keyboard: [[{ text: '⬅️ بازگشت به نظارت', callback_data: 'owner:members:monitor' }], ...BACK_MENU.inline_keyboard] } };
   }
   if (data === 'owner:invites') {
     const { invites = [] } = await registryRequest(env, '/invite/list', {});
@@ -1240,6 +1240,7 @@ async function handleOwnerCallback(callback, env) {
     const users = result.users || [];
     const lines = users.map((u) => '• ' + u.telegramUserId + ' — ' + u.role + ' — ' + u.status);
     const keyboard = users.filter((u) => u.role !== 'OWNER').slice(0, 20).map((u) => [{ text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + u.telegramUserId, callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId }]);
+    keyboard.unshift([{ text: '👁️ نظارت نشست اعضا', callback_data: 'owner:members:monitor' }]);
     keyboard.push([{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
     return { text: '👥 اعضای KageCatch\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
   }
