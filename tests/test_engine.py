@@ -1,4 +1,5 @@
 import unittest
+import logging
 
 from kagecatch.engine import (
     Candidate,
@@ -170,3 +171,11 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    async def test_verified_catch_emits_structured_monitor_event_without_user_data(self):
+        with self.assertLogs("kagecatch.core", level="INFO") as captured:
+            result = await self.engine.handle_spawn("private-user-id", sample_spawn(), self.adapter)
+        self.assertEqual(result.status, "verified")
+        events = [record for record in captured.records if getattr(record, "event_type", None) == "catch_success"]
+        self.assertEqual(len(events), 1)
+        self.assertNotIn("private-user-id", events[0].getMessage())
