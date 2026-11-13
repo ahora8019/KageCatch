@@ -773,7 +773,7 @@ test("Telegram bot menus explain Catch and target bot readiness without claiming
 
 test("settings callback is reachable and clearly separates unavailable controls", () => {
   const settings = resolveCallback("settings:open");
-  assert.match(settings.text, /⚙️ تنظیمات/);
+  assert.match(settings.text, /⚙️ <b>SETTINGS<\/b>/);
   assert.match(settings.text, /تنظیمات پیشرفته به‌صورت مرحله‌ای فعال می‌شوند/);
 });
 
@@ -1117,7 +1117,7 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
     body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
   }), env);
   assert.equal(response.status, 200);
-  assert.match(calls[0].text, /دعوتت تأیید شد/);
+  assert.match(calls[0].text, /KAGECATCH \| DASHBOARD/);
   const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 400001 }) }));
   assert.equal((await user.json()).user.role, "MEMBER");
 });
