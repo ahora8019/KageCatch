@@ -1863,7 +1863,7 @@ test("English language selection renders English settings and language confirmat
   const { resolveCallback } = await import("./index.mjs");
   const settings = resolveCallback("settings:open", "Ahora", "MEMBER", {}, "en");
   assert.match(settings.text, /SETTINGS/);
-  assert.match(settings.text, /Language/);
+  assert.ok(settings.keyboard.inline_keyboard.flat().some((button) => /Language/.test(button.text)));
   const selected = resolveCallback("language:selected:en", "Ahora", "MEMBER", {}, "en");
   assert.match(selected.text, /English/);
 });
@@ -1877,4 +1877,16 @@ test("Live Monitor renders structured event types without inventing operational 
   });
   assert.match(result.text, /catch_success/);
   assert.match(result.text, /Catch completed and verified/);
+});
+
+test("dashboard and Catcher status screens follow the selected language", async () => {
+  const { buildDashboardText, buildCatcherText } = await import("./index.mjs");
+  const english = buildDashboardText("Ahora", { core: "ready", account: "connected", catchEnabled: true }, "en");
+  assert.match(english, /Python Core: <b>Online<\/b>/);
+  assert.doesNotMatch(english, /نمای کلی|کاربر:/);
+  const persian = buildDashboardText("اهورا", { core: "ready", account: "connected" }, "fa");
+  assert.match(persian, /داشبورد/);
+  const catcher = buildCatcherText({ account: "connected", catchEnabled: false, executionReady: false }, "en");
+  assert.match(catcher, /Catch Mode: <b>Disabled<\/b>/);
+  assert.match(catcher, /Live execution is not ready/);
 });
