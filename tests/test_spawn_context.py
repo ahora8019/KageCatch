@@ -38,7 +38,7 @@ class SpawnContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(spawn.spawn_context.source, "senpai_catcher")
         self.assertEqual(spawn.spawn_context.chat_id, -1001234567890)
         self.assertEqual(spawn.spawn_context.message_id, 77)
-        self.assertEqual(spawn.spawn_context.media_kind, "photo")
+        self.assertEqual(spawn.spawn_context.media_kind, "image")
 
     async def test_detector_does_not_fabricate_context_when_chat_id_is_missing(self):
         metadata = SimpleNamespace(
