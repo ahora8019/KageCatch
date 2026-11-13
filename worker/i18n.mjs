@@ -45,6 +45,15 @@ const MESSAGES = {
     "account.core_offline": "هستهٔ اصلی آفلاین است؛ جزئیات حساب در دسترس نیست.",
     "account.refresh": "🔄 تازه‌سازی",
     "account.reconnect": "🔁 اتصال دوباره",
+    "account.connect_description": "روی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته شود و صفحهٔ ورود باز شود.",
+    "security.title": "🔒 امنیت و نشست‌ها",
+    "security.body": "هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود. نشست‌های ذخیره‌شده باید رمزنگاری شوند و امکان لغو دسترسی داشته باشند.\n\nحذف پیام فقط بهترین تلاش است و حذف کامل از زیرساخت تلگرام را تضمین نمی‌کند.",
+    "stats.title": "📊 آمار تو",
+    "stats.empty": "هنوز آماری نداریم؛ وقتی Catch راه بیفتد، نتیجه‌ها همین‌جا نمایش داده می‌شوند.",
+    "help.title": "❓ راهنمای KageCatch",
+    "help.body": "🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌های پشتیبانی‌شده\n👤 حساب من — اتصال و مدیریت حساب\n📊 آمار من — نتیجه‌های تأییدشده\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
+    "menu.welcome": "🌸 خوش آمدی به KageCatch 😎",
+    "menu.choose": "از منو هر بخشی را که لازم داری انتخاب کن:"
     "navigation.back": "⬅️ منوی اصلی"
   },
   en: {
@@ -93,6 +102,15 @@ const MESSAGES = {
     "account.core_offline": "Core Offline — account details are unavailable.",
     "account.refresh": "🔄 Refresh",
     "account.reconnect": "🔁 Reconnect",
+    "account.connect_description": "Choose Secure Connect to create your personal link and open the sign-in page.",
+    "security.title": "🔒 Security and sessions",
+    "security.body": "Login codes and two-step verification passwords are never collected in this bot. Stored sessions must remain encrypted and revocable.\n\nMessage deletion is best-effort and cannot guarantee removal from Telegram infrastructure.",
+    "stats.title": "📊 Your statistics",
+    "stats.empty": "There are no statistics yet. Verified results will appear here when Catch is operational.",
+    "help.title": "❓ KageCatch help",
+    "help.body": "🎯 Catch — catch status\n🤖 Target bots — supported bots\n👤 My account — account connection and management\n📊 My stats — verified results\n⚙️ Settings — app preferences\n\nCommands: /start menu · /status status · /help help",
+    "menu.welcome": "🌸 Welcome to KageCatch 😎",
+    "menu.choose": "Choose a section from the menu:"
     "navigation.back": "⬅️ Main menu"
   }
 };
