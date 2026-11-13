@@ -1024,7 +1024,9 @@ async function handleCallback(callback, env) {
   try { await registryRequest(env, '/activity/record', { telegramUserId: callback.from.id, action: callback.data || 'message', firstName: callback.from.first_name, username: callback.from.username }); } catch {}
   let result;
   if (callback.data === "home:panel") {
-    result = { text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:", keyboard: buildRoleMenu(role) };
+    const memberMenu = buildRoleMenu("MEMBER");
+    if (role === "OWNER") memberMenu.inline_keyboard.push([{ text: "⬅️ پنل Owner", callback_data: "home:admin" }]);
+    result = { text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:", keyboard: memberMenu };
   } else if (callback.data === "home:admin" && role === "OWNER") {
     result = { text: "👑 پنل مدیریت KageCatch\n\nبخش مدیریتی موردنظرت را انتخاب کن:", keyboard: buildRoleMenu("OWNER") };
   } else if (callback.data === "home:status") {
