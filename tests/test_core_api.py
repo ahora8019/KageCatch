@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import time
 import unittest
 
@@ -185,6 +186,17 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(data["active_workers"], 1)
         self.assertIsInstance(data["recent_events"], list)
         self.assertEqual(set(data), {"core_status", "redis_status", "active_workers", "recent_events"})
+
+    def test_owner_monitoring_includes_recent_core_log_events(self):
+        logging.getLogger("kagecatch.monitor_test").warning("Monitor event for test")
+        path = "/v1/owner/monitoring"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        events = response.json()["recent_events"]
+        self.assertTrue(any(
+            event["level"] == "WARNING" and event["message"] == "Monitor event for test"
+            for event in events
+        ))
 
     def test_owner_monitoring_requires_valid_hmac(self):
         path = "/v1/owner/monitoring"
