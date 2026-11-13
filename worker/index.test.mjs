@@ -2094,11 +2094,11 @@ function createFakeQuotaDatabase(limit = 1) {
                 return { meta: { changes: 1 } };
               }
               if (sql.startsWith("INSERT INTO daily_quotas")) {
-                const [requestId, owner, date, chatId, spawnId, limitOwner, limitDate, countOwner, countDate, limitOwner2, limitDate2] = values;
+                const [requestId, owner, date, chatId, spawnId, limitOwner, limitDate, countOwner, countDate, limitOwner2, limitDate2, duplicateId] = values;
                 if (rows.has(requestId)) return { meta: { changes: 0 } };
                 const quotaLimit = limits.get(owner + ":" + date)?.quota_limit ?? 0;
                 const used = [...rows.values()].filter((row) => row.owner_id === owner && row.quota_date === date && (row.status === "reserved" || row.consumes_quota === 1)).length;
-                if (limitOwner !== owner || limitDate !== date || countOwner !== owner || countDate !== date || limitOwner2 !== owner || limitDate2 !== date || used >= quotaLimit) return { meta: { changes: 0 } };
+                if (limitOwner !== owner || limitDate !== date || countOwner !== owner || countDate !== date || limitOwner2 !== owner || limitDate2 !== date || duplicateId !== requestId || used >= quotaLimit) return { meta: { changes: 0 } };
                 rows.set(requestId, { request_id: requestId, owner_id: owner, quota_date: date, chat_id: chatId, spawn_message_id: spawnId, status: "reserved", consumes_quota: 1 });
                 return { meta: { changes: 1 } };
               }
