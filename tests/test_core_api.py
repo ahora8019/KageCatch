@@ -197,6 +197,34 @@ class CoreApiTests(unittest.TestCase):
         self.assertNotIn("do-not-return-this-session", response.text)
 
 
+    def test_account_info_returns_masked_phone_and_authorization_health_without_session_material(self):
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+
+        class AccountClient:
+            async def is_user_authorized(self):
+                return True
+
+            async def get_me(self):
+                return SimpleNamespace(
+                    phone="+989121234567",
+                    status=SimpleNamespace(was_online=datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)),
+                )
+
+        self.runtime.clients["2001"] = AccountClient()
+        path = "/v1/accounts/2001/info"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "telegram_user_id": 2001,
+            "session_health": "valid",
+            "phone_masked": "+9891******67",
+            "last_active": "2026-11-13T12:00:00+00:00",
+        })
+        self.assertNotIn("+989121234567", response.text)
+        self.assertNotIn("do-not-return-this-session", response.text)
+
+
     def test_account_status_does_not_reconnect_a_saved_session_automatically(self):
         self.runtime.clients.clear()
         path = "/v1/accounts/2001"
