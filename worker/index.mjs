@@ -171,7 +171,7 @@ export function buildOwnerDashboard(stats) {
     : [
         "👑 KAGECATCH | OWNER HQ",
         "━━━━━━━━━━━━━━━━━━━━",
-        "🔴 Core Offline",
+        stats?.reason === "registry" ? "🔴 Registry Offline" : "🔴 Core Offline",
         "👥 Total Users: Unavailable",
         "🟢 Active Sessions: Unavailable",
         "🎯 Total Catches: Unavailable",
@@ -198,8 +198,9 @@ async function loadOwnerStats(env) {
   const fields = ["total_users", "active_sessions", "total_catches", "system_uptime_seconds"];
   const validCoreStats = core.status >= 200 && core.status < 300 &&
     fields.every((field) => Number.isSafeInteger(data?.[field]) && data[field] >= 0);
-  if (!validCoreStats || !registry.available || !Array.isArray(registry.data?.users)) {
-    return { available: false };
+  if (!validCoreStats) return { available: false, reason: "core" };
+  if (!registry.available || !Array.isArray(registry.data?.users)) {
+    return { available: false, reason: "registry" };
   }
 
   // The Worker registry is authoritative for all invited users, including users
@@ -1180,10 +1181,13 @@ async function handleOwnerCallback(callback, env) {
 async function handleCallback(callback, env) {
   const isOwnerCallback = callback.data?.startsWith("owner:");
   const configuredOwnerId = String(env.OWNER_TELEGRAM_ID || "");
+  const ownerTelegramId = /^[1-9]\d*$/.test(configuredOwnerId)
+    ? Number(configuredOwnerId)
+    : NaN;
   const isExactOwner =
-    /^[1-9]\d*$/.test(configuredOwnerId) &&
+    Number.isSafeInteger(ownerTelegramId) &&
     Number.isSafeInteger(callback.from?.id) &&
-    String(callback.from.id) === configuredOwnerId;
+    callback.from.id === ownerTelegramId;
   if (isOwnerCallback && !isExactOwner) {
     await telegramApi(env, "answerCallbackQuery", {
       callback_query_id: callback.id,
