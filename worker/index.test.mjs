@@ -42,7 +42,7 @@ test("account details render only masked identity data and hide refresh when Cor
       lastActive: "2026-11-13T12:00:00+00:00",
     },
   });
-  assert.match(live.text, /Session health: <b>Valid<\/b>/);
+  assert.match(live.text, /سلامت نشست: <b>معتبر<\/b>/);
   assert.match(live.text, /\+9891\*{6}67/);
   assert.match(live.text, /2026-11-13T12:00:00/);
   assert.equal(live.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "account:list"), true);
@@ -51,12 +51,12 @@ test("account details render only masked identity data and hide refresh when Cor
     core: "unavailable",
     account: "unknown",
   });
-  assert.match(offline.text, /Core Offline/);
+  assert.match(offline.text, /هستهٔ اصلی آفلاین است/);
   assert.equal(offline.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "account:list"), false);
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /Session: <b>نامشخص<\/b>/);
+  assert.match(resolveCallback("account:list").text, /نشست: <b>نامشخص<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
@@ -1902,6 +1902,7 @@ test("account screens follow the saved locale for labels, session health, and na
   assert.match(english.text, /Phone:/);
   const settings = resolveCallback("account:open", "Member", "MEMBER", {}, "en");
   assert.match(settings.text, /Manage your account/);
-  assert.match(settings.text, /Connect account/);
-  assert.match(settings.text, /My account/);
+  const accountButtons = settings.keyboard.inline_keyboard.flat().map((button) => button.text);
+  assert.ok(accountButtons.some((label) => label.includes("Connect account")));
+  assert.ok(accountButtons.some((label) => label.includes("My account")));
 });
