@@ -329,6 +329,62 @@ async function loadRuntimeStatus(env, telegramUserId, includeAccountInfo = false
   return result;
 }
 
+async function loadManualReviewPanel(env, telegramUserId, language = "fa") {
+  const locale = normalizeLanguage(language);
+  if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) {
+    return { text: "⛔ شناسهٔ کاربر معتبر نیست.", keyboard: backMenu(locale) };
+  }
+  const response = await coreRequest(env, "GET", "/v1/reviews/" + telegramUserId);
+  if (response.status < 200 || response.status >= 300 || !Array.isArray(response.data?.items)) {
+    return {
+      text: locale === "fa"
+        ? "🧾 <b>صف بررسی</b>\n\nهستهٔ بررسی در دسترس نیست؛ هیچ عملیاتی انجام نشد."
+        : "🧾 <b>Review Queue</b>\n\nReview Core is unavailable. No action was taken.",
+      parse_mode: "HTML",
+      keyboard: { inline_keyboard: [
+        [{ text: translate("common.refresh", locale), callback_data: "catch:reviews" }],
+        ...backMenu(locale).inline_keyboard,
+      ] },
+    };
+  }
+  const items = response.data.items.slice(0, 5);
+  const lines = [
+    locale === "fa" ? "🧾 <b>KAGECATCH | صف بررسی</b>" : "🧾 <b>KAGECATCH | REVIEW QUEUE</b>",
+    "<code>━━━━━━━━━━━━━━━━━━━━</code>",
+  ];
+  const keyboard = [];
+  if (!items.length) {
+    lines.push(locale === "fa" ? "درخواست بررسیِ در انتظاری وجود ندارد." : "There are no pending reviews.");
+  }
+  for (const item of items) {
+    if (!item || !/^[a-f0-9]{32}$/.test(item.review_id) || !Array.isArray(item.candidates)) continue;
+    lines.push("<b>" + escapeHtml(item.anime_name || "Unknown") + "</b>");
+    lines.push((locale === "fa" ? "شناسه: " : "Review: ") + "<code>" + item.review_id.slice(0, 8) + "</code>");
+    if (item.spawn_context_available !== true) {
+      lines.push(locale === "fa"
+        ? "⚠️ اطلاعات مبدأ کامل نیست؛ تأیید اجرا در دسترس نیست."
+        : "⚠️ Origin context is incomplete; execution approval is unavailable.");
+    }
+    for (let index = 0; index < Math.min(item.candidates.length, 5); index += 1) {
+      const candidate = item.candidates[index];
+      if (typeof candidate !== "string") continue;
+      const label = candidate.length > 40 ? candidate.slice(0, 37) + "…" : candidate;
+      keyboard.push([{
+        text: (locale === "fa" ? "🔒 " : "🔒 ") + label,
+        callback_data: "review:approve:" + item.review_id + ":" + index,
+      }]);
+    }
+    keyboard.push([{
+      text: locale === "fa" ? "❌ رد درخواست" : "❌ Reject review",
+      callback_data: "review:reject:" + item.review_id,
+    }]);
+    lines.push("");
+  }
+  keyboard.push([{ text: translate("common.refresh", locale), callback_data: "catch:reviews" }]);
+  keyboard.push(...backMenu(locale).inline_keyboard);
+  return { text: lines.join("\n"), parse_mode: "HTML", keyboard: { inline_keyboard: keyboard } };
+}
+
 async function miniAppCoreProxy(request, env, action) {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
@@ -546,6 +602,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
           [{ text: translate("catcher.bots", locale), callback_data: "bots:open" }],
+          [{ text: translate("catcher.reviews", locale), callback_data: "catch:reviews" }],
           [{ text: translate("common.refresh", locale), callback_data: "catch:open" }],
           ...backMenu(locale).inline_keyboard,
         ] },
@@ -994,7 +1051,7 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/activity/record') {
       const { telegramUserId, action, firstName, username } = body || {};
-      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || typeof action !== 'string' || !/^(start|panel|message|command|catch:open|bots:open|account:connect|account:list|stats:open|settings:open|security:open|account:disconnect|help:open|owner:[a-z0-9:_-]+|home:[a-z]+)$/.test(action)) return json({ error: 'invalid_activity' }, 400);
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || typeof action !== 'string' || !/^(start|panel|message|command|catch:open|catch:reviews|review:(approve|reject):[a-f0-9:]+|bots:open|account:connect|account:list|stats:open|settings:open|security:open|account:disconnect|help:open|owner:[a-z0-9:_-]+|home:[a-z]+)$/.test(action)) return json({ error: 'invalid_activity' }, 400);
       const key = 'user:' + telegramUserId;
       const existing = await this.state.storage.get(key);
       if (!existing) return json({ error: 'user_not_found' }, 404);
@@ -1135,7 +1192,8 @@ async function getTelegramUser(env, userId) {
 function activityLabel(action) {
   const labels = {
     start: "شروع بات", panel: "باز کردن پنل", message: "ارسال پیام (بدون ذخیره متن)", command: "اجرای دستور",
-    "catch:open": "ورود به کنترل Catch", "bots:open": "مشاهده بات‌های مقصد", "account:connect": "اتصال حساب تلگرام",
+    "catch:open": "ورود به کنترل Catch", "catch:reviews": "مشاهده صف بررسی",
+    "bots:open": "مشاهده بات‌های مقصد", "account:connect": "اتصال حساب تلگرام",
     "account:list": "مشاهده حساب متصل", "stats:open": "مشاهده آمار", "settings:open": "باز کردن تنظیمات",
     "security:open": "مشاهده امنیت حساب", "account:disconnect": "قطع اتصال حساب", "help:open": "مشاهده راهنما",
     "home:panel": "بازگشت به پنل کاربری", "home:admin": "باز کردن پنل Owner", "owner:monitor": "باز کردن نظارت کاربران",
@@ -1342,6 +1400,44 @@ async function handleCallback(callback, env) {
     result = buildOwnerMonitor(await loadOwnerMonitoring(env));
   } else if (callback.data?.startsWith("owner:")) {
     result = await handleOwnerCallback(callback, env);
+  } else if (callback.data === "catch:reviews") {
+    if (chat.id !== callback.from.id) {
+      result = { text: "این عملیات فقط در گفت‌وگوی خصوصی خودت مجاز است.", keyboard: backMenu(locale) };
+    } else {
+      result = await loadManualReviewPanel(env, callback.from.id, locale);
+    }
+  } else if ((callback.data || "").match(/^review:reject:([a-f0-9]{32})$/)) {
+    const match = callback.data.match(/^review:reject:([a-f0-9]{32})$/);
+    if (chat.id !== callback.from.id) {
+      result = { text: "⛔ دسترسی نامعتبر است.", keyboard: backMenu(locale) };
+    } else {
+      const path = "/v1/reviews/" + callback.from.id + "/" + match[1] + "/reject";
+      const rejected = await coreRequest(env, "POST", path);
+      result = rejected.status >= 200 && rejected.status < 300
+        ? await loadManualReviewPanel(env, callback.from.id, locale)
+        : { text: locale === "fa" ? "این درخواست دیگر در وضعیت انتظار نیست یا قابل دسترسی نیست." : "This review is no longer pending or is unavailable.", keyboard: { inline_keyboard: [[{ text: translate("catcher.reviews", locale), callback_data: "catch:reviews" }], ...backMenu(locale).inline_keyboard] } };
+    }
+  } else if ((callback.data || "").match(/^review:approve:([a-f0-9]{32}):(0|[1-9][0-9]?)$/)) {
+    const match = callback.data.match(/^review:approve:([a-f0-9]{32}):(0|[1-9][0-9]?)$/);
+    if (chat.id !== callback.from.id) {
+      result = { text: "⛔ دسترسی نامعتبر است.", keyboard: backMenu(locale) };
+    } else {
+      const path = "/v1/reviews/" + callback.from.id + "/" + match[1] + "/approve";
+      const approval = await coreRequest(env, "POST", path, { candidate_index: Number(match[2]) });
+      const disabled = approval.status === 503 && approval.data?.detail === "review_execution_not_configured";
+      result = {
+        text: disabled
+          ? (locale === "fa"
+            ? "🔒 <b>اجرای Catch هنوز به این کنترل متصل نیست.</b>\n\nانتخاب تو ثبت یا اجرا نشد؛ هیچ فرمانی به بات مقصد ارسال نشده است."
+            : "🔒 <b>Catch execution is not connected yet.</b>\n\nYour selection was not committed or executed. No command was sent to a target bot.")
+          : (locale === "fa" ? "تأیید انجام نشد؛ درخواست همچنان در صف بررسی است." : "Approval was not completed; the review remains pending."),
+        parse_mode: "HTML",
+        keyboard: { inline_keyboard: [
+          [{ text: translate("catcher.reviews", locale), callback_data: "catch:reviews" }],
+          ...backMenu(locale).inline_keyboard,
+        ] },
+      };
+    }
   } else {
     const needsRuntimeStatus = ["overview:open", "catch:open", "account:list"].includes(callback.data) || callback.data === "menu:main";
     const runtimeStatus = needsRuntimeStatus
