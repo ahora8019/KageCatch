@@ -181,3 +181,17 @@ class CatchEngineTelemetryTests(unittest.IsolatedAsyncioTestCase):
         events = [record for record in captured.records if getattr(record, "event_type", None) == "catch_success"]
         self.assertEqual(len(events), 1)
         self.assertNotIn("private-user-id", events[0].getMessage())
+
+    async def test_flood_wait_during_verification_emits_throttle_event(self):
+        class FloodWaitError(Exception):
+            pass
+
+        class FloodWaitAdapter(FakeAdapter):
+            async def verify_catch(self, receipt):
+                raise FloodWaitError()
+
+        engine = CatchEngine(confidence_threshold=0.92, quota=FakeQuota(), deduplicator=FakeDeduplicator(), enabled=True)
+        with self.assertLogs("kagecatch.core", level="WARNING") as captured:
+            result = await engine.handle_spawn("private-user-id", sample_spawn(), FloodWaitAdapter())
+        self.assertEqual(result.status, "unverified")
+        self.assertTrue(any(getattr(record, "event_type", None) == "flood_wait" for record in captured.records))
