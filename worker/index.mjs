@@ -495,8 +495,8 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         text: buildDashboardText(userLabel, status, locale),
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
-          [{ text: "📈 Statistics", callback_data: "stats:open" }],
-          [{ text: "❓ Help", callback_data: "help:open" }],
+          [{ text: translate("overview.stats", locale), callback_data: "stats:open" }],
+          [{ text: translate("overview.help", locale), callback_data: "help:open" }],
           ...backMenu(locale).inline_keyboard,
         ] },
       };
@@ -545,15 +545,15 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         text: buildCatcherText(status, locale),
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
-          [{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }],
-          [{ text: "🔄 Refresh", callback_data: "catch:open" }],
+          [{ text: translate("catcher.bots", locale), callback_data: "bots:open" }],
+          [{ text: translate("common.refresh", locale), callback_data: "catch:open" }],
           ...backMenu(locale).inline_keyboard,
         ] },
       };
     case "bots:open":
       return {
-        text: "🤖 بات‌های مقصد\n\n• HentaCatcherBot — عکس · /catch\n• Character_Catcher_Bot — عکس · /catch\n• SenpaiCatcherBot — ویدیو · /pick (فعلاً غیرفعاله)\n\nهنوز تست واقعی نگرفتیم؛ پس فعلاً قول Catch موفق نمی‌دیم.",
-        keyboard: { inline_keyboard: [[{ text: "🎯 کنترل Catch", callback_data: "catch:open" }], ...backMenu(locale).inline_keyboard] },
+        text: translate("bots.title", locale) + "\n\n" + translate("bots.body", locale),
+        keyboard: { inline_keyboard: [[{ text: translate("catcher.control", locale), callback_data: "catch:open" }], ...backMenu(locale).inline_keyboard] },
       };
     case "settings:open":
       return {
@@ -574,7 +574,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         keyboard: backMenu(locale),
       };
     case "account:disconnect":
-      return { text: "❌ حساب متصلی ثبت نشده است.", keyboard: backMenu(locale) };
+      return { text: "❌ " + translate("account.not_connected", locale), keyboard: backMenu(locale) };
     case "help:open":
       return {
         text: translate("help.title", locale) + "\n\n" + translate("help.body", locale),
@@ -583,7 +583,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
     case "menu:main":
       return { text: translate("menu.welcome", locale) + "\n\n" + translate("menu.choose", locale), keyboard: buildStartMenu(role, locale) };
     default:
-      return { text: "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.", keyboard: backMenu(locale), alert: true };
+      return { text: translate("generic.invalid", locale), keyboard: backMenu(locale), alert: true };
   }
 }
 
