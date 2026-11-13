@@ -1,7 +1,7 @@
 import "./panel_queue.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, buildCatcherText, buildOwnerDashboard, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, buildCatcherText, buildOwnerDashboard, buildOwnerMonitor, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
@@ -196,6 +196,62 @@ test("Owner HQ callback fetches HMAC Core stats and edits the existing Telegram 
   assert.match(payload.text, /System Uptime: 5d 12h/);
   assert.equal(payload.message_id, 77);
   assert.equal(payload.reply_markup.inline_keyboard[2][0].callback_data, "owner:stats:refresh");
+});
+
+test("Owner Live Monitor fetches signed Core monitoring data and edits the existing Telegram message", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 999001, ownerTelegramId: "999001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CORE_API_URL: "https://core.example", CORE_API_SECRET: "a".repeat(40),
+    FETCH: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/v1/owner/monitoring")) return new Response(JSON.stringify({
+        core_status: "online", redis_status: "not_configured", active_workers: 2,
+        recent_events: [{ timestamp: 1699999999, level: "INFO", message: "Session reconnected" }],
+      }), { status: 200 });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 900005, callback_query: {
+      id: "owner-monitor", data: "owner:monitor", from: { id: 999001 },
+      message: { message_id: 78, chat: { id: 999001, type: "private" } },
+    } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const coreCall = calls.find(call => call.url.endsWith("/v1/owner/monitoring"));
+  assert.equal(coreCall.init.method, "GET");
+  assert.ok(coreCall.init.headers["X-KageCatch-Signature"]);
+  const edit = calls.find(call => call.url.endsWith("/editMessageText"));
+  assert.ok(edit);
+  const payload = JSON.parse(edit.init.body);
+  assert.match(payload.text, /KAGECATCH \\| LIVE MONITOR/);
+  assert.match(payload.text, /Core: <b>Online<\\/b>/);
+  assert.match(payload.text, /Active Workers: 2/);
+  assert.match(payload.text, /Session reconnected/);
+  assert.equal(payload.message_id, 78);
+  assert.deepEqual(payload.reply_markup.inline_keyboard.map(row => row[0].callback_data), [
+    "owner:monitor:refresh", "owner:stats",
+  ]);
+});
+
+test("Owner Live Monitor renders Core Offline safely when the Core endpoint fails", async () => {
+  const offline = buildOwnerMonitor({ available: false });
+  assert.match(offline.text, /Core Offline/);
+  assert.equal(offline.keyboard.inline_keyboard.length, 2);
+  assert.deepEqual(offline.keyboard.inline_keyboard.map(row => row[0].callback_data), [
+    "owner:monitor:refresh", "owner:stats",
+  ]);
 });
 
 test("status and help remain available as slash-command shortcuts", () => {
