@@ -433,6 +433,10 @@ export function resolveRole(userId, ownerTelegramId, storedRole = "DENIED", stat
 }
 const BACK_MENU = { inline_keyboard: [[{ text: "⬅️ منوی اصلی", callback_data: "menu:main" }]] };
 
+function backMenu(language = "fa") {
+  return { inline_keyboard: [[{ text: translate("navigation.back", normalizeLanguage(language)), callback_data: "menu:main" }]] };
+}
+
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"]/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
@@ -485,7 +489,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       return { text: translate("language.title", locale) + "\n\n" + translate("language.description", locale), parse_mode: "HTML", keyboard: languageKeyboard(locale) };
     case "language:selected:fa":
     case "language:selected:en":
-      return { text: translate("language.selected." + data.slice("language:selected:".length), locale), keyboard: { inline_keyboard: [[{ text: translate("settings.title", locale).replace(/<[^>]*>/g, ""), callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] } };
+      return { text: translate("language.selected." + data.slice("language:selected:".length), locale), keyboard: { inline_keyboard: [[{ text: translate("settings.title", locale).replace(/<[^>]*>/g, ""), callback_data: "settings:open" }], ...backMenu(locale).inline_keyboard] } };
     case "overview:open":
       return {
         text: buildDashboardText(userLabel, status, locale),
@@ -493,7 +497,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         keyboard: { inline_keyboard: [
           [{ text: "📈 Statistics", callback_data: "stats:open" }],
           [{ text: "❓ Help", callback_data: "help:open" }],
-          ...BACK_MENU.inline_keyboard,
+          ...backMenu(locale).inline_keyboard,
         ] },
       };
     case "account:open":
@@ -504,13 +508,13 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
           [{ text: "🟢 Connect account", callback_data: "account:connect" }],
           [{ text: "📱 My account", callback_data: "account:list" }],
           [{ text: "🔒 Security", callback_data: "security:open" }],
-          ...BACK_MENU.inline_keyboard,
+          ...backMenu(locale).inline_keyboard,
         ] },
       };
     case "account:connect":
       return {
         text: "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
-        keyboard: BACK_MENU,
+        keyboard: backMenu(locale),
       };
     case "account:list": {
       const accountInfo = status.accountInfo || {};
@@ -532,7 +536,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         keyboard.push([{ text: "🔁 اتصال دوباره", callback_data: "account:connect" }]);
       }
       if (!coreOffline) keyboard.push([{ text: "🔄 Refresh", callback_data: "account:list" }]);
-      keyboard.push([{ text: "🔒 امنیت حساب", callback_data: "security:open" }], ...BACK_MENU.inline_keyboard);
+      keyboard.push([{ text: "🔒 امنیت حساب", callback_data: "security:open" }], ...backMenu(locale).inline_keyboard);
       return { text: lines.join("\n"), parse_mode: "HTML", keyboard: { inline_keyboard: keyboard } };
     }
     case "catch:open":
@@ -542,13 +546,13 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         keyboard: { inline_keyboard: [
           [{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }],
           [{ text: "🔄 Refresh", callback_data: "catch:open" }],
-          ...BACK_MENU.inline_keyboard,
+          ...backMenu(locale).inline_keyboard,
         ] },
       };
     case "bots:open":
       return {
         text: "🤖 بات‌های مقصد\n\n• HentaCatcherBot — عکس · /catch\n• Character_Catcher_Bot — عکس · /catch\n• SenpaiCatcherBot — ویدیو · /pick (فعلاً غیرفعاله)\n\nهنوز تست واقعی نگرفتیم؛ پس فعلاً قول Catch موفق نمی‌دیم.",
-        keyboard: { inline_keyboard: [[{ text: "🎯 کنترل Catch", callback_data: "catch:open" }], ...BACK_MENU.inline_keyboard] },
+        keyboard: { inline_keyboard: [[{ text: "🎯 کنترل Catch", callback_data: "catch:open" }], ...backMenu(locale).inline_keyboard] },
       };
     case "settings:open":
       return {
@@ -558,27 +562,27 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
           [{ text: translate("settings.language", locale), callback_data: "language:open" }],
           [{ text: translate("settings.security", locale), callback_data: "security:open" }],
           [{ text: translate("settings.help", locale), callback_data: "help:open" }],
-          ...BACK_MENU.inline_keyboard,
+          ...backMenu(locale).inline_keyboard,
         ] },
       };
     case "stats:open":
-      return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: BACK_MENU };
+      return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: backMenu(locale) };
     case "security:open":
       return {
         text: "🔒 امنیت و نشست‌ها\n\nهیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود. نشست‌های ذخیره‌شده باید رمزنگاری شوند و امکان لغو دسترسی داشته باشند.\n\nحذف پیام فقط بهترین تلاش است و حذف کامل از زیرساخت تلگرام را تضمین نمی‌کند.",
-        keyboard: BACK_MENU,
+        keyboard: backMenu(locale),
       };
     case "account:disconnect":
-      return { text: "❌ حساب متصلی ثبت نشده است.", keyboard: BACK_MENU };
+      return { text: "❌ حساب متصلی ثبت نشده است.", keyboard: backMenu(locale) };
     case "help:open":
       return {
         text: "❓ راهنمای کوچیک KageCatch\n\n🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌هایی که پشتیبانی می‌شن\n👤 حساب من — اتصال و مدیریت حسابت\n📊 آمار من — نتیجهٔ Catchها\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
-        keyboard: BACK_MENU,
+        keyboard: backMenu(locale),
       };
     case "menu:main":
-      return { text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز منو هرچی لازم داری انتخاب کن:", keyboard: buildStartMenu() };
+      return { text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز منو هرچی لازم داری انتخاب کن:", keyboard: buildStartMenu(role, locale) };
     default:
-      return { text: "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.", keyboard: BACK_MENU, alert: true };
+      return { text: "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.", keyboard: backMenu(locale), alert: true };
   }
 }
 
