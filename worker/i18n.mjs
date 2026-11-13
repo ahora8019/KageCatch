@@ -53,7 +53,7 @@ const MESSAGES = {
     "help.title": "❓ راهنمای KageCatch",
     "help.body": "🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌های پشتیبانی‌شده\n👤 حساب من — اتصال و مدیریت حساب\n📊 آمار من — نتیجه‌های تأییدشده\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
     "menu.welcome": "🌸 خوش آمدی به KageCatch 😎",
-    "menu.choose": "از منو هر بخشی را که لازم داری انتخاب کن:"
+    "menu.choose": "از منو هر بخشی را که لازم داری انتخاب کن:",
     "navigation.back": "⬅️ منوی اصلی"
   },
   en: {
@@ -110,7 +110,7 @@ const MESSAGES = {
     "help.title": "❓ KageCatch help",
     "help.body": "🎯 Catch — catch status\n🤖 Target bots — supported bots\n👤 My account — account connection and management\n📊 My stats — verified results\n⚙️ Settings — app preferences\n\nCommands: /start menu · /status status · /help help",
     "menu.welcome": "🌸 Welcome to KageCatch 😎",
-    "menu.choose": "Choose a section from the menu:"
+    "menu.choose": "Choose a section from the menu:",
     "navigation.back": "⬅️ Main menu"
   }
 };
