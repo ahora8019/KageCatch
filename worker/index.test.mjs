@@ -56,7 +56,7 @@ test("account details render only masked identity data and hide refresh when Cor
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /Session: <b>Unknown<\/b>/);
+  assert.match(resolveCallback("account:list").text, /Session: <b>نامشخص<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
@@ -83,22 +83,22 @@ test("dashboard uses HTML safely and escapes Telegram-provided display names", (
   
 test("dashboard reflects verified Core, account, and Catch state without optimistic defaults", () => {
   const live = buildDashboardText("Ahora", { core: "ready", account: "connected", catchEnabled: true });
-  assert.match(live, /Python Core: <b>Online<\/b>/);
-  assert.match(live, /Session: <b>Connected<\/b>/);
-  assert.match(live, /Catch Mode: <b>Enabled<\/b>/);
+  assert.match(live, /هستهٔ پایتون: <b>آنلاین<\/b>/);
+  assert.match(live, /نشست: <b>متصل<\/b>/);
+  assert.match(live, /وضعیت شکار: <b>فعال<\/b>/);
   const unavailable = buildDashboardText("Ahora", { core: "unavailable", account: "unknown", catchEnabled: null });
-  assert.match(unavailable, /Python Core: <b>Unavailable<\/b>/);
+  assert.match(unavailable, /هستهٔ پایتون: <b>در دسترس نیست<\/b>/);
   assert.match(unavailable, /Session: <b>Unknown<\/b>/);
-  assert.match(unavailable, /Catch Mode: <b>Unknown<\/b>/);
+  assert.match(unavailable, /وضعیت شکار: <b>نامشخص<\/b>/);
 });
 
 test("catcher submenu reports real execution readiness and never enables Catch by display", () => {
   const live = buildCatcherText({ account: "connected", catchEnabled: false, executionReady: true });
-  assert.match(live, /Catch Mode: <b>Disabled<\/b>/);
-  assert.match(live, /Execution: <b>Ready<\/b>/);
+  assert.match(live, /وضعیت شکار: <b>غیرفعال<\/b>/);
+  assert.match(live, /اجرا: <b>آماده<\/b>/);
   const offline = buildCatcherText({ account: "not_connected", catchEnabled: null, executionReady: null });
-  assert.match(offline, /Account: <b>Not connected<\/b>/);
-  assert.match(offline, /Execution: <b>Unknown<\/b>/);
+  assert.match(offline, /حساب: <b>متصل نیست<\/b>/);
+  assert.match(offline, /اجرا: <b>نامشخص<\/b>/);
 });
 
 
@@ -982,8 +982,8 @@ test("Telegram member menu is a minimal native dashboard without WebApp buttons"
 });
 
 test("Telegram bot menus explain Catch and target bot readiness without claiming live execution", () => {
-  assert.match(resolveCallback("catch:open").text, /Live execution is not ready/);
-  assert.match(resolveCallback("catch:open").text, /Catch Mode: <b>Unknown<\/b>/);
+  assert.match(resolveCallback("catch:open").text, /اجرای زنده هنوز آماده نیست/);
+  assert.match(resolveCallback("catch:open").text, /وضعیت شکار: <b>نامشخص<\/b>/);
   const bots = resolveCallback("bots:open");
   assert.match(bots.text, /HentaCatcherBot/);
   assert.match(bots.text, /Character_Catcher_Bot/);
@@ -993,8 +993,8 @@ test("Telegram bot menus explain Catch and target bot readiness without claiming
 
 test("settings callback is reachable and clearly separates unavailable controls", () => {
   const settings = resolveCallback("settings:open");
-  assert.match(settings.text, /⚙️ <b>SETTINGS<\/b>/);
-  assert.match(settings.text, /تنظیمات پیشرفته به‌صورت مرحله‌ای فعال می‌شوند/);
+  assert.match(settings.text, /⚙️ <b>تنظیمات<\/b>/);
+  assert.match(settings.text, /تنظیمات حساب و تجربهٔ کاربری/);
 });
 
 test("/start opens the compact role menu directly instead of a redundant landing menu", () => {
