@@ -1948,7 +1948,7 @@ test("durable manual review endpoint persists trusted spawn context per owning r
   const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
   const context = {
     source: "senpai_catcher", chat_id: -1001234567890,
-    message_id: 77, media_kind: "photo",
+    message_id: 77, media_kind: "image",
   };
   const created = await worker.fetch(await makeSignedManualReviewRequest({
     action: "create", review_id: "c".repeat(32), user_id: "12345",
