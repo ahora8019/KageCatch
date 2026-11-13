@@ -213,7 +213,14 @@ def create_app(
         # reads this handler dynamically.
         controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
         set_handler = getattr(controller, "set_incoming_handler", None)
-        if app.state.review_pipeline is not None and callable(set_handler):
+        if bool(
+                app.state.review_approval_service is not None
+                and getattr(
+                    getattr(app.state.review_approval_service, "engine", None),
+                    "enabled",
+                    False,
+                )
+            ) and callable(set_handler):
             async def process_incoming(user_id: str, event) -> None:
                 await app.state.review_pipeline.process(event=event, user_id=user_id)
             set_handler(process_incoming)
@@ -317,7 +324,13 @@ def create_app(
             items = await queue.get_pending(user_id=str(telegram_user_id))
         except Exception as exc:
             raise HTTPException(status_code=503, detail="review_queue_unavailable") from exc
+        approval_service = app.state.review_approval_service
+        approval_engine = getattr(approval_service, "engine", None)
+        approval_available = bool(
+            approval_engine is not None and getattr(approval_engine, "enabled", False)
+        )
         return {
+            "approval_available": approval_available,
             "items": [
                 {
                     "review_id": item.review_id,
@@ -453,7 +466,14 @@ def create_app(
         return {
             "telegram_user_id": telegram_user_id,
             "enabled": bool(controller.is_enabled(str(telegram_user_id))),
-            "execution_ready": app.state.review_pipeline is not None,
+            "execution_ready": bool(
+                app.state.review_approval_service is not None
+                and getattr(
+                    getattr(app.state.review_approval_service, "engine", None),
+                    "enabled",
+                    False,
+                )
+            ),
         }
 
     @app.put("/v1/accounts/{telegram_user_id}/catch", dependencies=[Depends(require_core_auth)])
@@ -477,7 +497,14 @@ def create_app(
         return {
             "telegram_user_id": telegram_user_id,
             "enabled": result,
-            "execution_ready": app.state.review_pipeline is not None,
+            "execution_ready": bool(
+                app.state.review_approval_service is not None
+                and getattr(
+                    getattr(app.state.review_approval_service, "engine", None),
+                    "enabled",
+                    False,
+                )
+            ),
         }
 
     @app.post("/v1/accounts/{telegram_user_id}/connect", dependencies=[Depends(require_core_auth)])
