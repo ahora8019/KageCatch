@@ -42,8 +42,8 @@ test("account details render only masked identity data and hide refresh when Cor
       lastActive: "2026-11-13T12:00:00+00:00",
     },
   });
-  assert.match(live.text, /Session health: <b>Valid<\\/b>/);
-  assert.match(live.text, /\\+9891\\*{6}67/);
+  assert.match(live.text, /Session health: <b>Valid<\/b>/);
+  assert.match(live.text, /\+9891\*{6}67/);
   assert.match(live.text, /2026-11-13T12:00:00/);
   assert.equal(live.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "account:list"), true);
 
