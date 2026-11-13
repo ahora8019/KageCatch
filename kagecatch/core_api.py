@@ -174,7 +174,6 @@ def create_app(
     )
 
     app.state.recent_events = _RECENT_MONITOR_EVENTS
-    app.router.on_shutdown.append(lambda: monitor_logger.removeHandler(monitor_handler))
     # Review persistence is an independent resource from Telegram sessions.
     # Construct the network client during startup, never at module import time.
     app.state.review_store = review_store
