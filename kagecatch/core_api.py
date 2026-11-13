@@ -115,6 +115,7 @@ def create_app(
     review_store=None,
     review_queue=None,
     review_pipeline=None,
+    review_approval_service=None,
     spawn_detector=None,
     character_resolver=None,
 ) -> FastAPI:
@@ -156,6 +157,7 @@ def create_app(
     app.state.review_store = review_store
     app.state.review_queue = review_queue
     app.state.review_pipeline = review_pipeline
+    app.state.review_approval_service = review_approval_service
 
     async def require_core_auth(request: Request) -> None:
         if not secret:
@@ -303,6 +305,75 @@ def create_app(
             "total_catches": 0,
             "system_uptime_seconds": max(0, int(time.monotonic() - started_at_monotonic)),
         }
+
+    @app.get("/v1/reviews/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
+    async def list_manual_reviews(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        queue = app.state.review_queue
+        if queue is None:
+            raise HTTPException(status_code=503, detail="review_queue_not_configured")
+        try:
+            items = await queue.get_pending(user_id=str(telegram_user_id))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="review_queue_unavailable") from exc
+        return {
+            "items": [
+                {
+                    "review_id": item.review_id,
+                    "anime_name": item.anime_name,
+                    "candidates": list(item.candidates),
+                    "expires_at": item.expires_at.isoformat(),
+                    "spawn_context_available": item.spawn_context is not None,
+                }
+                for item in items[:20]
+            ]
+        }
+
+    @app.post("/v1/reviews/{telegram_user_id}/{review_id}/reject", dependencies=[Depends(require_core_auth)])
+    async def reject_manual_review(telegram_user_id: int, review_id: str):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if not re.fullmatch(r"[a-f0-9]{32}", review_id):
+            raise HTTPException(status_code=400, detail="invalid_review_id")
+        queue = app.state.review_queue
+        if queue is None:
+            raise HTTPException(status_code=503, detail="review_queue_not_configured")
+        try:
+            item = await queue.reject(user_id=str(telegram_user_id), review_id=review_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="review_item_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="review_item_already_resolved") from exc
+        return {"status": item.status.value}
+
+    @app.post("/v1/reviews/{telegram_user_id}/{review_id}/approve", dependencies=[Depends(require_core_auth)])
+    async def approve_manual_review(telegram_user_id: int, review_id: str, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if not re.fullmatch(r"[a-f0-9]{32}", review_id):
+            raise HTTPException(status_code=400, detail="invalid_review_id")
+        service = app.state.review_approval_service
+        if service is None:
+            raise HTTPException(status_code=503, detail="review_execution_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        candidate_index = payload.get("candidate_index") if isinstance(payload, dict) else None
+        if isinstance(candidate_index, bool) or not isinstance(candidate_index, int):
+            raise HTTPException(status_code=400, detail="candidate_index_required")
+        try:
+            result = await service.approve_and_execute(
+                user_id=str(telegram_user_id),
+                review_id=review_id,
+                candidate_index=candidate_index,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="review_item_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_review_approval") from exc
+        return {"status": result.status}
 
     @app.get("/v1/accounts/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
     async def account_status(telegram_user_id: int):
