@@ -1503,11 +1503,11 @@ function createFakeManualReviewDatabase() {
           return {
             async run() {
               if (sql.startsWith("INSERT INTO manual_review_items")) {
-                const [review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, quota_user_id] = values;
+                const [review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, spawn_context_json, quota_user_id] = values;
                 if (rows.has(review_id)) throw new Error("duplicate review id");
                 if (quota_user_id && [...rows.values()].filter((row) => row.user_id === quota_user_id && row.status === "pending" && row.expires_at > values[8]).length >= 100) return { meta: { changes: 0 } };
                 rows.set(review_id, {
-                  review_id, user_id, spawn_id, anime_name, candidates_json,
+                  review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json,
                   created_at, expires_at, status: "pending", selected_character: null,
                 });
                 return { meta: { changes: 1 } };
@@ -1934,3 +1934,39 @@ test("English locale also translates target bot information and Catcher navigati
   assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Target bots/.test(button.text)));
   assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Refresh/.test(button.text)));
 });
+
+
+test("durable manual review endpoint persists trusted spawn context per owning review", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const connectionStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = {
+    idFromName: () => "connection-links-v1",
+    get: () => ({ fetch: (input, init) => connectionStore.fetch(new Request(input, init)) }),
+  };
+  const db = createFakeManualReviewDatabase();
+  const secret = "manual-review-core-secret-with-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const context = {
+    source: "senpai_catcher", chat_id: -1001234567890,
+    message_id: 77, media_kind: "photo",
+  };
+  const created = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "create", review_id: "c".repeat(32), user_id: "12345",
+    spawn_id: 77, anime_name: "KonoSuba", candidates: ["Megumin"],
+    spawn_context: context,
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  }, secret), env);
+  assert.equal(created.status, 201);
+
+  const own = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "list", user_id: "12345",
+  }, secret), env);
+  assert.deepEqual((await own.json()).items[0].spawn_context, context);
+
+  const foreign = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "list", user_id: "99999",
+  }, secret), env);
+  assert.deepEqual(await foreign.json(), { items: [] });
+});
+
