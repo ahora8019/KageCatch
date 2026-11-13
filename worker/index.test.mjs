@@ -1503,7 +1503,7 @@ function createFakeManualReviewDatabase() {
           return {
             async run() {
               if (sql.startsWith("INSERT INTO manual_review_items")) {
-                const [review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, quota_user_id] = values;
+                const [review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, quota_user_id, now] = values;
                 if (rows.has(review_id)) throw new Error("duplicate review id");
                 if (quota_user_id && [...rows.values()].filter((row) => row.user_id === quota_user_id && row.status === "pending" && row.expires_at > values[9]).length >= 100) return { meta: { changes: 0 } };
                 rows.set(review_id, {
