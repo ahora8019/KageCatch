@@ -215,22 +215,15 @@ async function telegramApi(env, method, payload = {}) {
 }
 
 export function buildRoleMenu(role = "MEMBER") {
-  const memberRows = [
-    [{ text: "🎯 کنترل Catch", callback_data: "catch:open" }, { text: "🤖 بات‌های مقصد", callback_data: "bots:open" }],
-    [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }, { text: "👤 حساب متصل من", callback_data: "account:list" }],
-    [{ text: "📊 آمار من", callback_data: "stats:open" }, { text: "⚙️ تنظیمات", callback_data: "settings:open" }],
-    [{ text: "🔒 امنیت حساب", callback_data: "security:open" }, { text: "❌ قطع اتصال", callback_data: "account:disconnect" }],
-    [{ text: "❓ راهنما", callback_data: "help:open" }],
-  ];
   if (role === "OWNER") return { inline_keyboard: [
-    [{ text: "📊 نمای کلی", callback_data: "owner:stats" }, { text: "👁️ نظارت کاربران", callback_data: "owner:monitor" }],
-    [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
-    [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
-    [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
-    [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
-    ...memberRows,
+    [{ text: "📊 Overview", callback_data: "owner:stats" }, { text: "👁️ Monitoring", callback_data: "owner:monitor" }],
+    [{ text: "👥 Members", callback_data: "owner:members" }, { text: "🎟️ Invites", callback_data: "owner:invites" }],
+    [{ text: "⚙️ Settings", callback_data: "owner:settings" }],
   ] };
-  return { inline_keyboard: memberRows };
+  return { inline_keyboard: [
+    [{ text: "📊 Overview", callback_data: "overview:open" }, { text: "🎯 Catcher", callback_data: "catch:open" }],
+    [{ text: "⚙️ Settings", callback_data: "settings:open" }, { text: "👤 Account", callback_data: "account:open" }],
+  ] };
 }
 
 export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
@@ -247,15 +240,58 @@ export function resolveRole(userId, ownerTelegramId, storedRole = "DENIED", stat
 }
 const BACK_MENU = { inline_keyboard: [[{ text: "⬅️ منوی اصلی", callback_data: "menu:main" }]] };
 
-export function resolveCallback(data) {
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"]/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+  })[character]);
+}
+
+export function buildDashboardText(userLabel = "Telegram user") {
+  return [
+    "🌸 <b>KAGECATCH | DASHBOARD</b>",
+    "<code>━━━━━━━━━━━━━━━━━━━━</code>",
+    "👤 User: <b>" + escapeHtml(userLabel) + "</b>",
+    "🟢 Control Plane: <b>Online</b>",
+    "⚪ Python Core: <b>Not checked</b>",
+    "🔒 Catch Mode: <b>Locked</b>",
+    "<code>━━━━━━━━━━━━━━━━━━━━</code>",
+    "Select an option:",
+  ].join("\n");
+}
+
+export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBER") {
   switch (data) {
+    case "overview:open":
+      return {
+        text: buildDashboardText(userLabel),
+        parse_mode: "HTML",
+        keyboard: buildRoleMenu(role),
+      };
+    case "account:open":
+      return {
+        text: "👤 <b>ACCOUNT</b>\n\nمدیریت اتصال و امنیت حساب از این بخش انجام می‌شود.",
+        parse_mode: "HTML",
+        keyboard: { inline_keyboard: [
+          [{ text: "🟢 Connect account", callback_data: "account:connect" }],
+          [{ text: "📱 My account", callback_data: "account:list" }],
+          [{ text: "🔒 Security", callback_data: "security:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
+      };
     case "account:connect":
       return {
         text: "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
         keyboard: BACK_MENU,
       };
     case "account:list":
-      return { text: "👤 حساب‌های متصل\n\nبرای اضافه کردن حساب، از گزینهٔ «اتصال حساب» استفاده کن.", keyboard: BACK_MENU };
+      return {
+        text: "👤 حساب‌های متصل\n\nوضعیت نشست فقط پس از بررسی Core نمایش داده می‌شود. برای افزودن حساب از اتصال امن استفاده کن.",
+        keyboard: { inline_keyboard: [
+          [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
+          [{ text: "🔒 امنیت حساب", callback_data: "security:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
+      };
     case "catch:open":
       return {
         text: "🎯 بخش Catch\n\nهنوز آمادهٔ شکار واقعی نیستیم 😅\nداریم بخش تشخیص و گرفتن کاراکترها رو تکمیل می‌کنیم. تا وقتی همه‌چیز تست نشه، چیزی به‌صورت خودکار اجرا نمی‌شه.",
@@ -268,8 +304,13 @@ export function resolveCallback(data) {
       };
     case "settings:open":
       return {
-        text: "⚙️ تنظیمات\n\nبعضی تنظیمات هنوز آماده نیستن. به‌محض اینکه بخش مربوطه کامل بشه، از همین‌جا می‌تونی تغییرشون بدی.",
-        keyboard: BACK_MENU,
+        text: "⚙️ <b>SETTINGS</b>\n\nتنظیمات پیشرفته به‌صورت مرحله‌ای فعال می‌شوند؛ گزینهٔ قفل‌شده هیچ تغییری در حساب ایجاد نمی‌کند.",
+        parse_mode: "HTML",
+        keyboard: { inline_keyboard: [
+          [{ text: "🔒 Security", callback_data: "security:open" }],
+          [{ text: "❓ Help", callback_data: "help:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
       };
     case "stats:open":
       return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: BACK_MENU };
@@ -911,7 +952,15 @@ async function handleOwnerCallback(callback, env) {
     await registryRequest(env, '/invite/revoke', { id: revokeInviteMatch[1] });
     return { text: '🗑️ لینک دعوت لغو شد و دیگه قابل استفاده نیست.', keyboard: { inline_keyboard: [[{ text: '🎟️ مدیریت دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
   }
-  if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
+  if (data === 'owner:settings') return {
+    text: '⚙️ تنظیمات Owner\n\nتغییرات عملیاتی تا اتصال و تأیید Python Core غیرفعال‌اند.',
+    keyboard: { inline_keyboard: [
+      [{ text: '📣 پیام همگانی', callback_data: 'owner:broadcast' }],
+      [{ text: '🛑 توقف اضطراری', callback_data: 'owner:emergency' }],
+      [{ text: '🧩 پنل کاربری', callback_data: 'home:panel' }],
+      ...BACK_MENU.inline_keyboard,
+    ] },
+  };
   if (data === 'owner:broadcast') {
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'begin' });
     return { text: '📣 پیام همگانی\n\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.', keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] } };
@@ -986,9 +1035,9 @@ async function handleCallback(callback, env) {
   } else if (callback.data?.startsWith("owner:")) {
     result = await handleOwnerCallback(callback, env);
   } else {
-    result = resolveCallback(callback.data);
+    result = resolveCallback(callback.data, callback.from.first_name, role);
     if (callback.data === "menu:main") {
-      result = { text: "🌸 خوش آمدی به KageCatch\n\nبرای ادامه یکی از گزینه‌ها را انتخاب کن:", keyboard: buildStartMenu(role) };
+      result = resolveCallback("overview:open", callback.from.first_name, role);
     }
   }
   if (callback.data === 'account:connect') {
@@ -1005,6 +1054,7 @@ async function handleCallback(callback, env) {
     chat_id: chat.id,
     message_id: callback.message.message_id,
     text: result.text,
+    ...(result.parse_mode ? { parse_mode: result.parse_mode } : {}),
     reply_markup: result.keyboard,
   });
 }
