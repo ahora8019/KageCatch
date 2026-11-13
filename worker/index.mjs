@@ -513,7 +513,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       };
     case "account:connect":
       return {
-        text: locale === "en" ? "🟢 Connect account\n\nUse the secure connect button to create your personal sign-in link." : "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
+        text: translate("account.connect", locale) + "\n\n" + translate("account.connect_description", locale),
         keyboard: backMenu(locale),
       };
     case "account:list": {
@@ -567,21 +567,21 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         ] },
       };
     case "stats:open":
-      return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: backMenu(locale) };
+      return { text: translate("stats.title", locale) + "\n\n" + translate("stats.empty", locale), keyboard: backMenu(locale) };
     case "security:open":
       return {
-        text: "🔒 امنیت و نشست‌ها\n\nهیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود. نشست‌های ذخیره‌شده باید رمزنگاری شوند و امکان لغو دسترسی داشته باشند.\n\nحذف پیام فقط بهترین تلاش است و حذف کامل از زیرساخت تلگرام را تضمین نمی‌کند.",
+        text: translate("security.title", locale) + "\n\n" + translate("security.body", locale),
         keyboard: backMenu(locale),
       };
     case "account:disconnect":
       return { text: "❌ حساب متصلی ثبت نشده است.", keyboard: backMenu(locale) };
     case "help:open":
       return {
-        text: "❓ راهنمای کوچیک KageCatch\n\n🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌هایی که پشتیبانی می‌شن\n👤 حساب من — اتصال و مدیریت حسابت\n📊 آمار من — نتیجهٔ Catchها\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
+        text: translate("help.title", locale) + "\n\n" + translate("help.body", locale),
         keyboard: backMenu(locale),
       };
     case "menu:main":
-      return { text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز منو هرچی لازم داری انتخاب کن:", keyboard: buildStartMenu(role, locale) };
+      return { text: translate("menu.welcome", locale) + "\n\n" + translate("menu.choose", locale), keyboard: buildStartMenu(role, locale) };
     default:
       return { text: "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.", keyboard: backMenu(locale), alert: true };
   }
