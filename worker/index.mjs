@@ -137,6 +137,30 @@ async function coreRequest(env, method, path, payload = null) {
   }
 }
 
+async function loadRuntimeStatus(env, telegramUserId) {
+  const unavailable = { core: "unavailable", account: "unknown", catchEnabled: null, executionReady: null };
+  if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return unavailable;
+  const [health, account] = await Promise.all([
+    coreRequest(env, "GET", "/v1/health"),
+    coreRequest(env, "GET", "/v1/accounts/" + telegramUserId),
+  ]);
+  const core = health.status >= 200 && health.status < 300
+    ? (health.data?.status === "ready" ? "ready" : "degraded")
+    : health.status === 503 && health.data?.error === "core_not_configured" ? "not_configured"
+      : health.status === 503 ? "degraded" : "unavailable";
+  const accountStatus = account.status >= 200 && account.status < 300
+    ? account.data?.status : "unknown";
+  const result = { core, account: accountStatus, catchEnabled: null, executionReady: null };
+  if (accountStatus === "connected") {
+    const catcher = await coreRequest(env, "GET", "/v1/accounts/" + telegramUserId + "/catch");
+    if (catcher.status >= 200 && catcher.status < 300) {
+      result.catchEnabled = catcher.data?.enabled === true;
+      result.executionReady = catcher.data?.execution_ready === true;
+    }
+  }
+  return result;
+}
+
 async function miniAppCoreProxy(request, env, action) {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
@@ -246,24 +270,49 @@ function escapeHtml(value) {
   })[character]);
 }
 
-export function buildDashboardText(userLabel = "Telegram user") {
+function runtimeLabels(status = {}) {
+  const core = ({ ready: "Online", degraded: "Degraded", unavailable: "Unavailable", not_configured: "Not configured" })[status.core] || "Not checked";
+  const account = ({ connected: "Connected", authorized: "Authorized", not_connected: "Not connected" })[status.account] || "Unknown";
+  const catchMode = status.catchEnabled === true ? "Enabled" : status.catchEnabled === false ? "Disabled" : "Unknown";
+  const execution = status.executionReady === true ? "Ready" : status.executionReady === false ? "Not ready" : "Unknown";
+  return { core, account, catchMode, execution };
+}
+
+export function buildDashboardText(userLabel = "Telegram user", status = {}) {
+  const labels = runtimeLabels(status);
   return [
     "🌸 <b>KAGECATCH | DASHBOARD</b>",
     "<code>━━━━━━━━━━━━━━━━━━━━</code>",
     "👤 User: <b>" + escapeHtml(userLabel) + "</b>",
     "🟢 Control Plane: <b>Online</b>",
-    "⚪ Python Core: <b>Not checked</b>",
-    "🔒 Catch Mode: <b>Locked</b>",
+    "⚙️ Python Core: <b>" + labels.core + "</b>",
+    "🔐 Session: <b>" + labels.account + "</b>",
+    "🎯 Catch Mode: <b>" + labels.catchMode + "</b>",
     "<code>━━━━━━━━━━━━━━━━━━━━</code>",
     "Select an option:",
   ].join("\n");
 }
 
-export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBER") {
+export function buildCatcherText(status = {}) {
+  const labels = runtimeLabels(status);
+  return [
+    "🎯 <b>KAGECATCH | CATCHER</b>",
+    "<code>━━━━━━━━━━━━━━━━━━━━</code>",
+    "🔐 Account: <b>" + labels.account + "</b>",
+    "🎯 Catch Mode: <b>" + labels.catchMode + "</b>",
+    "⚙️ Execution: <b>" + labels.execution + "</b>",
+    "<code>━━━━━━━━━━━━━━━━━━━━</code>",
+    status.executionReady === true
+      ? "Execution pipeline is ready. Catch remains under your explicit control."
+      : "Live execution is not ready. No catch action was started.",
+  ].join("\n");
+}
+
+export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBER", status = {}) {
   switch (data) {
     case "overview:open":
       return {
-        text: buildDashboardText(userLabel),
+        text: buildDashboardText(userLabel, status),
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
           [{ text: "📈 Statistics", callback_data: "stats:open" }],
@@ -289,17 +338,24 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       };
     case "account:list":
       return {
-        text: "👤 حساب‌های متصل\n\nوضعیت نشست فقط پس از بررسی Core نمایش داده می‌شود. برای افزودن حساب، از گزینهٔ «اتصال حساب» استفاده کن.",
+        text: "👤 <b>ACCOUNT STATUS</b>\n\n🔐 Session: <b>" + runtimeLabels(status).account + "</b>\n\nبرای افزودن حساب از اتصال امن استفاده کن.",
+        parse_mode: "HTML",
         keyboard: { inline_keyboard: [
           [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }],
+          [{ text: "🔄 Refresh", callback_data: "account:list" }],
           [{ text: "🔒 امنیت حساب", callback_data: "security:open" }],
           ...BACK_MENU.inline_keyboard,
         ] },
       };
     case "catch:open":
       return {
-        text: "🎯 بخش Catch\n\nهنوز آمادهٔ شکار واقعی نیستیم 😅\nداریم بخش تشخیص و گرفتن کاراکترها رو تکمیل می‌کنیم. تا وقتی همه‌چیز تست نشه، چیزی به‌صورت خودکار اجرا نمی‌شه.",
-        keyboard: { inline_keyboard: [[{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }], [{ text: "⚙️ تنظیمات Catch", callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] },
+        text: buildCatcherText(status),
+        parse_mode: "HTML",
+        keyboard: { inline_keyboard: [
+          [{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }],
+          [{ text: "🔄 Refresh", callback_data: "catch:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
       };
     case "bots:open":
       return {
@@ -1036,10 +1092,12 @@ async function handleCallback(callback, env) {
   } else if (callback.data?.startsWith("owner:")) {
     result = await handleOwnerCallback(callback, env);
   } else {
-    result = resolveCallback(callback.data, callback.from.first_name, role);
-    if (callback.data === "menu:main") {
-      result = resolveCallback("overview:open", callback.from.first_name, role);
-    }
+    const needsRuntimeStatus = ["overview:open", "catch:open", "account:list"].includes(callback.data) || callback.data === "menu:main";
+    const runtimeStatus = needsRuntimeStatus
+      ? await loadRuntimeStatus(env, callback.from.id)
+      : {};
+    const resolvedData = callback.data === "menu:main" ? "overview:open" : callback.data;
+    result = resolveCallback(resolvedData, callback.from.first_name, role, runtimeStatus);
   }
   if (callback.data === 'account:connect') {
     const link=await createConnectionLink(env,callback.from.id);
@@ -1177,7 +1235,7 @@ async function handleWebhook(request, env) {
         const reply = role === 'BLOCKED' || role === 'DENIED'
           ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
           : {
-              text: buildDashboardText(message.from.first_name),
+              text: buildDashboardText(message.from.first_name, await loadRuntimeStatus(env, message.from.id)),
               parse_mode: "HTML",
               reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role),
             };
