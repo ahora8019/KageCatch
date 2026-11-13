@@ -1062,16 +1062,16 @@ async function handleOwnerCallback(callback, env) {
       ' — ' + event.user + ' — ' + activityLabel(event.action)
     ).join('\n') || 'هنوز رویدادی ثبت نشده است.';
     return {
-      text: '📊 SYSTEM LOGS\\n\\n' + history,
+      text: '📊 SYSTEM LOGS\n\n' + history,
       keyboard: { inline_keyboard: [[{ text: '👑 Owner HQ', callback_data: 'owner:stats' }], ...BACK_MENU.inline_keyboard] },
     };
   }
   if (data === 'owner:catch') return {
-    text: '🎯 CATCH ENGINE\\n\\n🔴 Live execution: Disabled\\nVerified catches: 0\\n\\nCatch execution and persistent verified-result tracking are not connected yet. No live action was started.',
+    text: '🎯 CATCH ENGINE\n\n🔴 Live execution: Disabled\nVerified catches: 0\n\nCatch execution and persistent verified-result tracking are not connected yet. No live action was started.',
     keyboard: { inline_keyboard: [[{ text: '👑 Owner HQ', callback_data: 'owner:stats' }], ...BACK_MENU.inline_keyboard] },
   };
   if (data === 'owner:global-settings') return {
-    text: '⚙️ GLOBAL SETTINGS\\n\\nRead-only preview. Global configuration changes are not enabled in this release.',
+    text: '⚙️ GLOBAL SETTINGS\n\nRead-only preview. Global configuration changes are not enabled in this release.',
     keyboard: { inline_keyboard: [[{ text: '👑 Owner HQ', callback_data: 'owner:stats' }], ...BACK_MENU.inline_keyboard] },
   };
   if (data === 'owner:monitor') {
