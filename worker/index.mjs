@@ -1802,6 +1802,99 @@ async function internalManualReviewStore(request, env) {
 }
 
 
+async function internalDailyQuotaStore(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) return json({ error: "quota_auth_not_configured" }, 503);
+  if (!env.KAGECATCH_DB || !env.CONNECT_LINKS) return json({ error: "quota_store_not_configured" }, 503);
+
+  let rawBody;
+  try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
+  if (rawBody.byteLength > 8192) return json({ error: "request_too_large" }, 413);
+  const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
+  const nonce = request.headers.get("X-KageCatch-Nonce") || "";
+  const supplied = request.headers.get("X-KageCatch-Signature") || "";
+  if (!/^\\d{10,12}$/.test(timestampRaw) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(supplied)) return json({ error: "invalid_auth_headers" }, 401);
+  const timestamp = Number(timestampRaw);
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 60) return json({ error: "request_expired" }, 401);
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signingText = [timestampRaw, nonce, request.method, new URL(request.url).pathname, bodyHash].join("\\n");
+  const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, new TextEncoder().encode(signingText)));
+  const expected = Array.from(expectedBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let difference = expected.length ^ supplied.length;
+  for (let index = 0; index < expected.length; index += 1) difference |= expected.charCodeAt(index) ^ supplied.charCodeAt(index);
+  if (difference !== 0) return json({ error: "invalid_signature" }, 401);
+
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const claim = await stub.fetch("https://connect-links.internal/claim-nonce", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nonce, expiresAt: Date.now() + 120000 }),
+  });
+  if (claim.status === 409) return json({ error: "request_replayed" }, 409);
+  if (!claim.ok) return json({ error: "replay_guard_unavailable" }, 503);
+
+  let payload;
+  try { payload = JSON.parse(new TextDecoder().decode(rawBody)); }
+  catch { return json({ error: "invalid_request" }, 400); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return json({ error: "invalid_request" }, 400);
+  const { action, request_id: requestId } = payload;
+  if (!["reserve", "confirm", "fail", "status"].includes(action)
+    || typeof requestId !== "string" || !/^[a-f0-9]{32}$/.test(requestId)) return json({ error: "invalid_quota_request" }, 400);
+
+  try {
+    if (action === "reserve") {
+      const { owner_id: ownerId, quota_date: quotaDate, chat_id: chatId, spawn_message_id: spawnMessageId } = payload;
+      if (typeof ownerId !== "string" || !/^[1-9][0-9]{0,15}$/.test(ownerId) || Number(ownerId) > (2 ** 52 - 1)
+        || typeof quotaDate !== "string" || !/^\\d{4}-\\d{2}-\\d{2}$/.test(quotaDate)
+        || !Number.isSafeInteger(chatId) || !Number.isSafeInteger(spawnMessageId) || spawnMessageId <= 0
+        || new Date(quotaDate + "T00:00:00Z").toISOString().slice(0, 10) !== quotaDate) return json({ error: "invalid_reservation" }, 400);
+
+      await env.KAGECATCH_DB.prepare(
+        "INSERT OR IGNORE INTO daily_quota_limits (owner_id, quota_date, quota_limit) VALUES (?, ?, 20)"
+      ).bind(ownerId, quotaDate).run();
+
+      const inserted = await env.KAGECATCH_DB.prepare(
+        "INSERT INTO daily_quotas (request_id, owner_id, quota_date, status, consumes_quota, chat_id, spawn_message_id, created_at, updated_at) SELECT ?, ?, ?, 'reserved', 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP WHERE EXISTS (SELECT 1 FROM daily_quota_limits WHERE owner_id = ? AND quota_date = ?) AND (SELECT COUNT(*) FROM daily_quotas WHERE owner_id = ? AND quota_date = ? AND (status = 'reserved' OR consumes_quota = 1)) < (SELECT quota_limit FROM daily_quota_limits WHERE owner_id = ? AND quota_date = ?) AND NOT EXISTS (SELECT 1 FROM daily_quotas WHERE request_id = ?)"
+      ).bind(requestId, ownerId, quotaDate, chatId, spawnMessageId, ownerId, quotaDate, ownerId, quotaDate, ownerId, quotaDate, requestId).run();
+      if (Number(inserted?.meta?.changes || 0) === 1) return json({ status: "reserved", request_id: requestId }, 201);
+      const existing = await env.KAGECATCH_DB.prepare(
+        "SELECT request_id, owner_id, quota_date, status, consumes_quota FROM daily_quotas WHERE request_id = ?"
+      ).bind(requestId).first();
+      if (existing && existing.owner_id === ownerId && existing.quota_date === quotaDate) {
+        return json({ status: existing.status, request_id: requestId, existing: true });
+      }
+      return json({ error: "quota_exhausted" }, 409);
+    }
+
+    if (action === "confirm") {
+      const result = await env.KAGECATCH_DB.prepare(
+        "UPDATE daily_quotas SET status = 'confirmed', consumes_quota = 1, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'reserved'"
+      ).bind(requestId).run();
+      if (Number(result?.meta?.changes || 0) !== 1) return json({ error: "quota_transition_conflict" }, 409);
+      return json({ status: "confirmed", request_id: requestId });
+    }
+
+    if (action === "fail") {
+      if (typeof payload.consumes_quota !== "boolean") return json({ error: "consumes_quota_required" }, 400);
+      const result = await env.KAGECATCH_DB.prepare(
+        "UPDATE daily_quotas SET status = 'failed', consumes_quota = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'reserved'"
+      ).bind(payload.consumes_quota ? 1 : 0, requestId).run();
+      if (Number(result?.meta?.changes || 0) !== 1) return json({ error: "quota_transition_conflict" }, 409);
+      return json({ status: "failed", request_id: requestId, consumes_quota: payload.consumes_quota });
+    }
+
+    const row = await env.KAGECATCH_DB.prepare(
+      "SELECT request_id, owner_id, quota_date, status, consumes_quota FROM daily_quotas WHERE request_id = ?"
+    ).bind(requestId).first();
+    if (!row) return json({ error: "quota_request_not_found" }, 404);
+    return json({ request_id: row.request_id, owner_id: row.owner_id, quota_date: row.quota_date, status: row.status, consumes_quota: Number(row.consumes_quota) === 1 });
+  } catch {
+    return json({ error: "quota_store_unavailable" }, 503);
+  }
+}
+
+
 async function internalSessionStore(request, env) {
   const pathname = new URL(request.url).pathname;
   const listUsers = pathname === "/internal/session-store/users";
@@ -1960,7 +2053,7 @@ export default {
         (method, payload) => telegramApi(env, method, payload),
       );
     }
-    if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
+    if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);\n    if (url.pathname === "/internal/daily-quota") return internalDailyQuotaStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
