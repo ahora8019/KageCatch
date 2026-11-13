@@ -48,7 +48,6 @@ class InMemoryNonceStore:
 def _configuration_presence(core_secret: str | None = None) -> dict[str, bool]:
     """Return safe configuration presence flags without exposing secret values."""
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
-    started_at_monotonic = time.monotonic()
     return {
         "core_auth_configured": bool(secret),
         "telegram_api_id_configured": bool(os.getenv("KAGECATCH_API_ID")),
@@ -117,6 +116,7 @@ def create_app(
     character_resolver=None,
 ) -> FastAPI:
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
+    started_at_monotonic = time.monotonic()
     logging.getLogger("kagecatch.core").info("Core configuration presence: %s", _configuration_presence(secret))
     if secret and len(secret.encode("utf-8")) < 32:
         raise ValueError("KAGECATCH_CORE_SECRET must contain at least 32 bytes")
