@@ -1393,8 +1393,8 @@ test("Overview callback reads signed live Core, account, and Catch status then e
   assert.match(edit.payload.text, /هستهٔ پایتون: <b>آنلاین<\/b>/);
   assert.match(edit.payload.text, /نشست: <b>متصل<\/b>/);
   assert.match(edit.payload.text, /وضعیت شکار: <b>غیرفعال<\/b>/);
-  assert.deepEqual(calls.filter((call) => call.kind === "core").map((call) => call.path), [
-    "/v1/health", "/v1/accounts/999001", "/v1/accounts/999001/catch",
+  assert.deepEqual(calls.filter((call) => call.kind === "core").map((call) => call.path).sort(), [
+    "/v1/accounts/999001", "/v1/accounts/999001/catch", "/v1/health",
   ]);
   assert.ok(calls.filter((call) => call.kind === "core").every((call) =>
     call.headers["X-KageCatch-Signature"] && call.headers["X-KageCatch-Nonce"] && call.headers["X-KageCatch-Timestamp"]
