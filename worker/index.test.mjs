@@ -239,7 +239,7 @@ test("Owner Live Monitor fetches signed Core monitoring data and edits the exist
   assert.ok(payload.text.includes("KAGECATCH | LIVE MONITOR"));
   assert.ok(payload.text.includes("Core: Online"));
   assert.match(payload.text, /Queue: 0 pending/);
-  assert.match(payload.text, /Active Workers: 2/);
+  assert.match(payload.text, /Core process count: 2/);
   assert.match(payload.text, /D1: Connected/);
   assert.match(payload.text, /Redis: Not configured/);
   assert.match(payload.text, /Session reconnected/);
