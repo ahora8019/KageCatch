@@ -441,7 +441,7 @@ function escapeHtml(value) {
 
 function runtimeLabels(status = {}, language = "fa") {
   const locale = normalizeLanguage(language);
-  const core = translate("status." + (status.core || "not_checked"), locale);
+  const core = translate(status.core === "ready" ? "status.online" : "status." + (status.core || "not_checked"), locale);
   const account = translate("status." + (status.account || "unknown"), locale);
   const catchMode = translate(status.catchEnabled === true ? "status.enabled" : status.catchEnabled === false ? "status.disabled" : "status.unknown", locale);
   const execution = translate(status.executionReady === true ? "status.ready" : status.executionReady === false ? "status.not_ready" : "status.unknown", locale);
