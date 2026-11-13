@@ -1632,10 +1632,17 @@ async function internalManualReviewStore(request, env) {
         || candidates.some((name) => typeof name !== "string" || !name.trim() || name.length > 100)
         || typeof created_at !== "string" || typeof expires_at !== "string"
         || !Number.isFinite(Date.parse(created_at)) || !Number.isFinite(Date.parse(expires_at))
-        || Date.parse(expires_at) <= Date.parse(created_at)) return json({ error: "invalid_review_item" }, 400);
+        || Date.parse(expires_at) <= Date.parse(created_at)
+        || (spawn_context !== undefined && spawn_context !== null && (
+          typeof spawn_context !== "object" || Array.isArray(spawn_context)
+          || typeof spawn_context.source !== "string" || !/^[A-Za-z0-9_.-]{1,80}$/.test(spawn_context.source)
+          || !Number.isSafeInteger(spawn_context.chat_id)
+          || !Number.isSafeInteger(spawn_context.message_id) || spawn_context.message_id !== spawn_id
+          || !["photo", "video", "document", "animation", "audio"].includes(spawn_context.media_kind)
+        ))) return json({ error: "invalid_review_item" }, 400);
       const inserted = await env.KAGECATCH_DB.prepare(
         "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
-      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
+      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), spawn_context ? JSON.stringify(spawn_context) : null, new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
       if (Number(inserted?.meta?.changes || 0) !== 1) return json({ error: "pending_queue_limit_reached" }, 429);
       return json({ status: "created" }, 201);
     }
