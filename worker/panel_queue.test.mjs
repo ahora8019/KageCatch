@@ -359,7 +359,7 @@ test("manual review list edits the existing group panel with owner-scoped candid
   env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
   let requestedUrl;
   env.CORE_API_FETCH = async (url, init) => {
-    requestedUrl = { url, method: init.method };
+    requestedUrl = { url, method: init.method, body: init.body };
     return Response.json({ items: [{
       review_id: "b".repeat(32), anime_name: "KonoSuba",
       candidates: ["Megumin", "Aqua"], expires_at: "2026-11-13T17:00:00+00:00",
@@ -378,6 +378,7 @@ test("manual review list edits the existing group panel with owner-scoped candid
   }, env, async (_env, method, payload) => calls.push({ method, payload }));
   assert.equal(requestedUrl.url, "https://core.example/v1/reviews/12345");
   assert.equal(requestedUrl.method, "GET");
+  assert.equal(requestedUrl.body, undefined, "GET requests must not carry a body");
   const edit = calls.find((call) => call.method === "editMessageText");
   assert.match(edit.payload.text, /KonoSuba/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kr:" + "b".repeat(32) + ":a:0");
