@@ -39,10 +39,55 @@ class SpawnDetector:
             confidence = metadata.character_confidence if character_name else 0.0
             if not isinstance(confidence, (int, float)) or not 0.0 <= confidence <= 1.0:
                 confidence = 0.0
+            target_name = getattr(adapter, "target_name", type(adapter).__name__)
+            chat_id = getattr(event, "chat_id", None)
+            if chat_id is None:
+                chat_id = getattr(message, "chat_id", None)
+            media_kind = self._media_kind(message)
+            spawn_context = None
+            if (
+                isinstance(target_name, str) and target_name
+                and isinstance(chat_id, int) and not isinstance(chat_id, bool)
+                and isinstance(media_kind, str)
+            ):
+                try:
+                    from .models.spawn import SpawnContext
+                    spawn_context = SpawnContext(
+                        source=target_name,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        media_kind=media_kind,
+                    )
+                except ValueError:
+                    spawn_context = None
             return SpawnEvent(
                 message_id=message_id, character_name=character_name,
                 confidence_score=float(confidence), metadata=metadata,
-                target_name=getattr(adapter, "target_name", type(adapter).__name__),
-                timestamp=timestamp,
+                target_name=target_name, timestamp=timestamp,
+                spawn_context=spawn_context,
             )
+        return None
+
+    @staticmethod
+    def _media_kind(message: Any) -> str | None:
+        if getattr(message, "photo", None) is not None:
+            return "photo"
+        document = getattr(message, "document", None)
+        media = getattr(message, "media", None)
+        if document is None and media is not None:
+            document = getattr(media, "document", None)
+            media_name = type(media).__name__.lower()
+            if "photo" in media_name:
+                return "photo"
+        if document is None:
+            return None
+        attributes = getattr(document, "attributes", ()) or ()
+        names = {type(attribute).__name__.lower() for attribute in attributes}
+        if any("video" in name for name in names):
+            return "video"
+        if any("animated" in name for name in names):
+            return "animation"
+        if any("audio" in name for name in names):
+            return "audio"
+        return "document"
         return None
