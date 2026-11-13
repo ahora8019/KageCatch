@@ -22,6 +22,31 @@ from typing import Protocol
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+# Process-local, bounded event stream. Only explicitly emitted monitor events are
+# retained; arbitrary application logs (which may contain identifiers) are not.
+_RECENT_MONITOR_EVENTS = deque(maxlen=20)
+
+
+class _MonitorEventHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            message = record.getMessage()
+            _RECENT_MONITOR_EVENTS.append({
+                "timestamp": int(record.created),
+                "level": record.levelname if record.levelname in {"DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"} else "INFO",
+                "message": str(message)[:240],
+            })
+        except Exception:
+            self.handleError(record)
+
+
+_monitor_logger = logging.getLogger("kagecatch.monitor")
+_monitor_logger.setLevel(logging.INFO)
+_monitor_logger.propagate = False
+_monitor_logger.addHandler(_MonitorEventHandler())
+_monitor_logger.info("Core monitoring initialized")
+
+
 
 class NonceStore(Protocol):
     async def claim(self, nonce: str, expires_at: float) -> bool: ...
@@ -148,28 +173,7 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # Bounded, process-local view of Core log events for Owner monitoring.
-    recent_events = deque(maxlen=20)
-
-    class _MonitorEventHandler(logging.Handler):
-        def emit(self, record):
-            try:
-                message = record.getMessage()
-                recent_events.append({
-                    "timestamp": int(record.created),
-                    "level": record.levelname if record.levelname in {"DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"} else "INFO",
-                    "message": str(message)[:240],
-                })
-            except Exception:
-                self.handleError(record)
-
-    monitor_logger = logging.getLogger("kagecatch.monitor")
-    monitor_handler = _MonitorEventHandler()
-    monitor_logger.setLevel(logging.INFO)
-    monitor_logger.propagate = False
-    monitor_logger.addHandler(monitor_handler)
-    monitor_logger.info("Core monitoring initialized")
-    app.state.recent_events = recent_events
+    app.state.recent_events = _RECENT_MONITOR_EVENTS
     app.router.on_shutdown.append(lambda: monitor_logger.removeHandler(monitor_handler))
     # Review persistence is an independent resource from Telegram sessions.
     # Construct the network client during startup, never at module import time.
@@ -298,7 +302,7 @@ def create_app(
             "redis_status": "not_configured",
             # One active Core process; this is not the number of Telegram sessions.
             "active_workers": 1,
-            "recent_events": list(reversed(recent_events))[:10],
+            "recent_events": list(reversed(_RECENT_MONITOR_EVENTS))[:10],
         }
 
     @app.get("/v1/owner/stats", dependencies=[Depends(require_core_auth)])
