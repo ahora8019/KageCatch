@@ -236,8 +236,8 @@ test("Owner Live Monitor fetches signed Core monitoring data and edits the exist
   const edit = calls.find(call => call.url.endsWith("/editMessageText"));
   assert.ok(edit);
   const payload = JSON.parse(edit.init.body);
-  assert.match(payload.text, /KAGECATCH \\| LIVE MONITOR/);
-  assert.match(payload.text, /Core: <b>Online<\\/b>/);
+  assert.ok(payload.text.includes("KAGECATCH | LIVE MONITOR"));
+  assert.ok(payload.text.includes("Core: Online"));
   assert.match(payload.text, /Queue: 0 pending/);
   assert.match(payload.text, /Active Workers: 2/);
   assert.match(payload.text, /D1: Connected/);
