@@ -6,9 +6,11 @@ were previously authorized and stored through SessionManager.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Callable, Protocol
 
 from .session_manager import SessionManager
+from .monitoring import emit_monitor_event
 
 
 class RuntimeClient(Protocol):
@@ -63,7 +65,9 @@ class SessionRuntime:
                     raise PermissionError("stored Telegram session is no longer authorized")
                 if self._handler_registrar is not None:
                     await self._handler_registrar(client, user_id)
-            except Exception:
+            except Exception as exc:
+                if type(exc).__name__ == "FloodWaitError":
+                    emit_monitor_event("flood_wait", level=logging.WARNING)
                 try:
                     await client.disconnect()
                 except Exception:
@@ -71,6 +75,7 @@ class SessionRuntime:
                 raise
 
             self._clients[user_id] = client
+            emit_monitor_event("session_reconnected")
             return client
 
     async def restore_saved_sessions(self) -> dict[str, int]:
@@ -107,6 +112,7 @@ class SessionRuntime:
             client = self._clients.pop(user_id, None)
             if client is not None:
                 await client.disconnect()
+                emit_monitor_event("session_disconnected")
 
     async def revoke_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
@@ -115,6 +121,7 @@ class SessionRuntime:
             try:
                 if client is not None:
                     await client.disconnect()
+                    emit_monitor_event("session_disconnected")
             finally:
                 await self._session_manager.revoke_session(user_id)
 

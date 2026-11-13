@@ -1,7 +1,7 @@
 import "./panel_queue.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, buildCatcherText, buildOwnerDashboard, buildOwnerMonitor, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
@@ -16,21 +16,13 @@ test("panel explains login requirements and never leaves the connect button sile
   assert.match(html, /main\{padding-bottom:124px\}/);
 });
 
-test("main menu is inline-first and exposes the agreed account controls", () => {
+test("main menu is a compact native dashboard with four top-level sections", () => {
   const menu = buildMainMenu();
-  const callbacks = menu.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.deepEqual(callbacks, [
-    "catch:open",
-    "bots:open",
-    "account:connect",
-    "account:list",
-    "stats:open",
-    "settings:open",
-    "security:open",
-    "account:disconnect",
-    "help:open",
-  ]);
-  assert.equal(menu.inline_keyboard.flat().some((button) => button.url), false);
+  const buttons = menu.inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
+  assert.ok(buttons.length <= 5);
+  assert.equal(buttons.some((button) => button.url || button.web_app), false);
 });
 
 test("connect callback explains the standalone account link without exposing a chat credential prompt", () => {
@@ -40,37 +32,230 @@ test("connect callback explains the standalone account link without exposing a c
   assert.doesNotMatch(result.text, /پنل|کد ورود را بفرست|رمز دومرحله‌ای را وارد کن/);
 });
 
+test("account details render only masked identity data and hide refresh when Core is offline", () => {
+  const live = resolveCallback("account:list", "Member", "MEMBER", {
+    core: "ready",
+    account: "connected",
+    accountInfo: {
+      sessionHealth: "valid",
+      phoneMasked: "+9891******67",
+      lastActive: "2026-11-13T12:00:00+00:00",
+    },
+  });
+  assert.match(live.text, /سلامت نشست: <b>معتبر<\/b>/);
+  assert.match(live.text, /\+9891\*{6}67/);
+  assert.match(live.text, /2026-11-13T12:00:00/);
+  assert.equal(live.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "account:list"), true);
+
+  const offline = resolveCallback("account:list", "Member", "MEMBER", {
+    core: "unavailable",
+    account: "unknown",
+  });
+  assert.match(offline.text, /هستهٔ اصلی آفلاین است/);
+  assert.equal(offline.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "account:list"), false);
+});
+
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /گزینهٔ «اتصال حساب»/);
+  assert.match(resolveCallback("account:list").text, /نشست: <b>نامشخص<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
-  assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
+  assert.match(resolveCallback("account:disconnect").text, /متصل نیست/);
 });
 
 test("unknown callback is rejected safely", () => {
   assert.equal(resolveCallback("account:unknown").alert, true);
 });
 
-test("/start opens the native member dashboard directly", () => {
+test("overview, catcher, settings, and account sections each have an inline submenu", () => {
+  for (const callback of ["overview:open", "catch:open", "settings:open", "account:open"]) {
+    const result = resolveCallback(callback);
+    assert.equal(typeof result.text, "string");
+    assert.ok(result.keyboard?.inline_keyboard?.length > 0);
+  }
+});
+
+test("dashboard uses HTML safely and escapes Telegram-provided display names", () => {
+  const text = buildDashboardText('<b>Injected</b> & "unsafe"');
+  assert.match(text, /&lt;b&gt;Injected&lt;\/b&gt; &amp; &quot;unsafe&quot;/);
+  assert.match(text, /<pre>|<code>/);
+  assert.doesNotMatch(text, /<b>Injected<\/b>/);
+  assert.equal(resolveCallback("overview:open", "Ahora").parse_mode, "HTML");
+});
+  
+test("dashboard reflects verified Core, account, and Catch state without optimistic defaults", () => {
+  const live = buildDashboardText("Ahora", { core: "ready", account: "connected", catchEnabled: true });
+  assert.match(live, /هستهٔ پایتون: <b>آنلاین<\/b>/);
+  assert.match(live, /نشست: <b>متصل<\/b>/);
+  assert.match(live, /وضعیت شکار: <b>فعال<\/b>/);
+  const unavailable = buildDashboardText("Ahora", { core: "unavailable", account: "unknown", catchEnabled: null });
+  assert.match(unavailable, /هستهٔ پایتون: <b>در دسترس نیست<\/b>/);
+  assert.match(unavailable, /نشست: <b>نامشخص<\/b>/);
+  assert.match(unavailable, /وضعیت شکار: <b>نامشخص<\/b>/);
+});
+
+test("catcher submenu reports real execution readiness and never enables Catch by display", () => {
+  const live = buildCatcherText({ account: "connected", catchEnabled: false, executionReady: true });
+  assert.match(live, /وضعیت شکار: <b>غیرفعال<\/b>/);
+  assert.match(live, /اجرا: <b>آماده<\/b>/);
+  const offline = buildCatcherText({ account: "not_connected", catchEnabled: null, executionReady: null });
+  assert.match(offline, /حساب: <b>متصل نیست<\/b>/);
+  assert.match(offline, /اجرا: <b>نامشخص<\/b>/);
+});
+
+
+test("/start opens the compact native member dashboard directly", () => {
   const start = commandReply("/start");
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("account:connect"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
 });
 
-test("/panel opens the member feature menu directly as an explicit choice", () => {
+test("/panel opens the same compact native dashboard as /start", () => {
   const panel = commandReply("/panel");
   const callbacks = panel.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("account:connect"));
-  assert.ok(callbacks.includes("account:list"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
 });
 
-test("owner start menu combines owner controls with the native member dashboard", () => {
-  const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("owner:stats"));
-  assert.ok(callbacks.includes("owner:members"));
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
+test("owner start menu is compact and keeps owner-only controls", () => {
+  const buttons = buildStartMenu("OWNER").inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.deepEqual(callbacks, ["owner:stats", "owner:monitor", "owner:members", "owner:invites", "owner:settings"]);
+  assert.ok(buttons.length <= 5);
+});
+
+test("Owner HQ formats real statistics, has the requested four-row keyboard, and hides Refresh offline", () => {
+  const live = buildOwnerDashboard({
+    available: true,
+    totalUsers: 10,
+    activeSessions: 8,
+    totalCatches: 1245,
+    uptime: 475200,
+  });
+  assert.match(live.text, /<pre>/);
+  assert.match(live.text, /Total Users: 10/);
+  assert.match(live.text, /Active Sessions: 8/);
+  assert.match(live.text, /Total Catches: 1,245/);
+  assert.match(live.text, /System Uptime: 5d 12h/);
+  assert.equal(live.keyboard.inline_keyboard.length, 5);
+  assert.deepEqual(live.keyboard.inline_keyboard.map(row => row.map(button => button.callback_data)), [
+    ["owner:members", "owner:logs"],
+    ["owner:catch", "owner:global-settings"],
+    ["owner:stats:refresh"],
+    ["owner:monitor"],
+    ["home:panel"],
+  ]);
+
+  const offline = buildOwnerDashboard({ available: false });
+  assert.match(offline.text, /Core Offline/);
+  assert.equal(offline.keyboard.inline_keyboard.length, 4);
+  assert.equal(offline.keyboard.inline_keyboard.flat().some(button => button.callback_data === "owner:stats:refresh"), false);
+});
+
+test("Owner HQ callback fetches HMAC Core stats and edits the existing Telegram message", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 999001, ownerTelegramId: "999001" });
+  await post("/register", { telegramUserId: 500002, ownerTelegramId: "999001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding,
+    OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CORE_API_URL: "https://core.example",
+    CORE_API_SECRET: "a".repeat(40),
+    FETCH: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/v1/owner/stats")) {
+        return new Response(JSON.stringify({
+          total_users: 1, active_sessions: 8, total_catches: 1245, system_uptime_seconds: 475200,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 900004, callback_query: {
+      id: "owner-stats", data: "owner:stats", from: { id: 999001 },
+      message: { message_id: 77, chat: { id: 999001, type: "private" } },
+    } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const coreCall = calls.find(call => call.url.endsWith("/v1/owner/stats"));
+  assert.equal(coreCall.init.method, "GET");
+  assert.ok(coreCall.init.headers["X-KageCatch-Signature"]);
+  const edit = calls.find(call => call.url.endsWith("/editMessageText"));
+  assert.ok(edit);
+  const payload = JSON.parse(edit.init.body);
+  assert.match(payload.text, /Total Users: 1/);
+  assert.match(payload.text, /Active Sessions: 8/);
+  assert.match(payload.text, /Total Catches: 1,245/);
+  assert.match(payload.text, /System Uptime: 5d 12h/);
+  assert.equal(payload.message_id, 77);
+  assert.equal(payload.reply_markup.inline_keyboard[2][0].callback_data, "owner:stats:refresh");
+});
+
+test("Owner Live Monitor fetches signed Core monitoring data and edits the existing Telegram message", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 999001, ownerTelegramId: "999001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding, KAGECATCH_DB: { prepare: () => ({ first: async () => ({ pending: 0 }) }) }, OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CORE_API_URL: "https://core.example", CORE_API_SECRET: "a".repeat(40),
+    FETCH: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/v1/owner/monitoring")) return new Response(JSON.stringify({
+        core_status: "online", redis_status: "not_configured", active_workers: 2,
+        recent_events: [{ timestamp: 1699999999, level: "INFO", message: "Session reconnected" }],
+      }), { status: 200 });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 900005, callback_query: {
+      id: "owner-monitor", data: "owner:monitor", from: { id: 999001 },
+      message: { message_id: 78, chat: { id: 999001, type: "private" } },
+    } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const coreCall = calls.find(call => call.url.endsWith("/v1/owner/monitoring"));
+  assert.equal(coreCall.init.method, "GET");
+  assert.ok(coreCall.init.headers["X-KageCatch-Signature"]);
+  const edit = calls.find(call => call.url.endsWith("/editMessageText"));
+  assert.ok(edit);
+  const payload = JSON.parse(edit.init.body);
+  assert.ok(payload.text.includes("KAGECATCH | LIVE MONITOR"));
+  assert.ok(payload.text.includes("Core: Online"));
+  assert.match(payload.text, /Queue: 0 pending/);
+  assert.match(payload.text, /Core process count: 2/);
+  assert.match(payload.text, /D1: Connected/);
+  assert.match(payload.text, /Redis: Not configured/);
+  assert.match(payload.text, /Session reconnected/);
+  assert.equal(payload.message_id, 78);
+  assert.deepEqual(payload.reply_markup.inline_keyboard.map(row => row[0].callback_data), [
+    "owner:monitor:refresh", "owner:stats",
+  ]);
+});
+
+test("Owner Live Monitor renders Core Offline safely when the Core endpoint fails", async () => {
+  const offline = buildOwnerMonitor({ available: false });
+  assert.match(offline.text, /Core Offline/);
+  assert.equal(offline.keyboard.inline_keyboard.length, 2);
+  assert.deepEqual(offline.keyboard.inline_keyboard.map(row => row[0].callback_data), [
+    "owner:monitor:refresh", "owner:stats",
+  ]);
 });
 
 test("status and help remain available as slash-command shortcuts", () => {
@@ -318,21 +503,17 @@ test("blocked users cannot enter even if their stored role says MEMBER", () => {
   assert.equal(resolveRole(1002, "1001", "MEMBER", "blocked"), "BLOCKED");
 });
 
-test("member menu contains only personal account and catch features", () => {
+test("member menu contains only the four personal dashboard sections", () => {
   const callbacks = buildRoleMenu("MEMBER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("account:list"));
-  assert.ok(callbacks.includes("account:connect"));
-  assert.ok(!callbacks.includes("owner:members"));
-  assert.ok(!callbacks.includes("owner:settings"));
-  assert.ok(!callbacks.includes("owner:broadcast"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
+  assert.ok(!callbacks.some((callback) => callback.startsWith("owner:")));
 });
 
-test("owner menu includes global monitoring and member administration", () => {
-  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("owner:members"));
-  assert.ok(callbacks.includes("owner:stats"));
-  assert.ok(callbacks.includes("owner:settings"));
-  assert.ok(callbacks.includes("owner:broadcast"));
+test("owner menu exposes five top-level owner destinations", () => {
+  const buttons = buildRoleMenu("OWNER").inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.deepEqual(callbacks, ["owner:stats", "owner:monitor", "owner:members", "owner:invites", "owner:settings"]);
+  assert.ok(buttons.length <= 5);
 });
 
 
@@ -397,6 +578,45 @@ test("member cannot invoke owner-only callbacks through the webhook", async () =
   assert.equal(response.status, 200);
   assert.ok(calls.some((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true));
   assert.ok(!calls.some((call) => call.method === "editMessageText"));
+  assert.ok(!calls.some((call) => call.url?.includes("/v1/owner/stats")));
+});
+
+test("member cannot invoke the live monitor before any Core request", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+    OWNER_TELEGRAM_ID: "1001",
+    CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      calls.push({ method: url.split("/").pop(), payload: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const update = {
+    update_id: 88,
+    callback_query: {
+      id: "callback-monitor-88", from: { id: 2002 },
+      message: { message_id: 9, chat: { id: 2002, type: "private" } },
+      data: "owner:monitor",
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+  assert.equal(response.status, 200);
+  assert.ok(calls.some((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true));
+  assert.ok(!calls.some((call) => call.method === "editMessageText"));
+  assert.ok(!calls.some((call) => call.url?.includes("/v1/owner/monitoring")));
 });
 
 
@@ -752,37 +972,35 @@ test("dashboard labels the Core as degraded instead of offline when the bridge r
 });
 
 
-test("Telegram member menu is a native bot-first dashboard with Catch, bot targets, and settings", () => {
+test("Telegram member menu is a minimal native dashboard without WebApp buttons", () => {
   const menu = buildRoleMenu("MEMBER");
   const buttons = menu.inline_keyboard.flat();
   const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("settings:open"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
+  assert.ok(buttons.length <= 5);
   assert.equal(buttons.some((button) => button.web_app), false);
 });
 
 test("Telegram bot menus explain Catch and target bot readiness without claiming live execution", () => {
-  assert.match(resolveCallback("catch:open").text, /هنوز آمادهٔ شکار واقعی نیستیم/);
+  assert.match(resolveCallback("catch:open").text, /اجرای زنده هنوز آماده نیست/);
+  assert.match(resolveCallback("catch:open").text, /وضعیت شکار: <b>نامشخص<\/b>/);
   const bots = resolveCallback("bots:open");
   assert.match(bots.text, /HentaCatcherBot/);
   assert.match(bots.text, /Character_Catcher_Bot/);
   assert.match(bots.text, /SenpaiCatcherBot/);
-  assert.match(bots.text, /هنوز تست واقعی نگرفتیم/);
+  assert.match(bots.text, /هنوز تست واقعی نگرفته‌ایم/);
 });
 
 test("settings callback is reachable and clearly separates unavailable controls", () => {
   const settings = resolveCallback("settings:open");
-  assert.match(settings.text, /⚙️ تنظیمات/);
-  assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
+  assert.match(settings.text, /⚙️ <b>تنظیمات<\/b>/);
+  assert.match(settings.text, /تنظیمات حساب و تجربهٔ کاربری/);
 });
 
-test("/start opens the native role menu directly instead of a redundant landing menu", () => {
+test("/start opens the compact role menu directly instead of a redundant landing menu", () => {
   const start = commandReply("/start");
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("account:connect"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
 });
 
 
@@ -1119,7 +1337,7 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
     body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
   }), env);
   assert.equal(response.status, 200);
-  assert.match(calls[0].text, /دعوتت تأیید شد/);
+  assert.match(calls[0].text, /KAGECATCH \| داشبورد/);
   const user = await store.fetch(new Request("https://do.internal/user", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 400001 }) }));
   assert.equal((await user.json()).user.role, "MEMBER");
 });
@@ -1128,6 +1346,61 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
 test("unknown Telegram identities are denied until an Owner invitation is redeemed", () => {
   assert.equal(resolveRole(7654321, "999001"), "DENIED");
 });
+
+test("Overview callback reads signed live Core, account, and Catch status then edits the same Telegram message", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding,
+    OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    CORE_API_URL: "https://core.example",
+    CORE_API_SECRET: "a-long-test-secret-that-is-at-least-32-bytes",
+    FETCH: async (url, init = {}) => {
+      const target = String(url);
+      if (target.includes("api.telegram.org")) {
+        calls.push({ kind: "telegram", method: target.split("/").pop(), payload: JSON.parse(init.body || "{}") });
+        return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+      }
+      const path = new URL(target).pathname;
+      calls.push({ kind: "core", path, headers: init.headers });
+      if (path === "/v1/health") return new Response(JSON.stringify({ status: "ready", active_clients: 1 }), { status: 200 });
+      if (path === "/v1/accounts/999001") return new Response(JSON.stringify({ status: "connected", connected: true, session_saved: true }), { status: 200 });
+      if (path === "/v1/accounts/999001/catch") return new Response(JSON.stringify({ enabled: false, execution_ready: true }), { status: 200 });
+      return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({
+      update_id: 987654,
+      callback_query: {
+        id: "live-status-callback",
+        data: "overview:open",
+        from: { id: 999001, first_name: "Ahora" },
+        message: { message_id: 77, chat: { id: 999001, type: "private" } },
+      },
+    }),
+  }), env);
+  assert.equal(response.status, 200);
+  const edit = calls.find((call) => call.kind === "telegram" && call.method === "editMessageText");
+  assert.ok(edit);
+  assert.equal(edit.payload.message_id, 77);
+  assert.match(edit.payload.text, /هستهٔ پایتون: <b>آنلاین<\/b>/);
+  assert.match(edit.payload.text, /نشست: <b>متصل<\/b>/);
+  assert.match(edit.payload.text, /وضعیت شکار: <b>غیرفعال<\/b>/);
+  assert.deepEqual(calls.filter((call) => call.kind === "core").map((call) => call.path), [
+    "/v1/health", "/v1/accounts/999001", "/v1/accounts/999001/catch",
+  ]);
+  assert.ok(calls.filter((call) => call.kind === "core").every((call) =>
+    call.headers["X-KageCatch-Signature"] && call.headers["X-KageCatch-Nonce"] && call.headers["X-KageCatch-Timestamp"]
+  ));
+});
+
 
 
 test("Owner invite screen renders real line breaks and keeps creation and back buttons visible", async () => {
@@ -1189,14 +1462,14 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
     } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
-    body: JSON.stringify({ update_id: 900003, callback_query: { id: "cb3", data: "owner:monitor", from: { id: 999001 }, message: { message_id: 7, chat: { id: 999001, type: "private" } } } }),
+    body: JSON.stringify({ update_id: 900003, callback_query: { id: "cb3", data: "owner:members:monitor", from: { id: 999001 }, message: { message_id: 7, chat: { id: 999001, type: "private" } } } }),
   }), env);
   assert.equal(response.status, 200);
   assert.ok(sequence.indexOf("ack") >= 0 && sequence.indexOf("ack") < sequence.indexOf("core"), "callback must be acknowledged before slow Core status lookups");
   const edit = calls.find((call) => call.method === "editMessageText");
   assert.match(edit.payload.text, /نشست مجاز ذخیره است؛ کلاینت اجرا نیست/);
   assert.match(edit.payload.text, /TestUser/);
-  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:monitor:user:500002"));
+  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:members:monitor:user:500002"));
 });
 
 
@@ -1553,4 +1826,111 @@ test("manual webhook setup derives the webhook host from the incoming Worker ori
   }), env);
   assert.equal(response.status, 200);
   assert.equal(webhookUrl, "https://custom-worker.example/webhook");
+});
+
+
+test("language selector exposes Persian and English without exceeding the compact menu", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const result = resolveCallback("language:open", "Ahora", "MEMBER", {}, "fa");
+  assert.match(result.text, /زبان/);
+  const callbacks = result.keyboard.inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("language:set:fa"));
+  assert.ok(callbacks.includes("language:set:en"));
+});
+
+test("language preference is validated and persisted per Telegram user in the existing registry", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 123456, ownerTelegramId: "999001" });
+  const invalid = await post("/language/set", { telegramUserId: 123456, language: "xx" });
+  assert.equal(invalid.status, 400);
+  const saved = await post("/language/set", { telegramUserId: 123456, language: "en" });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).language, "en");
+  const user = await post("/user", { telegramUserId: 123456 });
+  assert.equal((await user.json()).user.language, "en");
+  await post("/register", { telegramUserId: 123456, ownerTelegramId: "999001" });
+  const afterRegister = await post("/user", { telegramUserId: 123456 });
+  assert.equal((await afterRegister.json()).user.language, "en");
+});
+
+test("English language selection renders English settings and language confirmation", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const settings = resolveCallback("settings:open", "Ahora", "MEMBER", {}, "en");
+  assert.match(settings.text, /SETTINGS/);
+  assert.ok(settings.keyboard.inline_keyboard.flat().some((button) => /Language/.test(button.text)));
+  const selected = resolveCallback("language:selected:en", "Ahora", "MEMBER", {}, "en");
+  assert.match(selected.text, /English/);
+});
+
+test("Live Monitor renders structured event types without inventing operational events", async () => {
+  const { buildOwnerMonitor } = await import("./index.mjs");
+  const result = buildOwnerMonitor({
+    available: true, queuePending: 0, activeWorkers: 1, d1Status: "connected",
+    redisStatus: "not_configured",
+    recentEvents: [{ timestamp: 1794580000, level: "INFO", event_type: "catch_success", message: "Catch completed and verified" }]
+  });
+  assert.match(result.text, /catch_success/);
+  assert.match(result.text, /Catch completed and verified/);
+});
+
+test("dashboard and Catcher status screens follow the selected language", async () => {
+  const { buildDashboardText, buildCatcherText } = await import("./index.mjs");
+  const english = buildDashboardText("Ahora", { core: "ready", account: "connected", catchEnabled: true }, "en");
+  assert.match(english, /Python Core: <b>Online<\/b>/);
+  assert.doesNotMatch(english, /نمای کلی|کاربر:/);
+  const persian = buildDashboardText("اهورا", { core: "ready", account: "connected" }, "fa");
+  assert.match(persian, /داشبورد/);
+  const catcher = buildCatcherText({ account: "connected", catchEnabled: false, executionReady: false }, "en");
+  assert.match(catcher, /Catch Mode: <b>Disabled<\/b>/);
+  assert.match(catcher, /Live execution is not ready/);
+});
+
+test("account screens follow the saved locale for labels, session health, and navigation", async () => {
+  const english = resolveCallback("account:list", "Member", "MEMBER", {
+    account: "connected",
+    accountInfo: { sessionHealth: "valid", phoneMasked: "+98•••1234", lastActive: "2026-11-13 12:00 UTC" }
+  }, "en");
+  assert.match(english.text, /ACCOUNT DETAILS/);
+  assert.match(english.text, /Session: <b>Connected<\/b>/);
+  assert.match(english.text, /Session health: <b>Valid<\/b>/);
+  assert.match(english.text, /Phone:/);
+  const settings = resolveCallback("account:open", "Member", "MEMBER", {}, "en");
+  assert.match(settings.text, /Manage your account/);
+  const accountButtons = settings.keyboard.inline_keyboard.flat().map((button) => button.text);
+  assert.ok(accountButtons.some((label) => label.includes("Connect account")));
+  assert.ok(accountButtons.some((label) => label.includes("My account")));
+});
+
+test("English locale covers account, security, statistics, help, and main navigation", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const account = resolveCallback("account:open", "Ahora", "MEMBER", {}, "en");
+  assert.match(account.text, /Account/);
+  assert.ok(account.keyboard.inline_keyboard.flat().some(button => /Connect account/.test(button.text)));
+  const details = resolveCallback("account:list", "Ahora", "MEMBER", {
+    account: "connected",
+    accountInfo: { sessionHealth: "valid", phoneMasked: "+9891******67", lastActive: "2026-11-13T12:00:00Z" }
+  }, "en");
+  assert.match(details.text, /ACCOUNT DETAILS/);
+  assert.match(details.text, /Session health: <b>Valid/);
+  assert.match(resolveCallback("security:open", "Ahora", "MEMBER", {}, "en").text, /two-step verification/);
+  assert.match(resolveCallback("stats:open", "Ahora", "MEMBER", {}, "en").text, /Your statistics/);
+  assert.match(resolveCallback("help:open", "Ahora", "MEMBER", {}, "en").text, /KageCatch help/);
+  assert.match(resolveCallback("menu:main", "Ahora", "MEMBER", {}, "en").text, /Welcome to KageCatch/);
+});
+
+test("English locale also translates target bot information and Catcher navigation", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const bots = resolveCallback("bots:open", "Ahora", "MEMBER", {}, "en");
+  assert.match(bots.text, /Target bots/);
+  assert.match(bots.text, /Live end-to-end tests have not been completed/);
+  assert.match(bots.keyboard.inline_keyboard[0][0].text, /Catch controls/);
+  const catcher = resolveCallback("catch:open", "Ahora", "MEMBER", {}, "en");
+  assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Target bots/.test(button.text)));
+  assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Refresh/.test(button.text)));
 });

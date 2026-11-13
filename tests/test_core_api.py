@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import time
 import unittest
 
@@ -66,6 +67,9 @@ class FakeSessionManager:
     async def revoke_session(self, user_id):
         self.revoked.append(user_id)
         self.sessions.pop(user_id, None)
+
+    async def list_user_ids(self):
+        return list(self.sessions)
 
 
 class FakeAuthFlow:
@@ -158,6 +162,53 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"service": "KageCatch Core", "status": "alive"})
 
+    def test_signed_owner_stats_reports_session_counts_uptime_and_zero_verified_catches(self):
+        path = "/v1/owner/stats"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        stats = response.json()
+        self.assertEqual(stats["total_users"], 1)
+        self.assertEqual(stats["active_sessions"], 1)
+        self.assertEqual(stats["total_catches"], 0)
+        self.assertGreaterEqual(stats["system_uptime_seconds"], 0)
+        self.assertEqual(set(stats), {
+            "total_users", "active_sessions", "total_catches",
+            "system_uptime_seconds",
+        })
+
+    def test_signed_owner_monitoring_returns_live_schema(self):
+        path = "/v1/owner/monitoring"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["core_status"], "online")
+        self.assertEqual(data["redis_status"], "not_configured")
+        self.assertEqual(data["active_workers"], 1)
+        self.assertIsInstance(data["recent_events"], list)
+        self.assertEqual(set(data), {"core_status", "redis_status", "active_workers", "recent_events"})
+
+    def test_owner_monitoring_includes_recent_core_log_events(self):
+        from kagecatch.monitoring import emit_monitor_event
+        emit_monitor_event("catch_failure", level=logging.WARNING)
+        path = "/v1/owner/monitoring"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        events = response.json()["recent_events"]
+        self.assertTrue(any(
+            event["level"] == "WARNING" and event["message"] == "Catch attempt failed or could not be verified"
+            for event in events
+        ))
+
+    def test_owner_monitoring_requires_valid_hmac(self):
+        path = "/v1/owner/monitoring"
+        response = self.client.get(path)
+        self.assertEqual(response.status_code, 401)
+
+    def test_owner_stats_requires_valid_hmac(self):
+        path = "/v1/owner/stats"
+        response = self.client.get(path)
+        self.assertEqual(response.status_code, 401)
+
     def test_signed_health_endpoint_reports_runtime_readiness(self):
         path = "/v1/health"
         response = self.client.get(path, headers=signed_headers("GET", path))
@@ -194,6 +245,34 @@ class CoreApiTests(unittest.TestCase):
             "session_saved": True,
             "connected": True,
         })
+        self.assertNotIn("do-not-return-this-session", response.text)
+
+
+    def test_account_info_returns_masked_phone_and_authorization_health_without_session_material(self):
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+
+        class AccountClient:
+            async def is_user_authorized(self):
+                return True
+
+            async def get_me(self):
+                return SimpleNamespace(
+                    phone="+989121234567",
+                    status=SimpleNamespace(was_online=datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)),
+                )
+
+        self.runtime.clients["2001"] = AccountClient()
+        path = "/v1/accounts/2001/info"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "telegram_user_id": 2001,
+            "session_health": "valid",
+            "phone_masked": "+9891******67",
+            "last_active": "2026-11-13T12:00:00+00:00",
+        })
+        self.assertNotIn("+989121234567", response.text)
         self.assertNotIn("do-not-return-this-session", response.text)
 
 
@@ -304,3 +383,17 @@ class CoreApiTests(unittest.TestCase):
         body = json.dumps({"enabled": True}).encode()
         response = self.client.put(path, content=body, headers=signed_headers("PUT", path, body))
         self.assertEqual(response.status_code, 409)
+
+    def test_owner_monitoring_preserves_structured_event_type(self):
+        logging.getLogger("kagecatch.core").info(
+            "Catch completed and verified", extra={"event_type": "catch_success"}
+        )
+        path = "/v1/owner/monitoring"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        events = response.json()["recent_events"]
+        self.assertTrue(any(
+            event.get("event_type") == "catch_success"
+            and event["message"] == "Catch completed and verified"
+            for event in events
+        ))

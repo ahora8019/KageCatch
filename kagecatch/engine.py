@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import math
+import logging
+
+from .monitoring import emit_monitor_event
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
@@ -152,7 +155,11 @@ class CatchEngine:
 
         try:
             receipt = await adapter.send_catch(spawn, best.name)
-        except Exception:
+        except Exception as exc:
+            if type(exc).__name__ == "FloodWaitError":
+                emit_monitor_event("flood_wait", level=logging.WARNING)
+            else:
+                emit_monitor_event("catch_failure", level=logging.WARNING)
             return CatchResult(
                 status="send_failed",
                 character_name=best.name,
@@ -161,9 +168,12 @@ class CatchEngine:
 
         try:
             verified = await adapter.verify_catch(receipt)
-        except Exception:
+        except Exception as exc:
+            if type(exc).__name__ == "FloodWaitError":
+                emit_monitor_event("flood_wait", level=logging.WARNING)
             verified = False
 
+        emit_monitor_event("catch_success" if verified else "catch_failure", level=logging.INFO if verified else logging.WARNING)
         return CatchResult(
             status="verified" if verified else "unverified",
             character_name=best.name,
