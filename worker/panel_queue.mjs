@@ -182,11 +182,22 @@ async function requestCore(env, method, path, payload) {
   return result;
 }
 
+function mainPanelKeyboard(requestId) {
+  const callback = (action) => "kp:" + requestId + ":" + action;
+  return { inline_keyboard: [
+    [{ text: "📊 آمار", callback_data: callback("stats") }, { text: "🎯 موتور Catch", callback_data: callback("engine") }],
+    [{ text: "⚙️ تنظیمات", callback_data: callback("settings") }, { text: "🔄 بروزرسانی", callback_data: callback("refresh") }],
+    [{ text: "📝 بررسی‌های دستی", callback_data: callback("reviews") }],
+    [{ text: "✖️ بستن پنل", callback_data: callback("close") }],
+  ] };
+}
+
 function engineKeyboard(requestId, enabled) {
   return { inline_keyboard: [[
     { text: enabled ? "⏸ خاموش کردن حالت" : "🟢 روشن کردن حالت", callback_data: "kp:" + requestId + (enabled ? ":engine_off" : ":engine_on") },
     { text: "🔄 بروزرسانی", callback_data: "kp:" + requestId + ":engine" },
-  ], [{ text: "⚙️ تنظیمات", callback_data: "kp:" + requestId + ":settings" }]] };
+  ], [{ text: "⚙️ تنظیمات", callback_data: "kp:" + requestId + ":settings" }],
+  [{ text: "↩️ بازگشت به پنل اصلی", callback_data: "kp:" + requestId + ":refresh" }]] };
 }
 
 function engineText(state) {
@@ -317,6 +328,7 @@ export async function handlePanelCallback(callback, env, telegramApi) {
       }
     } catch {
       text = "⚠️ Core در دسترس نیست یا حساب متصل نیست؛ هیچ تغییری تأیید نشد. کمی بعد دوباره تلاش کن.";
+      replyMarkup = mainPanelKeyboard(parsed.requestId);
     }
   } else if (parsed.action === "reviews") {
     try {
@@ -361,6 +373,7 @@ export async function handlePanelCallback(callback, env, telegramApi) {
       replyMarkup = { inline_keyboard: [[{ text: "↩️ بازگشت به پنل", callback_data: "kp:" + row.request_id + ":refresh" }]] };
     }
   } else if (parsed.action === "stats") {
+    replyMarkup = mainPanelKeyboard(parsed.requestId);
     try {
       const stats = await readPanelQueueStats(env.KAGECATCH_DB);
       const total = Object.values(stats).reduce((sum, value) => sum + value, 0);
@@ -380,10 +393,13 @@ export async function handlePanelCallback(callback, env, telegramApi) {
     }
   } else if (parsed.action === "engine") {
     text = "🎯 موتور Catch\n━━━━━━━━━━━━━━\nوضعیت: خاموش\nارسال زنده فرمان فعال نیست؛ موتور تشخیص و کنترل هنوز متصل نشده و این دکمه موتور را روشن نمی‌کند.";
+    replyMarkup = mainPanelKeyboard(parsed.requestId);
   } else if (parsed.action === "settings") {
     text = "⚙️ تنظیمات پنل\n━━━━━━━━━━━━━━\nتنظیمات عملیاتی هنوز به ذخیره‌ساز متصل نشده‌اند. هیچ تغییری اعمال نشده است.";
+    replyMarkup = mainPanelKeyboard(parsed.requestId);
   } else {
-    text = "🌸 پنل KageCatch بروزرسانی شد.\nوضعیت موتور Catch: خاموش";
+    text = "🌸 پنل KageCatch — داشبورد اصلی\n━━━━━━━━━━━━━━\nوضعیت موتور Catch: خاموش";
+    replyMarkup = mainPanelKeyboard(parsed.requestId);
   }
   await telegramApi(env, "editMessageText", {
     chat_id: chatId, message_id: messageId, text,
