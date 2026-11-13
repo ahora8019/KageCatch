@@ -1848,7 +1848,7 @@ async function internalDailyQuotaStore(request, env) {
       if (typeof ownerId !== "string" || !/^[1-9][0-9]{0,15}$/.test(ownerId) || Number(ownerId) > (2 ** 52 - 1)
         || typeof quotaDate !== "string" || !/^\\d{4}-\\d{2}-\\d{2}$/.test(quotaDate)
         || !Number.isSafeInteger(chatId) || !Number.isSafeInteger(spawnMessageId) || spawnMessageId <= 0
-        || new Date(quotaDate + "T00:00:00Z").toISOString().slice(0, 10) !== quotaDate) return json({ error: "invalid_reservation" }, 400);
+        || !Number.isFinite(Date.parse(quotaDate + "T00:00:00Z")) || new Date(quotaDate + "T00:00:00Z").toISOString().slice(0, 10) !== quotaDate) return json({ error: "invalid_reservation" }, 400);
 
       await env.KAGECATCH_DB.prepare(
         "INSERT OR IGNORE INTO daily_quota_limits (owner_id, quota_date, quota_limit) VALUES (?, ?, 20)"
