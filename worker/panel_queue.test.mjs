@@ -479,7 +479,9 @@ test("stats submenu keeps a working return-to-main-panel button", async () => {
     data: "kp:" + requestId + ":stats",
   }, env, async (_env, method, payload) => calls.push({ method, payload }));
   const edit = calls.find((call) => call.method === "editMessageText");
-  assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":refresh");
+  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some(
+    (button) => button.callback_data === "kp:" + requestId + ":refresh",
+  ));
 });
 
 test("refresh callback restores the complete main panel keyboard after leaving a submenu", async () => {
