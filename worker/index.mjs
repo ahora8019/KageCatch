@@ -2053,7 +2053,8 @@ export default {
         (method, payload) => telegramApi(env, method, payload),
       );
     }
-    if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);\n    if (url.pathname === "/internal/daily-quota") return internalDailyQuotaStore(request, env);
+    if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
+    if (url.pathname === "/internal/daily-quota") return internalDailyQuotaStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
