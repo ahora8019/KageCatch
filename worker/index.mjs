@@ -1554,14 +1554,27 @@ async function handleWebhook(request, env) {
 
 function reviewRowToItem(row) {
   let candidates;
+  let spawnContext = null;
   try { candidates = JSON.parse(row.candidates_json); } catch { throw new Error("invalid stored candidates"); }
   if (!Array.isArray(candidates)) throw new Error("invalid stored candidates");
+  if (row.spawn_context_json) {
+    try { spawnContext = JSON.parse(row.spawn_context_json); }
+    catch { throw new Error("invalid stored spawn context"); }
+    if (!spawnContext || typeof spawnContext !== "object" || Array.isArray(spawnContext)
+      || typeof spawnContext.source !== "string"
+      || !Number.isSafeInteger(spawnContext.chat_id)
+      || !Number.isSafeInteger(spawnContext.message_id)
+      || !["photo", "video", "document", "animation", "audio"].includes(spawnContext.media_kind)) {
+      throw new Error("invalid stored spawn context");
+    }
+  }
   return {
     review_id: row.review_id,
     user_id: row.user_id,
     spawn_id: row.spawn_id,
     anime_name: row.anime_name,
     candidates,
+    spawn_context: spawnContext,
     created_at: row.created_at,
     expires_at: row.expires_at,
     status: row.status,
@@ -1610,7 +1623,7 @@ async function internalManualReviewStore(request, env) {
 
   try {
     if (payload.action === "create") {
-      const { review_id, user_id, spawn_id, anime_name, candidates, created_at, expires_at } = payload;
+      const { review_id, user_id, spawn_id, anime_name, candidates, created_at, expires_at, spawn_context } = payload;
       if (typeof review_id !== "string" || !/^[a-f0-9]{32}$/.test(review_id)
         || typeof user_id !== "string" || !user_id || user_id.length > 128
         || !Number.isSafeInteger(spawn_id) || spawn_id < 0
@@ -1621,7 +1634,7 @@ async function internalManualReviewStore(request, env) {
         || !Number.isFinite(Date.parse(created_at)) || !Number.isFinite(Date.parse(expires_at))
         || Date.parse(expires_at) <= Date.parse(created_at)) return json({ error: "invalid_review_item" }, 400);
       const inserted = await env.KAGECATCH_DB.prepare(
-        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
+        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
       ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
       if (Number(inserted?.meta?.changes || 0) !== 1) return json({ error: "pending_queue_limit_reached" }, 429);
       return json({ status: "created" }, 201);
@@ -1640,7 +1653,7 @@ async function internalManualReviewStore(request, env) {
         "UPDATE manual_review_items SET status = 'expired' WHERE user_id = ? AND status = 'pending' AND expires_at <= ?"
       ).bind(payload.user_id, now).run();
       const result = await env.KAGECATCH_DB.prepare(
-        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE user_id = ? AND status = 'pending' ORDER BY created_at, review_id LIMIT 100"
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE user_id = ? AND status = 'pending' ORDER BY created_at, review_id LIMIT 100"
       ).bind(payload.user_id).all();
       return json({ items: (result?.results || []).map(reviewRowToItem) });
     }
@@ -1650,7 +1663,7 @@ async function internalManualReviewStore(request, env) {
       if (typeof user_id !== "string" || !user_id || user_id.length > 128
         || typeof review_id !== "string" || !/^[a-f0-9]{32}$/.test(review_id)) return json({ error: "invalid_review_id" }, 400);
       const row = await env.KAGECATCH_DB.prepare(
-        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
       ).bind(review_id, user_id).first();
       if (!row) return json({ error: "review_item_not_found" }, 404);
       if (row.status !== "pending") return json({ error: "review_item_already_resolved" }, 409);
@@ -1659,7 +1672,7 @@ async function internalManualReviewStore(request, env) {
           "UPDATE manual_review_items SET status = 'expired' WHERE review_id = ? AND user_id = ? AND status = 'pending'"
         ).bind(review_id, user_id).run();
         const expiredRow = await env.KAGECATCH_DB.prepare(
-          "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+          "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
         ).bind(review_id, user_id).first();
         return json({ item: reviewRowToItem(expiredRow) });
       }
@@ -1675,7 +1688,7 @@ async function internalManualReviewStore(request, env) {
       ).bind(nextStatus, selected, review_id, user_id, now).run();
       if (Number(update?.meta?.changes || 0) !== 1) return json({ error: "review_item_already_resolved" }, 409);
       const updatedRow = await env.KAGECATCH_DB.prepare(
-        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
       ).bind(review_id, user_id).first();
       return json({ item: reviewRowToItem(updatedRow) });
     }
