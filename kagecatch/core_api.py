@@ -283,6 +283,53 @@ def create_app(
             "connected": connected,
         }
 
+    @app.get("/v1/accounts/{telegram_user_id}/info", dependencies=[Depends(require_core_auth)])
+    async def account_info(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if session_manager is None:
+            raise HTTPException(status_code=503, detail="session_store_not_configured")
+
+        user_id = str(telegram_user_id)
+        saved_session = await session_manager.load_session(user_id)
+        client = await runtime.get_client(user_id) if runtime is not None else None
+        session_health = "unknown" if saved_session else "not_connected"
+        phone_masked = None
+        last_active = None
+
+        if client is not None:
+            authorization_check = getattr(client, "is_user_authorized", None)
+            if callable(authorization_check):
+                try:
+                    authorized = await authorization_check()
+                except Exception:
+                    authorized = None
+                if authorized is False:
+                    session_health = "expired"
+                elif authorized is True:
+                    session_health = "valid"
+                    get_me = getattr(client, "get_me", None)
+                    if callable(get_me):
+                        try:
+                            account_user = await get_me()
+                        except Exception:
+                            account_user = None
+                        if account_user is not None:
+                            phone = getattr(account_user, "phone", None)
+                            if isinstance(phone, str) and phone:
+                                phone_masked = phone[:5] + "*" * max(0, len(phone) - 7) + phone[-2:] if len(phone) > 7 else "*" * len(phone)
+                            user_status = getattr(account_user, "status", None)
+                            was_online = getattr(user_status, "was_online", None)
+                            if hasattr(was_online, "isoformat"):
+                                last_active = was_online.isoformat()
+
+        return {
+            "telegram_user_id": telegram_user_id,
+            "session_health": session_health,
+            "phone_masked": phone_masked,
+            "last_active": last_active,
+        }
+
     @app.get("/v1/accounts/{telegram_user_id}/catch", dependencies=[Depends(require_core_auth)])
     async def catch_status(telegram_user_id: int):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
