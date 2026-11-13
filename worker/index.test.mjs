@@ -1890,3 +1890,18 @@ test("dashboard and Catcher status screens follow the selected language", async 
   assert.match(catcher, /Catch Mode: <b>Disabled<\/b>/);
   assert.match(catcher, /Live execution is not ready/);
 });
+
+test("account screens follow the saved locale for labels, session health, and navigation", async () => {
+  const english = resolveCallback("account:list", "Member", "MEMBER", {
+    account: "connected",
+    accountInfo: { sessionHealth: "valid", phoneMasked: "+98•••1234", lastActive: "2026-11-13 12:00 UTC" }
+  }, "en");
+  assert.match(english.text, /ACCOUNT DETAILS/);
+  assert.match(english.text, /Session: <b>Connected<\/b>/);
+  assert.match(english.text, /Session health: <b>Valid<\/b>/);
+  assert.match(english.text, /Phone:/);
+  const settings = resolveCallback("account:open", "Member", "MEMBER", {}, "en");
+  assert.match(settings.text, /Manage your account/);
+  assert.match(settings.text, /Connect account/);
+  assert.match(settings.text, /My account/);
+});
