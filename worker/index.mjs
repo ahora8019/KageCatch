@@ -502,41 +502,42 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       };
     case "account:open":
       return {
-        text: "👤 <b>ACCOUNT</b>\n\nمدیریت اتصال و امنیت حساب از این بخش انجام می‌شود.",
+        text: translate("account.title", locale) + "\n\n" + translate("account.description", locale),
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
-          [{ text: "🟢 Connect account", callback_data: "account:connect" }],
-          [{ text: "📱 My account", callback_data: "account:list" }],
-          [{ text: "🔒 Security", callback_data: "security:open" }],
+          [{ text: translate("account.connect", locale), callback_data: "account:connect" }],
+          [{ text: translate("account.my_account", locale), callback_data: "account:list" }],
+          [{ text: translate("account.security", locale), callback_data: "security:open" }],
           ...backMenu(locale).inline_keyboard,
         ] },
       };
     case "account:connect":
       return {
-        text: "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
+        text: locale === "en" ? "🟢 Connect account\n\nUse the secure connect button to create your personal sign-in link." : "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
         keyboard: backMenu(locale),
       };
     case "account:list": {
       const accountInfo = status.accountInfo || {};
-      const healthLabel = ({ valid: "Valid", expired: "Expired", revoked: "Revoked", unknown: "Unknown", not_connected: "Not connected" })[accountInfo.sessionHealth] || "Unknown";
+      const healthKey = ({ valid: "valid", expired: "expired", revoked: "revoked", unknown: "unknown", not_connected: "not_connected" })[accountInfo.sessionHealth] || "unknown";
+      const healthLabel = translate("account." + healthKey, locale);
       const coreOffline = status.core === "unavailable" || status.core === "not_configured";
       const lines = [
-        "👤 <b>ACCOUNT DETAILS</b>",
+        translate("account.details", locale),
         "<code>━━━━━━━━━━━━━━━━━━━━</code>",
-        "🔐 Session: <b>" + runtimeLabels(status).account + "</b>",
-        "🛡️ Session health: <b>" + healthLabel + "</b>",
-        "📱 Phone: <code>" + escapeHtml(accountInfo.phoneMasked || "Unavailable") + "</code>",
-        "🕒 Last active: <code>" + escapeHtml(accountInfo.lastActive || "Unavailable") + "</code>",
+        translate("account.session", locale) + ": <b>" + runtimeLabels(status, locale).account + "</b>",
+        translate("account.session_health", locale) + ": <b>" + healthLabel + "</b>",
+        translate("account.phone", locale) + ": <code>" + escapeHtml(accountInfo.phoneMasked || translate("account.unavailable", locale)) + "</code>",
+        translate("account.last_active", locale) + ": <code>" + escapeHtml(accountInfo.lastActive || translate("account.unavailable", locale)) + "</code>",
       ];
-      if (coreOffline) lines.push("", "⚠️ Core Offline — account details are unavailable.");
+      if (coreOffline) lines.push("", "⚠️ " + translate("account.core_offline", locale));
       const keyboard = [];
       if (!coreOffline && status.account !== "connected") {
-        keyboard.push([{ text: "🟢 اتصال حساب", callback_data: "account:connect" }]);
+        keyboard.push([{ text: translate("account.connect", locale), callback_data: "account:connect" }]);
       } else if (!coreOffline && (accountInfo.sessionHealth === "expired" || accountInfo.sessionHealth === "revoked")) {
-        keyboard.push([{ text: "🔁 اتصال دوباره", callback_data: "account:connect" }]);
+        keyboard.push([{ text: translate("account.reconnect", locale), callback_data: "account:connect" }]);
       }
-      if (!coreOffline) keyboard.push([{ text: "🔄 Refresh", callback_data: "account:list" }]);
-      keyboard.push([{ text: "🔒 امنیت حساب", callback_data: "security:open" }], ...backMenu(locale).inline_keyboard);
+      if (!coreOffline) keyboard.push([{ text: translate("account.refresh", locale), callback_data: "account:list" }]);
+      keyboard.push([{ text: translate("account.security", locale), callback_data: "security:open" }], ...backMenu(locale).inline_keyboard);
       return { text: lines.join("\n"), parse_mode: "HTML", keyboard: { inline_keyboard: keyboard } };
     }
     case "catch:open":
