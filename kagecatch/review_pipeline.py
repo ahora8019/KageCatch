@@ -67,6 +67,7 @@ class ReviewPipeline:
                 spawn_id=spawn.message_id,
                 anime_name=anime_name,
                 candidates=resolved.candidates,
+                spawn_context=getattr(spawn, "spawn_context", None),
             )
         except httpx.TimeoutException:
             emit_monitor_event("review_persistence_failed", level=logging.WARNING)
