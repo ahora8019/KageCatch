@@ -1,7 +1,7 @@
 import "./panel_queue.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
@@ -48,6 +48,14 @@ test("overview, catcher, settings, and account sections each have an inline subm
     assert.equal(typeof result.text, "string");
     assert.ok(result.keyboard?.inline_keyboard?.length > 0);
   }
+});
+
+test("dashboard uses HTML safely and escapes Telegram-provided display names", () => {
+  const text = buildDashboardText('<b>Injected</b> & "unsafe"');
+  assert.match(text, /&lt;b&gt;Injected&lt;\/b&gt; &amp; &quot;unsafe&quot;/);
+  assert.match(text, /<pre>|<code>/);
+  assert.doesNotMatch(text, /<b>Injected<\/b>/);
+  assert.equal(resolveCallback("overview:open", "Ahora").parse_mode, "HTML");
 });
 
 
@@ -766,7 +774,7 @@ test("Telegram bot menus explain Catch and target bot readiness without claiming
 test("settings callback is reachable and clearly separates unavailable controls", () => {
   const settings = resolveCallback("settings:open");
   assert.match(settings.text, /⚙️ تنظیمات/);
-  assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
+  assert.match(settings.text, /تنظیمات پیشرفته به‌صورت مرحله‌ای فعال می‌شوند/);
 });
 
 test("/start opens the compact role menu directly instead of a redundant landing menu", () => {
