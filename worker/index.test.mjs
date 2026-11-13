@@ -56,7 +56,7 @@ test("account details render only masked identity data and hide refresh when Cor
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /نشست: <b>نامشخص<\/b>/);
+  assert.match(resolveCallback("account:list").text, /Session: <b>نامشخص<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
@@ -88,7 +88,7 @@ test("dashboard reflects verified Core, account, and Catch state without optimis
   assert.match(live, /وضعیت شکار: <b>فعال<\/b>/);
   const unavailable = buildDashboardText("Ahora", { core: "unavailable", account: "unknown", catchEnabled: null });
   assert.match(unavailable, /هستهٔ پایتون: <b>در دسترس نیست<\/b>/);
-  assert.match(unavailable, /Session: <b>نامشخص<\/b>/);
+  assert.match(unavailable, /نشست: <b>نامشخص<\/b>/);
   assert.match(unavailable, /وضعیت شکار: <b>نامشخص<\/b>/);
 });
 
