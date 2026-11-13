@@ -336,7 +336,7 @@ async function manualWebhookSetup(request, env) {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) {
     return json({ error: "telegram_secrets_not_configured" }, 503);
   }
-  const expectedUrl = new URL(WEBHOOK_PATH, "https://kagecatch-control.ahora-project.workers.dev").toString();
+  const expectedUrl = new URL(WEBHOOK_PATH, request.url).toString();
   try {
     const current = await telegramApi(env, "getWebhookInfo");
     if (current.url === expectedUrl) return json({ status: "already_configured", verified: true });
