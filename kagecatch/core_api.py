@@ -8,6 +8,7 @@ raw session material is never accepted from or returned to the Worker.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager
 import hashlib
 import importlib.util
@@ -146,6 +147,27 @@ def create_app(
         openapi_url=None,
         lifespan=lifespan,
     )
+
+    # Bounded, process-local view of Core log events for Owner monitoring.
+    recent_events = deque(maxlen=20)
+
+    class _MonitorEventHandler(logging.Handler):
+        def emit(self, record):
+            try:
+                message = record.getMessage()
+                recent_events.append({
+                    "timestamp": int(record.created),
+                    "level": record.levelname if record.levelname in {"DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"} else "INFO",
+                    "message": str(message)[:240],
+                })
+            except Exception:
+                self.handleError(record)
+
+    monitor_logger = logging.getLogger("kagecatch")
+    monitor_handler = _MonitorEventHandler()
+    monitor_logger.addHandler(monitor_handler)
+    app.state.recent_events = recent_events
+    app.add_event_handler("shutdown", lambda: monitor_logger.removeHandler(monitor_handler))
     # Review persistence is an independent resource from Telegram sessions.
     # Construct the network client during startup, never at module import time.
     app.state.review_store = review_store
@@ -263,6 +285,17 @@ def create_app(
             "status": "ready",
             "execution_configured": True,
             "active_clients": int(getattr(runtime, "active_user_count", 0)),
+        }
+
+    @app.get("/v1/owner/monitoring", dependencies=[Depends(require_core_auth)])
+    async def owner_monitoring():
+        # Redis is not part of this deployment; locks and panel requests live in D1.
+        return {
+            "core_status": "online",
+            "redis_status": "not_configured",
+            # One active Core process; this is not the number of Telegram sessions.
+            "active_workers": 1,
+            "recent_events": list(reversed(recent_events))[:10],
         }
 
     @app.get("/v1/owner/stats", dependencies=[Depends(require_core_auth)])
