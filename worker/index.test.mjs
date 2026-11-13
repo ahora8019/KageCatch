@@ -1469,7 +1469,7 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
   const edit = calls.find((call) => call.method === "editMessageText");
   assert.match(edit.payload.text, /نشست مجاز ذخیره است؛ کلاینت اجرا نیست/);
   assert.match(edit.payload.text, /TestUser/);
-  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:monitor:user:500002"));
+  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:members:monitor:user:500002"));
 });
 
 
