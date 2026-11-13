@@ -1867,3 +1867,14 @@ test("English language selection renders English settings and language confirmat
   const selected = resolveCallback("language:selected:en", "Ahora", "MEMBER", {}, "en");
   assert.match(selected.text, /English/);
 });
+
+test("Live Monitor renders structured event types without inventing operational events", async () => {
+  const { buildOwnerMonitor } = await import("./index.mjs");
+  const result = buildOwnerMonitor({
+    available: true, queuePending: 0, activeWorkers: 1, d1Status: "connected",
+    redisStatus: "not_configured",
+    recentEvents: [{ timestamp: 1794580000, level: "INFO", event_type: "catch_success", message: "Catch completed and verified" }]
+  });
+  assert.match(result.text, /catch_success/);
+  assert.match(result.text, /Catch completed and verified/);
+});
