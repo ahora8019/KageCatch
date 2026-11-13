@@ -1,7 +1,7 @@
 import "./panel_queue.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, buildDashboardText, buildCatcherText, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
@@ -56,6 +56,26 @@ test("dashboard uses HTML safely and escapes Telegram-provided display names", (
   assert.match(text, /<pre>|<code>/);
   assert.doesNotMatch(text, /<b>Injected<\/b>/);
   assert.equal(resolveCallback("overview:open", "Ahora").parse_mode, "HTML");
+});
+  
+test("dashboard reflects verified Core, account, and Catch state without optimistic defaults", () => {
+  const live = buildDashboardText("Ahora", { core: "ready", account: "connected", catchEnabled: true });
+  assert.match(live, /Python Core: <b>Online<\/b>/);
+  assert.match(live, /Session: <b>Connected<\/b>/);
+  assert.match(live, /Catch Mode: <b>Enabled<\/b>/);
+  const unavailable = buildDashboardText("Ahora", { core: "unavailable", account: "unknown", catchEnabled: null });
+  assert.match(unavailable, /Python Core: <b>Unavailable<\/b>/);
+  assert.match(unavailable, /Session: <b>Unknown<\/b>/);
+  assert.match(unavailable, /Catch Mode: <b>Unknown<\/b>/);
+});
+
+test("catcher submenu reports real execution readiness and never enables Catch by display", () => {
+  const live = buildCatcherText({ account: "connected", catchEnabled: false, executionReady: true });
+  assert.match(live, /Catch Mode: <b>Disabled<\/b>/);
+  assert.match(live, /Execution: <b>Ready<\/b>/);
+  const offline = buildCatcherText({ account: "not_connected", catchEnabled: null, executionReady: null });
+  assert.match(offline, /Account: <b>Not connected<\/b>/);
+  assert.match(offline, /Execution: <b>Unknown<\/b>/);
 });
 
 
