@@ -432,6 +432,7 @@ class CoreApiTests(unittest.TestCase):
         item = response.json()["items"][0]
         self.assertEqual(item["candidates"], ["Megumin", "Aqua"])
         self.assertTrue(item["spawn_context_available"])
+        self.assertFalse(response.json()["approval_available"])
         self.assertNotIn("-1001234567890", response.text)
         self.assertEqual(foreign.json(), {"items": []})
 
