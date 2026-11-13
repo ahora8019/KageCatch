@@ -48,6 +48,7 @@ class InMemoryNonceStore:
 def _configuration_presence(core_secret: str | None = None) -> dict[str, bool]:
     """Return safe configuration presence flags without exposing secret values."""
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
+    started_at_monotonic = time.monotonic()
     return {
         "core_auth_configured": bool(secret),
         "telegram_api_id_configured": bool(os.getenv("KAGECATCH_API_ID")),
@@ -262,6 +263,29 @@ def create_app(
             "status": "ready",
             "execution_configured": True,
             "active_clients": int(getattr(runtime, "active_user_count", 0)),
+        }
+
+    @app.get("/v1/owner/stats", dependencies=[Depends(require_core_auth)])
+    async def owner_stats():
+        if session_manager is None:
+            raise HTTPException(status_code=503, detail="session_store_not_configured")
+        list_user_ids = getattr(session_manager, "list_user_ids", None)
+        if not callable(list_user_ids):
+            raise HTTPException(status_code=503, detail="owner_stats_unavailable")
+        try:
+            # Core can count accounts with encrypted sessions. The Worker overlays
+            # the authoritative registered-user count from its Durable Object registry.
+            total_users = len(set(await list_user_ids()))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="owner_stats_unavailable") from exc
+
+        # CatchEngine has no persisted verified-result ledger yet and is not wired
+        # into the live runtime; zero is the only verified count at this stage.
+        return {
+            "total_users": total_users,
+            "active_sessions": int(getattr(runtime, "active_user_count", 0)),
+            "total_catches": 0,
+            "system_uptime_seconds": max(0, int(time.monotonic() - started_at_monotonic)),
         }
 
     @app.get("/v1/accounts/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
