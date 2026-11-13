@@ -323,6 +323,37 @@ export function commandReply(text) {
   return null;
 }
 
+async function manualWebhookSetup(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) {
+    return json({ error: "admin_auth_not_configured" }, 503);
+  }
+  const authorization = request.headers.get("authorization") || "";
+  const match = authorization.match(/^Bearer (.+)$/i);
+  if (!match || !(await verifySecret(match[1], env.CORE_API_SECRET))) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET) {
+    return json({ error: "telegram_secrets_not_configured" }, 503);
+  }
+  const expectedUrl = new URL(WEBHOOK_PATH, request.url).toString();
+  try {
+    const current = await telegramApi(env, "getWebhookInfo");
+    if (current.url === expectedUrl) return json({ status: "already_configured", verified: true });
+    await telegramApi(env, "setWebhook", {
+      url: expectedUrl,
+      secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+      allowed_updates: ["message", "callback_query"],
+      drop_pending_updates: false,
+    });
+    const verified = await telegramApi(env, "getWebhookInfo");
+    if (verified.url !== expectedUrl) return json({ error: "webhook_verification_failed" }, 502);
+    return json({ status: "configured", verified: true });
+  } catch {
+    return json({ error: "telegram_webhook_setup_failed" }, 502);
+  }
+}
+
 async function health(env) {
   const configured = Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_WEBHOOK_SECRET);
   if (!configured) {
@@ -1438,6 +1469,7 @@ export default {
   },
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === "/admin/setup-webhook") return manualWebhookSetup(request, env);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname === "/internal/panel-requests") {
       return enqueuePanelRequestAndDispatch(
