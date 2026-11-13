@@ -16,21 +16,13 @@ test("panel explains login requirements and never leaves the connect button sile
   assert.match(html, /main\{padding-bottom:124px\}/);
 });
 
-test("main menu is inline-first and exposes the agreed account controls", () => {
+test("main menu is a compact native dashboard with four top-level sections", () => {
   const menu = buildMainMenu();
-  const callbacks = menu.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.deepEqual(callbacks, [
-    "catch:open",
-    "bots:open",
-    "account:connect",
-    "account:list",
-    "stats:open",
-    "settings:open",
-    "security:open",
-    "account:disconnect",
-    "help:open",
-  ]);
-  assert.equal(menu.inline_keyboard.flat().some((button) => button.url), false);
+  const buttons = menu.inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
+  assert.ok(buttons.length <= 5);
+  assert.equal(buttons.some((button) => button.url || button.web_app), false);
 });
 
 test("connect callback explains the standalone account link without exposing a chat credential prompt", () => {
@@ -50,27 +42,32 @@ test("unknown callback is rejected safely", () => {
   assert.equal(resolveCallback("account:unknown").alert, true);
 });
 
-test("/start opens the native member dashboard directly", () => {
+test("overview, catcher, settings, and account sections each have an inline submenu", () => {
+  for (const callback of ["overview:open", "catch:open", "settings:open", "account:open"]) {
+    const result = resolveCallback(callback);
+    assert.equal(typeof result.text, "string");
+    assert.ok(result.keyboard?.inline_keyboard?.length > 0);
+  }
+});
+
+
+test("/start opens the compact native member dashboard directly", () => {
   const start = commandReply("/start");
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("account:connect"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
 });
 
-test("/panel opens the member feature menu directly as an explicit choice", () => {
+test("/panel opens the same compact native dashboard as /start", () => {
   const panel = commandReply("/panel");
   const callbacks = panel.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("account:connect"));
-  assert.ok(callbacks.includes("account:list"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
 });
 
-test("owner start menu combines owner controls with the native member dashboard", () => {
-  const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("owner:stats"));
-  assert.ok(callbacks.includes("owner:members"));
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
+test("owner start menu is compact and keeps owner-only controls", () => {
+  const buttons = buildStartMenu("OWNER").inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.deepEqual(callbacks, ["owner:stats", "owner:monitor", "owner:members", "owner:invites", "owner:settings"]);
+  assert.ok(buttons.length <= 5);
 });
 
 test("status and help remain available as slash-command shortcuts", () => {
@@ -318,21 +315,17 @@ test("blocked users cannot enter even if their stored role says MEMBER", () => {
   assert.equal(resolveRole(1002, "1001", "MEMBER", "blocked"), "BLOCKED");
 });
 
-test("member menu contains only personal account and catch features", () => {
+test("member menu contains only the four personal dashboard sections", () => {
   const callbacks = buildRoleMenu("MEMBER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("account:list"));
-  assert.ok(callbacks.includes("account:connect"));
-  assert.ok(!callbacks.includes("owner:members"));
-  assert.ok(!callbacks.includes("owner:settings"));
-  assert.ok(!callbacks.includes("owner:broadcast"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
+  assert.ok(!callbacks.some((callback) => callback.startsWith("owner:")));
 });
 
-test("owner menu includes global monitoring and member administration", () => {
-  const callbacks = buildRoleMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("owner:members"));
-  assert.ok(callbacks.includes("owner:stats"));
-  assert.ok(callbacks.includes("owner:settings"));
-  assert.ok(callbacks.includes("owner:broadcast"));
+test("owner menu exposes five top-level owner destinations", () => {
+  const buttons = buildRoleMenu("OWNER").inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.deepEqual(callbacks, ["owner:stats", "owner:monitor", "owner:members", "owner:invites", "owner:settings"]);
+  assert.ok(buttons.length <= 5);
 });
 
 
@@ -752,13 +745,12 @@ test("dashboard labels the Core as degraded instead of offline when the bridge r
 });
 
 
-test("Telegram member menu is a native bot-first dashboard with Catch, bot targets, and settings", () => {
+test("Telegram member menu is a minimal native dashboard without WebApp buttons", () => {
   const menu = buildRoleMenu("MEMBER");
   const buttons = menu.inline_keyboard.flat();
   const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("settings:open"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
+  assert.ok(buttons.length <= 5);
   assert.equal(buttons.some((button) => button.web_app), false);
 });
 
@@ -777,12 +769,10 @@ test("settings callback is reachable and clearly separates unavailable controls"
   assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
 });
 
-test("/start opens the native role menu directly instead of a redundant landing menu", () => {
+test("/start opens the compact role menu directly instead of a redundant landing menu", () => {
   const start = commandReply("/start");
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("account:connect"));
+  assert.deepEqual(callbacks, ["overview:open", "catch:open", "settings:open", "account:open"]);
 });
 
 
