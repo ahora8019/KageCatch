@@ -1147,6 +1147,61 @@ test("unknown Telegram identities are denied until an Owner invitation is redeem
   assert.equal(resolveRole(7654321, "999001"), "DENIED");
 });
 
+test("Overview callback reads signed live Core, account, and Catch status then edits the same Telegram message", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding,
+    OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    CORE_API_URL: "https://core.example",
+    CORE_API_SECRET: "a-long-test-secret-that-is-at-least-32-bytes",
+    FETCH: async (url, init = {}) => {
+      const target = String(url);
+      if (target.includes("api.telegram.org")) {
+        calls.push({ kind: "telegram", method: target.split("/").pop(), payload: JSON.parse(init.body || "{}") });
+        return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+      }
+      const path = new URL(target).pathname;
+      calls.push({ kind: "core", path, headers: init.headers });
+      if (path === "/v1/health") return new Response(JSON.stringify({ status: "ready", active_clients: 1 }), { status: 200 });
+      if (path === "/v1/accounts/999001") return new Response(JSON.stringify({ status: "connected", connected: true, session_saved: true }), { status: 200 });
+      if (path === "/v1/accounts/999001/catch") return new Response(JSON.stringify({ enabled: false, execution_ready: true }), { status: 200 });
+      return new Response(JSON.stringify({ error: "not_found" }), { status: 404 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({
+      update_id: 987654,
+      callback_query: {
+        id: "live-status-callback",
+        data: "overview:open",
+        from: { id: 999001, first_name: "Ahora" },
+        message: { message_id: 77, chat: { id: 999001, type: "private" } },
+      },
+    }),
+  }), env);
+  assert.equal(response.status, 200);
+  const edit = calls.find((call) => call.kind === "telegram" && call.method === "editMessageText");
+  assert.ok(edit);
+  assert.equal(edit.payload.message_id, 77);
+  assert.match(edit.payload.text, /Python Core: <b>Online<\/b>/);
+  assert.match(edit.payload.text, /Session: <b>Connected<\/b>/);
+  assert.match(edit.payload.text, /Catch Mode: <b>Disabled<\/b>/);
+  assert.deepEqual(calls.filter((call) => call.kind === "core").map((call) => call.path), [
+    "/v1/health", "/v1/accounts/999001", "/v1/accounts/999001/catch",
+  ]);
+  assert.ok(calls.filter((call) => call.kind === "core").every((call) =>
+    call.headers["X-KageCatch-Signature"] && call.headers["X-KageCatch-Nonce"] && call.headers["X-KageCatch-Timestamp"]
+  ));
+});
+
+
 
 test("Owner invite screen renders real line breaks and keeps creation and back buttons visible", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
