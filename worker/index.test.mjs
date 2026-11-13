@@ -1505,16 +1505,52 @@ test("manual webhook setup endpoint requires the Core admin secret and repairs t
     method: "POST", headers: { authorization: "Bearer " + secret },
   }), env);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: "configured", verified: true });
+  const responseBody = await response.text();
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(responseBody), { status: "configured", verified: true });
+  assert.doesNotMatch(responseBody, /test-bot-token|test_webhook_secret_123|core-admin-secret/);
   assert.equal(webhookUrl, "https://kagecatch-control.ahora-project.workers.dev/webhook");
   assert.deepEqual(calls.map((call) => call.method), ["getWebhookInfo", "setWebhook", "getWebhookInfo"]);
   assert.equal(calls[1].payload.secret_token, env.TELEGRAM_WEBHOOK_SECRET);
   assert.equal(calls[1].payload.drop_pending_updates, false);
 });
 
-test("manual webhook setup endpoint rejects wrong methods and never exposes secrets", async () => {
+test("manual webhook setup endpoint rejects wrong methods without exposing configured secrets", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/admin/setup-webhook", {
     method: "GET",
-  }), { CORE_API_SECRET: "a".repeat(40) });
+  }), {
+    CORE_API_SECRET: "core-admin-secret-with-at-least-32-bytes",
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "test_webhook_secret_123",
+  });
   assert.equal(response.status, 405);
+  const body = await response.text();
+  assert.deepEqual(JSON.parse(body), { error: "method_not_allowed" });
+  assert.doesNotMatch(body, /test-bot-token|test_webhook_secret_123|core-admin-secret/);
+});
+
+test("manual webhook setup derives the webhook host from the incoming Worker origin", async () => {
+  const secret = "core-admin-secret-with-at-least-32-bytes";
+  let webhookUrl = "";
+  const env = {
+    CORE_API_SECRET: secret,
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "test_webhook_secret_123",
+    FETCH: async (url, init) => {
+      const method = String(url).split("/").pop();
+      const payload = JSON.parse(init.body);
+      if (method === "getWebhookInfo") return new Response(JSON.stringify({ ok: true, result: { url: webhookUrl } }));
+      if (method === "setWebhook") {
+        webhookUrl = payload.url;
+        return new Response(JSON.stringify({ ok: true, result: true }));
+      }
+      throw new Error("unexpected Telegram method");
+    },
+  };
+  const response = await worker.fetch(new Request("https://custom-worker.example/admin/setup-webhook", {
+    method: "POST",
+    headers: { authorization: "Bearer " + secret },
+  }), env);
+  assert.equal(response.status, 200);
+  assert.equal(webhookUrl, "https://custom-worker.example/webhook");
 });
