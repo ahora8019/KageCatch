@@ -2067,7 +2067,7 @@ async function makeSignedQuotaRequest(payload, secret, nonce = crypto.randomUUID
   const body = JSON.stringify(payload);
   const timestamp = String(Math.floor(Date.now() / 1000));
   const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const signingText = [timestamp, nonce, "POST", path, bodyHash].join("\\n");
+  const signingText = [timestamp, nonce, "POST", path, bodyHash].join("\n");
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const signature = Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText))), (byte) => byte.toString(16).padStart(2, "0")).join("");
   return new Request("https://kagecatch-control.ahora-project.workers.dev" + path, {
