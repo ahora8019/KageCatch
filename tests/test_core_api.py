@@ -382,3 +382,17 @@ class CoreApiTests(unittest.TestCase):
         body = json.dumps({"enabled": True}).encode()
         response = self.client.put(path, content=body, headers=signed_headers("PUT", path, body))
         self.assertEqual(response.status_code, 409)
+
+    def test_owner_monitoring_preserves_structured_event_type(self):
+        logging.getLogger("kagecatch.core").info(
+            "Catch completed and verified", extra={"event_type": "catch_success"}
+        )
+        path = "/v1/owner/monitoring"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        events = response.json()["recent_events"]
+        self.assertTrue(any(
+            event.get("event_type") == "catch_success"
+            and event["message"] == "Catch completed and verified"
+            for event in events
+        ))
