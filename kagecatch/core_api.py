@@ -31,9 +31,13 @@ class _MonitorEventHandler(logging.Handler):
     def emit(self, record):
         try:
             message = record.getMessage()
+            event_type = getattr(record, "event_type", "log")
+            if not isinstance(event_type, str) or not re.fullmatch(r"[a-z_]{1,40}", event_type):
+                event_type = "log"
             _RECENT_MONITOR_EVENTS.append({
                 "timestamp": int(record.created),
                 "level": record.levelname if record.levelname in {"DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"} else "INFO",
+                "event_type": event_type,
                 "message": str(message)[:240],
             })
         except Exception:
@@ -48,6 +52,25 @@ _monitor_logger.addHandler(_monitor_handler)
 _monitor_logger.info("Core monitoring initialized")
 # Capture the Core lifecycle's existing operational messages as well.
 logging.getLogger("kagecatch.core").addHandler(_monitor_handler)
+
+_MONITOR_EVENT_MESSAGES = {
+    "catch_success": "Catch completed and verified",
+    "catch_failure": "Catch attempt failed or could not be verified",
+    "flood_wait": "Telegram FloodWait encountered; request throttled",
+    "session_reconnected": "Authorized Telegram session reconnected",
+    "session_disconnected": "Telegram session disconnected",
+}
+
+
+def emit_monitor_event(event_type: str, *, level: int = logging.INFO) -> bool:
+    """Emit a bounded, structured operational event without account identifiers."""
+    message = _MONITOR_EVENT_MESSAGES.get(event_type)
+    if message is None:
+        return False
+    logging.getLogger("kagecatch.core").log(
+        level, message, extra={"event_type": event_type}
+    )
+    return True
 
 
 
