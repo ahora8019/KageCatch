@@ -168,7 +168,9 @@ class CatchEngine:
 
         try:
             verified = await adapter.verify_catch(receipt)
-        except Exception:
+        except Exception as exc:
+            if type(exc).__name__ == "FloodWaitError":
+                emit_monitor_event("flood_wait", level=logging.WARNING)
             verified = False
 
         emit_monitor_event("catch_success" if verified else "catch_failure", level=logging.INFO if verified else logging.WARNING)
