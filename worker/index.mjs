@@ -163,7 +163,8 @@ export function buildOwnerMonitor(monitoring) {
     ...(monitoring.recentEvents.length ? monitoring.recentEvents.map((event) => {
       const time = new Date(event.timestamp * 1000).toISOString().slice(11, 16);
       const level = ["DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"].includes(event.level) ? event.level : "INFO";
-      return "[" + time + "] " + level + ": " + escapeHtml(event.message);
+      const eventType = typeof event.event_type === "string" && /^[a-z_]{1,40}$/.test(event.event_type) ? event.event_type : "log";
+      return "[" + time + "] " + level + " [" + eventType + "]: " + escapeHtml(event.message);
     }) : ["No recent events."]),
     "━━━━━━━━━━━━━━━━━━━━",
   ] : [
@@ -207,6 +208,7 @@ async function loadOwnerMonitoring(env) {
   const recentEvents = data.recent_events.slice(0, 10).filter((event) =>
     event && Number.isSafeInteger(event.timestamp) && event.timestamp >= 0
     && typeof event.level === "string" && typeof event.message === "string"
+    && (event.event_type === undefined || (typeof event.event_type === "string" && /^[a-z_]{1,40}$/.test(event.event_type)))
   );
   return {
     available: true,
