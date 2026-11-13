@@ -27,12 +27,13 @@ class FakeQueue:
         self.items = []
         self.fail = fail
 
-    async def enqueue(self, *, user_id, spawn_id, anime_name, candidates):
+    async def enqueue(self, *, user_id, spawn_id, anime_name, candidates, spawn_context=None):
         if self.fail:
             raise TimeoutError("D1 unavailable")
         item = {
             "user_id": user_id, "spawn_id": spawn_id,
             "anime_name": anime_name, "candidates": tuple(candidates),
+            "spawn_context": spawn_context,
             "status": ReviewStatus.PENDING,
         }
         self.items.append(item)
