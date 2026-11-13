@@ -32,6 +32,29 @@ test("connect callback explains the standalone account link without exposing a c
   assert.doesNotMatch(result.text, /پنل|کد ورود را بفرست|رمز دومرحله‌ای را وارد کن/);
 });
 
+test("account details render only masked identity data and hide refresh when Core is offline", () => {
+  const live = resolveCallback("account:list", "Member", "MEMBER", {
+    core: "ready",
+    account: "connected",
+    accountInfo: {
+      sessionHealth: "valid",
+      phoneMasked: "+9891******67",
+      lastActive: "2026-11-13T12:00:00+00:00",
+    },
+  });
+  assert.match(live.text, /Session health: <b>Valid<\\/b>/);
+  assert.match(live.text, /\\+9891\\*{6}67/);
+  assert.match(live.text, /2026-11-13T12:00:00/);
+  assert.equal(live.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "account:list"), true);
+
+  const offline = resolveCallback("account:list", "Member", "MEMBER", {
+    core: "unavailable",
+    account: "unknown",
+  });
+  assert.match(offline.text, /Core Offline/);
+  assert.equal(offline.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "account:list"), false);
+});
+
 test("account and security callbacks disclose only current unavailable state", () => {
   assert.match(resolveCallback("account:list").text, /Session: <b>Unknown<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
