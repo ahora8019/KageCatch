@@ -172,9 +172,11 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
 if __name__ == "__main__":
     unittest.main()
 
+class CatchEngineTelemetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_verified_catch_emits_structured_monitor_event_without_user_data(self):
+        engine = CatchEngine(confidence_threshold=0.92, quota=FakeQuota(), deduplicator=FakeDeduplicator(), enabled=True)
         with self.assertLogs("kagecatch.core", level="INFO") as captured:
-            result = await self.engine.handle_spawn("private-user-id", sample_spawn(), self.adapter)
+            result = await engine.handle_spawn("private-user-id", sample_spawn(), FakeAdapter())
         self.assertEqual(result.status, "verified")
         events = [record for record in captured.records if getattr(record, "event_type", None) == "catch_success"]
         self.assertEqual(len(events), 1)
