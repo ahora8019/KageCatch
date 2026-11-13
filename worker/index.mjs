@@ -137,6 +137,86 @@ async function coreRequest(env, method, path, payload = null) {
   }
 }
 
+function formatOwnerUptime(seconds) {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  return `${days}d ${hours}h`;
+}
+
+export function buildOwnerDashboard(stats) {
+  const available = stats?.available === true;
+  const keyboard = [
+    [
+      { text: "👥 Manage Users", callback_data: "owner:members" },
+      { text: "📊 System Logs", callback_data: "owner:logs" },
+    ],
+    [
+      { text: "🎯 Catch Engine", callback_data: "owner:catch" },
+      { text: "⚙️ Global Settings", callback_data: "owner:global-settings" },
+    ],
+  ];
+  if (available) keyboard.push([{ text: "🔄 Refresh", callback_data: "owner:stats:refresh" }]);
+  keyboard.push([{ text: "🔙 Back to Main", callback_data: "home:panel" }]);
+
+  const lines = available
+    ? [
+        "👑 KAGECATCH | OWNER HQ",
+        "━━━━━━━━━━━━━━━━━━━━",
+        `👥 Total Users: ${stats.totalUsers.toLocaleString("en-US")}`,
+        `🟢 Active Sessions: ${stats.activeSessions.toLocaleString("en-US")}`,
+        `🎯 Total Catches: ${stats.totalCatches.toLocaleString("en-US")}`,
+        `⏱️ System Uptime: ${formatOwnerUptime(stats.uptime)}`,
+        "━━━━━━━━━━━━━━━━━━━━",
+      ]
+    : [
+        "👑 KAGECATCH | OWNER HQ",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "🔴 Core Offline",
+        "👥 Total Users: Unavailable",
+        "🟢 Active Sessions: Unavailable",
+        "🎯 Total Catches: Unavailable",
+        "⏱️ System Uptime: Unavailable",
+        "━━━━━━━━━━━━━━━━━━━━",
+      ];
+
+  return {
+    text: "<pre>" + lines.join("\n") + "</pre>",
+    parse_mode: "HTML",
+    keyboard: { inline_keyboard: keyboard },
+  };
+}
+
+async function loadOwnerStats(env) {
+  const [core, registry] = await Promise.all([
+    coreRequest(env, "GET", "/v1/owner/stats"),
+    registryRequest(env, "/users", {}).then(
+      (data) => ({ available: true, data }),
+      () => ({ available: false, data: null }),
+    ),
+  ]);
+  const data = core.data;
+  const fields = ["total_users", "active_sessions", "total_catches", "system_uptime_seconds"];
+  const validCoreStats = core.status >= 200 && core.status < 300 &&
+    fields.every((field) => Number.isSafeInteger(data?.[field]) && data[field] >= 0);
+  if (!validCoreStats || !registry.available || !Array.isArray(registry.data?.users)) {
+    return { available: false };
+  }
+
+  // The Worker registry is authoritative for all invited users, including users
+  // who have not connected a Telegram session in Python Core yet.
+  const totalUsers = registry.data.users.filter(
+    (user) => user && user.role !== "OWNER",
+  ).length;
+
+  return {
+    available: true,
+    totalUsers,
+    activeSessions: data.active_sessions,
+    totalCatches: data.total_catches,
+    uptime: data.system_uptime_seconds,
+  };
+}
+
 async function loadRuntimeStatus(env, telegramUserId, includeAccountInfo = false) {
   const unavailable = { core: "unavailable", account: "unknown", catchEnabled: null, executionReady: null, accountInfo: null };
   if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return unavailable;
@@ -249,9 +329,9 @@ async function telegramApi(env, method, payload = {}) {
 
 export function buildRoleMenu(role = "MEMBER") {
   if (role === "OWNER") return { inline_keyboard: [
-    [{ text: "📊 Overview", callback_data: "owner:stats" }, { text: "👁️ Monitoring", callback_data: "owner:monitor" }],
-    [{ text: "👥 Members", callback_data: "owner:members" }, { text: "🎟️ Invites", callback_data: "owner:invites" }],
-    [{ text: "⚙️ Settings", callback_data: "owner:settings" }],
+    [{ text: "👑 Owner Panel", callback_data: "owner:stats" }],
+    [{ text: "👁️ Monitoring", callback_data: "owner:monitor" }, { text: "👥 Members", callback_data: "owner:members" }],
+    [{ text: "🎟️ Invites", callback_data: "owner:invites" }, { text: "⚙️ Settings", callback_data: "owner:settings" }],
   ] };
   return { inline_keyboard: [
     [{ text: "📊 Overview", callback_data: "overview:open" }, { text: "🎯 Catcher", callback_data: "catch:open" }],
@@ -968,14 +1048,32 @@ function activityLabel(action) {
 
 async function handleOwnerCallback(callback, env) {
   const data = callback.data || '';
-  if (data === 'owner:stats') {
+  if (data === 'owner:logs') {
     const { users = [] } = await registryRequest(env, '/users', {});
-    const active = users.filter((user) => user.status === 'active' && user.role === 'MEMBER').length;
-    const blocked = users.filter((user) => user.status === 'blocked').length;
-    const { invites = [] } = await registryRequest(env, '/invite/list', {});
-    const usable = invites.filter((invite) => !invite.revokedAt && invite.expiresAt > Date.now() && invite.uses < invite.maxUses).length;
-    return { text: '👑 نمای کلی KageCatch\n\n👥 اعضای فعال: ' + active + '\n🚫 مسدود: ' + blocked + '\n🎟️ دعوت‌های معتبر: ' + usable + '\n\nوضعیت Catch: خاموش · بدون اجرای زنده', keyboard: { inline_keyboard: [[{ text: '👥 اعضا', callback_data: 'owner:members' }, { text: '🎟️ دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
+    const events = users.flatMap((user) =>
+      (Array.isArray(user.recentActivity) ? user.recentActivity : []).map((event) => ({
+        at: event.at,
+        action: event.action,
+        user: user.firstName || (user.username ? '@' + user.username : String(user.telegramUserId)),
+      })),
+    ).sort((a, b) => b.at - a.at).slice(0, 12);
+    const history = events.map((event) =>
+      '• ' + new Date(event.at).toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }) +
+      ' — ' + event.user + ' — ' + activityLabel(event.action)
+    ).join('\n') || 'هنوز رویدادی ثبت نشده است.';
+    return {
+      text: '📊 SYSTEM LOGS\\n\\n' + history,
+      keyboard: { inline_keyboard: [[{ text: '👑 Owner HQ', callback_data: 'owner:stats' }], ...BACK_MENU.inline_keyboard] },
+    };
   }
+  if (data === 'owner:catch') return {
+    text: '🎯 CATCH ENGINE\\n\\n🔴 Live execution: Disabled\\nVerified catches: 0\\n\\nCatch execution and persistent verified-result tracking are not connected yet. No live action was started.',
+    keyboard: { inline_keyboard: [[{ text: '👑 Owner HQ', callback_data: 'owner:stats' }], ...BACK_MENU.inline_keyboard] },
+  };
+  if (data === 'owner:global-settings') return {
+    text: '⚙️ GLOBAL SETTINGS\\n\\nRead-only preview. Global configuration changes are not enabled in this release.',
+    keyboard: { inline_keyboard: [[{ text: '👑 Owner HQ', callback_data: 'owner:stats' }], ...BACK_MENU.inline_keyboard] },
+  };
   if (data === 'owner:monitor') {
     const { users = [] } = await registryRequest(env, '/users', {});
     const members = users.filter((user) => user.role !== 'OWNER').sort((a, b) => (b.lastSeenAt || b.createdAt || 0) - (a.lastSeenAt || a.createdAt || 0)).slice(0, 12);
@@ -1080,6 +1178,20 @@ async function handleOwnerCallback(callback, env) {
 }
 
 async function handleCallback(callback, env) {
+  const isOwnerCallback = callback.data?.startsWith("owner:");
+  const configuredOwnerId = String(env.OWNER_TELEGRAM_ID || "");
+  const isExactOwner =
+    /^[1-9]\\d*$/.test(configuredOwnerId) &&
+    Number.isSafeInteger(callback.from?.id) &&
+    String(callback.from.id) === configuredOwnerId;
+  if (isOwnerCallback && !isExactOwner) {
+    await telegramApi(env, "answerCallbackQuery", {
+      callback_query_id: callback.id,
+      text: "⛔ Unauthorized",
+      show_alert: true,
+    });
+    return;
+  }
   if (await handlePanelCallback(callback, env, telegramApi)) return;
   const chat = callback.message?.chat;
   if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id)) {
@@ -1110,6 +1222,8 @@ async function handleCallback(callback, env) {
     result = { text: "📊 وضعیت KageCatch\n\nControl Worker: فعال\nPython Core: متصل نیست\nاتصال حساب: هنوز فعال نشده\nاجرای Catch: غیرفعال", keyboard: { inline_keyboard: [[{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
   } else if (callback.data === "home:help") {
     result = { text: "❓ راهنمای KageCatch\n\nبرای ورود به امکانات، پنل کاربری را انتخاب کن. دستورهای /panel و /status هم میانبر هستند.", keyboard: { inline_keyboard: [[{ text: "🧩 پنل کاربری", callback_data: "home:panel" }], [{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
+  } else if (callback.data === "owner:stats" || callback.data === "owner:stats:refresh") {
+    result = buildOwnerDashboard(await loadOwnerStats(env));
   } else if (callback.data?.startsWith("owner:")) {
     result = await handleOwnerCallback(callback, env);
   } else {
