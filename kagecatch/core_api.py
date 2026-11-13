@@ -163,9 +163,12 @@ def create_app(
             except Exception:
                 self.handleError(record)
 
-    monitor_logger = logging.getLogger("kagecatch")
+    monitor_logger = logging.getLogger("kagecatch.monitor")
     monitor_handler = _MonitorEventHandler()
+    monitor_logger.setLevel(logging.INFO)
+    monitor_logger.propagate = False
     monitor_logger.addHandler(monitor_handler)
+    monitor_logger.info("Core monitoring initialized")
     app.state.recent_events = recent_events
     app.router.on_shutdown.append(lambda: monitor_logger.removeHandler(monitor_handler))
     # Review persistence is an independent resource from Telegram sessions.
