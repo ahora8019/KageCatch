@@ -359,9 +359,9 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       ];
       if (coreOffline) lines.push("", "⚠️ Core Offline — account details are unavailable.");
       const keyboard = [];
-      if (status.account === "not_connected" || status.account === "unknown") {
+      if (!coreOffline && status.account !== "connected") {
         keyboard.push([{ text: "🟢 اتصال حساب", callback_data: "account:connect" }]);
-      } else if (accountInfo.sessionHealth === "expired" || accountInfo.sessionHealth === "revoked") {
+      } else if (!coreOffline && (accountInfo.sessionHealth === "expired" || accountInfo.sessionHealth === "revoked")) {
         keyboard.push([{ text: "🔁 اتصال دوباره", callback_data: "account:connect" }]);
       }
       if (!coreOffline) keyboard.push([{ text: "🔄 Refresh", callback_data: "account:list" }]);
