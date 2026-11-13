@@ -1982,6 +1982,7 @@ test("Catcher menu opens a native review queue and approval stays fail-closed", 
 
   const calls = [];
   const registry = {
+    idFromName: () => "connection-links-v1",
     get: () => ({
       fetch: async (input, init = {}) => {
         const path = new URL(input).pathname;
@@ -2027,7 +2028,7 @@ test("Catcher menu opens a native review queue and approval stays fail-closed", 
     body: JSON.stringify(update),
   }), env);
 
-  await webhook({
+  const listResponse = await webhook({
     update_id: 71001,
     callback_query: {
       id: "review-list-callback", data: "catch:reviews",
@@ -2035,6 +2036,7 @@ test("Catcher menu opens a native review queue and approval stays fail-closed", 
       message: { message_id: 77, chat: { id: 2001, type: "private" } },
     },
   });
+  assert.equal(listResponse.status, 200, await listResponse.text());
   const listEdit = calls.find((call) => call.method === "editMessageText");
   assert.ok(listEdit);
   assert.match(listEdit.payload.text, /KonoSuba/);
