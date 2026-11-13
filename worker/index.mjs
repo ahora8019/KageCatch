@@ -175,7 +175,7 @@ export function buildOwnerMonitor(monitoring) {
     "━━━━━━━━━━━━━━━━━━━━",
     "📋 Recent Events: Unavailable",
   ];
-  return { text: "<pre>" + lines.join("\\n") + "</pre>", parse_mode: "HTML", keyboard };
+  return { text: "<pre>" + lines.join("\n") + "</pre>", parse_mode: "HTML", keyboard };
 }
 
 async function loadOwnerMonitoring(env) {
