@@ -1,4 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
+import { ensureTelegramWebhook } from "./webhook_setup.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -1433,6 +1434,12 @@ export default {
   async scheduled(controller, env) {
     if (controller?.cron !== "*/10 * * * *") {
       return { skipped: true, reason: "not_render_keepalive_schedule" };
+    }
+    const webhook = await ensureTelegramWebhook(env);
+    if (webhook.status === "configured") {
+      console.log(JSON.stringify({ event: "telegram_webhook_reconciled", status: webhook.status, verified: true }));
+    } else if (webhook.status === "failed") {
+      console.warn(JSON.stringify({ event: "telegram_webhook_reconcile_failed", stage: webhook.stage }));
     }
     return keepRenderCoreWarm(env, controller);
   },
