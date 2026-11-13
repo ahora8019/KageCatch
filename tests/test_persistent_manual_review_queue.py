@@ -124,7 +124,7 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         store = FakeDurableStore()
         context = SpawnContext(
             source="senpai_catcher", chat_id=-1001234567890,
-            message_id=90, media_kind="photo",
+            message_id=90, media_kind="image",
         )
         first = PersistentManualReviewQueue(store=store)
         created = await first.enqueue(
