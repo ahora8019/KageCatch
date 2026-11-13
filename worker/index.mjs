@@ -1168,7 +1168,7 @@ async function handleOwnerCallback(callback, env) {
     rows.push([{ text: '🔄 بروزرسانی', callback_data: 'owner:members:monitor' }, { text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
     return { text: '👁️ نظارت کاربران KageCatch\n\n' + (lines.join('\n\n') || 'هنوز عضوی وجود ندارد.') + '\n\nاین وضعیت، فعال‌بودن کلاینت در Core را نشان می‌دهد؛ ذخیره‌بودن نشست به‌تنهایی به معنی اجرای کلاینت نیست.', keyboard: { inline_keyboard: rows } };
   }
-  const monitorUser = data.match(/^owner:monitor:user:(\d+)$/);
+  const monitorUser = data.match(/^owner:members:monitor:user:(\d+)$/);
   if (monitorUser) {
     const telegramUserId = Number(monitorUser[1]);
     const { users = [] } = await registryRequest(env, '/users', {});
