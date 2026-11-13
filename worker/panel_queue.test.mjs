@@ -360,7 +360,7 @@ test("manual review list edits the existing group panel with owner-scoped candid
   let requestedUrl;
   env.CORE_API_FETCH = async (url, init) => {
     requestedUrl = { url, method: init.method, body: init.body };
-    return Response.json({ items: [{
+    return Response.json({ approval_available: true, items: [{
       review_id: "b".repeat(32), anime_name: "KonoSuba",
       candidates: ["Megumin", "Aqua"], expires_at: "2026-11-13T17:00:00+00:00",
     }] });
@@ -432,3 +432,36 @@ test("manual review callbacks are rejected outside the exact owner panel message
   assert.equal(coreCalled, false);
   assert.match(calls[0].payload.text, /دسترسی/);
 });
+
+
+test("review list hides execution approval buttons until the CatchEngine is actually ready", async () => {
+  const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  env.CORE_API_FETCH = async () => Response.json({ approval_available: false, items: [{
+    review_id: "c".repeat(32), anime_name: "KonoSuba",
+    candidates: ["Megumin", "Aqua"],
+  }] });
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 987,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-reviews-disabled", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":reviews",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.match(edit.payload.text, /موتور Catch هنوز برای تأیید اجرایی فعال نشده/);
+  assert.equal(
+    edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data.includes(":a:")),
+    false,
+  );
+  assert.equal(
+    edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "kr:" + "c".repeat(32) + ":r"),
+    true,
+  );
+});
+
