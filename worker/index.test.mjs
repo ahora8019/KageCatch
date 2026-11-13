@@ -1970,3 +1970,91 @@ test("durable manual review endpoint persists trusted spawn context per owning r
   assert.deepEqual(await foreign.json(), { items: [] });
 });
 
+
+
+test("Catcher menu opens a native review queue and approval stays fail-closed", async () => {
+  const menu = (await import("./index.mjs")).resolveCallback(
+    "catch:open", "Test User", "MEMBER",
+    { core: "ready", account: "connected", catchEnabled: false, executionReady: false },
+    "fa",
+  );
+  assert.ok(menu.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "catch:reviews"));
+
+  const calls = [];
+  const registry = {
+    get: () => ({
+      fetch: async (input, init = {}) => {
+        const path = new URL(input).pathname;
+        const body = init.body ? JSON.parse(init.body) : {};
+        if (path === "/user") return new Response(JSON.stringify({ user: { telegramUserId: 2001, role: "MEMBER", status: "active", language: "fa" } }));
+        if (path === "/activity/record") return new Response(JSON.stringify({ recorded: true }));
+        throw new Error("unexpected registry path");
+      },
+    }),
+  };
+  const env = {
+    TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    OWNER_TELEGRAM_ID: "9999",
+    CORE_API_URL: "https://core.example.test",
+    CORE_API_SECRET: "core-secret-with-at-least-thirty-two-bytes",
+    CONNECT_LINKS: registry,
+    FETCH: async (input, init = {}) => {
+      const url = new URL(input);
+      if (url.hostname === "core.example.test") {
+        if (url.pathname === "/v1/reviews/2001") {
+          return new Response(JSON.stringify({ items: [{
+            review_id: "a".repeat(32), anime_name: "KonoSuba",
+            candidates: ["Megumin"], spawn_context_available: true,
+          }] }), { status: 200 });
+        }
+        if (url.pathname.endsWith("/approve")) {
+          return new Response(JSON.stringify({ detail: "review_execution_not_configured" }), { status: 503 });
+        }
+        throw new Error("unexpected Core path");
+      }
+      const method = url.pathname.split("/").pop();
+      calls.push({ method, payload: init.body ? JSON.parse(init.body) : {} });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const webhook = async (update) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": "hook-secret",
+    },
+    body: JSON.stringify(update),
+  }), env);
+
+  await webhook({
+    update_id: 71001,
+    callback_query: {
+      id: "review-list-callback", data: "catch:reviews",
+      from: { id: 2001, first_name: "Test" },
+      message: { message_id: 77, chat: { id: 2001, type: "private" } },
+    },
+  });
+  const listEdit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(listEdit);
+  assert.match(listEdit.payload.text, /KonoSuba/);
+  assert.ok(listEdit.payload.reply_markup.inline_keyboard.flat().some(
+    (button) => button.callback_data === "review:approve:" + "a".repeat(32) + ":0",
+  ));
+
+  calls.length = 0;
+  await webhook({
+    update_id: 71002,
+    callback_query: {
+      id: "review-approve-callback",
+      data: "review:approve:" + "a".repeat(32) + ":0",
+      from: { id: 2001, first_name: "Test" },
+      message: { message_id: 77, chat: { id: 2001, type: "private" } },
+    },
+  });
+  const approvalEdit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(approvalEdit);
+  assert.match(approvalEdit.payload.text, /هیچ فرمانی به بات مقصد ارسال نشده است/);
+  assert.equal(calls.some((call) => call.method === "sendMessage"), false);
+});
+
