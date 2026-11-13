@@ -188,7 +188,8 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(set(data), {"core_status", "redis_status", "active_workers", "recent_events"})
 
     def test_owner_monitoring_includes_recent_core_log_events(self):
-        from kagecatch.monitoring import emit_monitor_event\n        emit_monitor_event("catch_failure", level=logging.WARNING)
+        from kagecatch.monitoring import emit_monitor_event
+        emit_monitor_event("catch_failure", level=logging.WARNING)
         path = "/v1/owner/monitoring"
         response = self.client.get(path, headers=signed_headers("GET", path))
         self.assertEqual(response.status_code, 200)
