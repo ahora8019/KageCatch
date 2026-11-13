@@ -10,7 +10,7 @@ import asyncio
 import math
 import logging
 
-from .core_api import emit_monitor_event
+from .monitoring import emit_monitor_event
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
