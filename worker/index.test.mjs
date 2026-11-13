@@ -1923,3 +1923,14 @@ test("English locale covers account, security, statistics, help, and main naviga
   assert.match(resolveCallback("help:open", "Ahora", "MEMBER", {}, "en").text, /KageCatch help/);
   assert.match(resolveCallback("menu:main", "Ahora", "MEMBER", {}, "en").text, /Welcome to KageCatch/);
 });
+
+test("English locale also translates target bot information and Catcher navigation", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const bots = resolveCallback("bots:open", "Ahora", "MEMBER", {}, "en");
+  assert.match(bots.text, /Target bots/);
+  assert.match(bots.text, /Live end-to-end tests have not been completed/);
+  assert.match(bots.keyboard.inline_keyboard[0][0].text, /Catch controls/);
+  const catcher = resolveCallback("catch:open", "Ahora", "MEMBER", {}, "en");
+  assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Target bots/.test(button.text)));
+  assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Refresh/.test(button.text)));
+});
