@@ -43,8 +43,11 @@ class _MonitorEventHandler(logging.Handler):
 _monitor_logger = logging.getLogger("kagecatch.monitor")
 _monitor_logger.setLevel(logging.INFO)
 _monitor_logger.propagate = False
-_monitor_logger.addHandler(_MonitorEventHandler())
+_monitor_handler = _MonitorEventHandler()
+_monitor_logger.addHandler(_monitor_handler)
 _monitor_logger.info("Core monitoring initialized")
+# Capture the Core lifecycle's existing operational messages as well.
+logging.getLogger("kagecatch.core").addHandler(_monitor_handler)
 
 
 
