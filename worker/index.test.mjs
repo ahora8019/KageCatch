@@ -208,7 +208,7 @@ test("Owner Live Monitor fetches signed Core monitoring data and edits the exist
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const calls = [];
   const env = {
-    CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001",
+    CONNECT_LINKS: binding, KAGECATCH_DB: { prepare: () => ({ first: async () => ({ pending: 0 }) }) }, OWNER_TELEGRAM_ID: "999001",
     TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
     CORE_API_URL: "https://core.example", CORE_API_SECRET: "a".repeat(40),
     FETCH: async (url, init) => {
@@ -237,7 +237,10 @@ test("Owner Live Monitor fetches signed Core monitoring data and edits the exist
   const payload = JSON.parse(edit.init.body);
   assert.match(payload.text, /KAGECATCH \\| LIVE MONITOR/);
   assert.match(payload.text, /Core: <b>Online<\\/b>/);
+  assert.match(payload.text, /Queue: 0 pending/);
   assert.match(payload.text, /Active Workers: 2/);
+  assert.match(payload.text, /D1: Connected/);
+  assert.match(payload.text, /Redis: Not configured/);
   assert.match(payload.text, /Session reconnected/);
   assert.equal(payload.message_id, 78);
   assert.deepEqual(payload.reply_markup.inline_keyboard.map(row => row[0].callback_data), [
