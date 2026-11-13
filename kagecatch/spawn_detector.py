@@ -71,7 +71,7 @@ class SpawnDetector:
     @staticmethod
     def _media_kind(message: Any) -> str | None:
         if getattr(message, "photo", None) is not None:
-            return "photo"
+            return "image"
         document = getattr(message, "document", None)
         media = getattr(message, "media", None)
         if document is None and media is not None:
