@@ -67,6 +67,9 @@ class FakeSessionManager:
         self.revoked.append(user_id)
         self.sessions.pop(user_id, None)
 
+    async def list_user_ids(self):
+        return list(self.sessions)
+
 
 class FakeAuthFlow:
     def __init__(self):
@@ -157,6 +160,25 @@ class CoreApiTests(unittest.TestCase):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"service": "KageCatch Core", "status": "alive"})
+
+    def test_signed_owner_stats_reports_session_counts_uptime_and_zero_verified_catches(self):
+        path = "/v1/owner/stats"
+        response = self.client.get(path, headers=signed_headers("GET", path))
+        self.assertEqual(response.status_code, 200)
+        stats = response.json()
+        self.assertEqual(stats["total_users"], 1)
+        self.assertEqual(stats["active_sessions"], 1)
+        self.assertEqual(stats["total_catches"], 0)
+        self.assertGreaterEqual(stats["system_uptime_seconds"], 0)
+        self.assertEqual(set(stats), {
+            "total_users", "active_sessions", "total_catches",
+            "system_uptime_seconds",
+        })
+
+    def test_owner_stats_requires_valid_hmac(self):
+        path = "/v1/owner/stats"
+        response = self.client.get(path)
+        self.assertEqual(response.status_code, 401)
 
     def test_signed_health_endpoint_reports_runtime_readiness(self):
         path = "/v1/health"
