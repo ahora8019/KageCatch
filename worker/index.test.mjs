@@ -1827,3 +1827,43 @@ test("manual webhook setup derives the webhook host from the incoming Worker ori
   assert.equal(response.status, 200);
   assert.equal(webhookUrl, "https://custom-worker.example/webhook");
 });
+
+
+test("language selector exposes Persian and English without exceeding the compact menu", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const result = resolveCallback("language:open", "Ahora", "MEMBER", {}, "fa");
+  assert.match(result.text, /زبان/);
+  const callbacks = result.keyboard.inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("language:set:fa"));
+  assert.ok(callbacks.includes("language:set:en"));
+});
+
+test("language preference is validated and persisted per Telegram user in the existing registry", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 123456, ownerTelegramId: "999001" });
+  const invalid = await post("/language/set", { telegramUserId: 123456, language: "xx" });
+  assert.equal(invalid.status, 400);
+  const saved = await post("/language/set", { telegramUserId: 123456, language: "en" });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json()).language, "en");
+  const user = await post("/user", { telegramUserId: 123456 });
+  assert.equal((await user.json()).user.language, "en");
+  await post("/register", { telegramUserId: 123456, ownerTelegramId: "999001" });
+  const afterRegister = await post("/user", { telegramUserId: 123456 });
+  assert.equal((await afterRegister.json()).user.language, "en");
+});
+
+test("English language selection renders English settings and language confirmation", async () => {
+  const { resolveCallback } = await import("./index.mjs");
+  const settings = resolveCallback("settings:open", "Ahora", "MEMBER", {}, "en");
+  assert.match(settings.text, /SETTINGS/);
+  assert.match(settings.text, /Language/);
+  const selected = resolveCallback("language:selected:en", "Ahora", "MEMBER", {}, "en");
+  assert.match(selected.text, /English/);
+});
