@@ -33,7 +33,7 @@ test("connect callback explains the standalone account link without exposing a c
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
-  assert.match(resolveCallback("account:list").text, /گزینهٔ «اتصال حساب»/);
+  assert.match(resolveCallback("account:list").text, /Session: <b>Unknown<\/b>/);
   assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
@@ -783,7 +783,8 @@ test("Telegram member menu is a minimal native dashboard without WebApp buttons"
 });
 
 test("Telegram bot menus explain Catch and target bot readiness without claiming live execution", () => {
-  assert.match(resolveCallback("catch:open").text, /هنوز آمادهٔ شکار واقعی نیستیم/);
+  assert.match(resolveCallback("catch:open").text, /Live execution is not ready/);
+  assert.match(resolveCallback("catch:open").text, /Catch Mode: <b>Unknown<\/b>/);
   const bots = resolveCallback("bots:open");
   assert.match(bots.text, /HentaCatcherBot/);
   assert.match(bots.text, /Character_Catcher_Bot/);
