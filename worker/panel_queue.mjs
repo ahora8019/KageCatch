@@ -322,6 +322,7 @@ export async function handlePanelCallback(callback, env, telegramApi) {
     try {
       const result = await requestCore(env, "GET", "/v1/reviews/" + row.owner_id);
       const items = Array.isArray(result.items) ? result.items.slice(0, 5) : [];
+      const approvalAvailable = result.approval_available === true;
       if (!items.length) {
         text = "📝 بررسی‌های دستی\n━━━━━━━━━━━━━━\nموردی در انتظار تأیید نیست.";
         replyMarkup = { inline_keyboard: [[{ text: "↩️ بازگشت به پنل", callback_data: "kp:" + row.request_id + ":refresh" }]] };
@@ -330,16 +331,28 @@ export async function handlePanelCallback(callback, env, telegramApi) {
         const sections = [];
         for (let i = 0; i < items.length; i += 1) {
           const item = items[i];
+          if (typeof item.review_id !== "string" || !/^[a-f0-9]{32}$/.test(item.review_id)) continue;
           const anime = String(item.anime_name || "نامشخص").replaceAll(String.fromCharCode(13), " ").replaceAll(String.fromCharCode(10), " ").replaceAll(String.fromCharCode(9), " ").slice(0, 80);
           sections.push((i + 1) + ". " + anime);
           const candidates = Array.isArray(item.candidates) ? item.candidates.slice(0, 10) : [];
+          const candidateLabels = [];
           for (let j = 0; j < candidates.length; j += 1) {
-            const candidate = String(candidates[j]).replaceAll(String.fromCharCode(13), " ").replaceAll(String.fromCharCode(10), " ").replaceAll(String.fromCharCode(9), " ").slice(0, 48);
-            keyboard.push([{ text: "✅ " + candidate, callback_data: "kr:" + item.review_id + ":a:" + j }]);
+            if (typeof candidates[j] !== "string") continue;
+            const candidate = candidates[j].replaceAll(String.fromCharCode(13), " ").replaceAll(String.fromCharCode(10), " ").replaceAll(String.fromCharCode(9), " ").slice(0, 48);
+            candidateLabels.push(candidate);
+            if (approvalAvailable) {
+              keyboard.push([{ text: "✅ " + candidate, callback_data: "kr:" + item.review_id + ":a:" + j }]);
+            }
+          }
+          if (!approvalAvailable && candidateLabels.length) {
+            sections.push("   گزینه‌ها: " + candidateLabels.join("، "));
           }
           keyboard.push([{ text: "❌ رد مورد " + (i + 1), callback_data: "kr:" + item.review_id + ":r" }]);
         }
-        text = "📝 بررسی‌های دستی (حداکثر ۵ مورد)\n━━━━━━━━━━━━━━\n" + sections.join("\n") + "\n\nبرای تأیید، شخصیت را انتخاب کن:";
+        text = "📝 بررسی‌های دستی (حداکثر ۵ مورد)\n━━━━━━━━━━━━━━\n" + sections.join("\n")
+          + (approvalAvailable
+            ? "\n\nبرای تأیید، شخصیت را انتخاب کن:"
+            : "\n\n⚠️ موتور Catch هنوز برای تأیید اجرایی فعال نشده؛ فعلاً فقط رد کردن ممکن است.");
         keyboard.push([{ text: "↩️ بازگشت به پنل", callback_data: "kp:" + row.request_id + ":refresh" }]);
         replyMarkup = { inline_keyboard: keyboard.slice(0, 51) };
       }
