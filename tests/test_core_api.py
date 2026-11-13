@@ -413,7 +413,7 @@ class CoreApiTests(unittest.TestCase):
                     expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
                     spawn_context=SpawnContext(
                         source="senpai_catcher", chat_id=-1001234567890,
-                        message_id=77, media_kind="photo",
+                        message_id=77, media_kind="image",
                     ),
                 )]
 
