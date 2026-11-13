@@ -265,7 +265,11 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       return {
         text: buildDashboardText(userLabel),
         parse_mode: "HTML",
-        keyboard: buildRoleMenu(role),
+        keyboard: { inline_keyboard: [
+          [{ text: "📈 Statistics", callback_data: "stats:open" }],
+          [{ text: "❓ Help", callback_data: "help:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
       };
     case "account:open":
       return {
@@ -335,16 +339,11 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
 
 export function commandReply(text) {
   const command = (text || "").trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
-  if (command === "/start") {
+  if (command === "/start" || command === "/panel") {
     return {
-      text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز این منو می‌تونی Catch، بات‌ها و حسابت رو مدیریت کنی:",
+      text: buildDashboardText(),
+      parse_mode: "HTML",
       reply_markup: buildStartMenu(),
-    };
-  }
-  if (command === "/panel") {
-    return {
-      text: "🧩 اینم منوی KageCatch!\n\nبگو کدوم بخش رو می‌خوای:",
-      reply_markup: buildMainMenu(),
     };
   }
   if (command === "/status") {
@@ -1175,7 +1174,11 @@ async function handleWebhook(request, env) {
         if (actor && role !== 'DENIED' && role !== 'BLOCKED') { try { await registryRequest(env, '/activity/record', { telegramUserId: message.from.id, action: command === '/panel' ? 'panel' : 'start', firstName: message.from.first_name, username: message.from.username }); } catch {} }
         const reply = role === 'BLOCKED' || role === 'DENIED'
           ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
-          : { text: role === 'OWNER' ? "🌸 خوش آمدی Owner؛ پنل مدیریت آماده‌ست." : "🌸 دعوتت تأیید شد! به KageCatch خوش اومدی 😎", reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role) };
+          : {
+              text: buildDashboardText(message.from.first_name),
+              parse_mode: "HTML",
+              reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role),
+            };
         await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
       } catch (error) {
         logWebhookFailure("start", update.update_id, error);
