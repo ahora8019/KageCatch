@@ -1393,8 +1393,8 @@ test("Overview callback reads signed live Core, account, and Catch status then e
   assert.match(edit.payload.text, /هستهٔ پایتون: <b>آنلاین<\/b>/);
   assert.match(edit.payload.text, /نشست: <b>متصل<\/b>/);
   assert.match(edit.payload.text, /وضعیت شکار: <b>غیرفعال<\/b>/);
-  assert.deepEqual(calls.filter((call) => call.kind === "core").map((call) => call.path), [
-    "/v1/health", "/v1/accounts/999001", "/v1/accounts/999001/catch",
+  assert.deepEqual(calls.filter((call) => call.kind === "core").map((call) => call.path).sort(), [
+    "/v1/accounts/999001", "/v1/accounts/999001/catch", "/v1/health",
   ]);
   assert.ok(calls.filter((call) => call.kind === "core").every((call) =>
     call.headers["X-KageCatch-Signature"] && call.headers["X-KageCatch-Nonce"] && call.headers["X-KageCatch-Timestamp"]
@@ -1503,11 +1503,11 @@ function createFakeManualReviewDatabase() {
           return {
             async run() {
               if (sql.startsWith("INSERT INTO manual_review_items")) {
-                const [review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, quota_user_id] = values;
+                const [review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, quota_user_id, now] = values;
                 if (rows.has(review_id)) throw new Error("duplicate review id");
-                if (quota_user_id && [...rows.values()].filter((row) => row.user_id === quota_user_id && row.status === "pending" && row.expires_at > values[8]).length >= 100) return { meta: { changes: 0 } };
+                if (quota_user_id && [...rows.values()].filter((row) => row.user_id === quota_user_id && row.status === "pending" && row.expires_at > values[9]).length >= 100) return { meta: { changes: 0 } };
                 rows.set(review_id, {
-                  review_id, user_id, spawn_id, anime_name, candidates_json,
+                  review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json,
                   created_at, expires_at, status: "pending", selected_character: null,
                 });
                 return { meta: { changes: 1 } };
@@ -1933,4 +1933,249 @@ test("English locale also translates target bot information and Catcher navigati
   const catcher = resolveCallback("catch:open", "Ahora", "MEMBER", {}, "en");
   assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Target bots/.test(button.text)));
   assert.ok(catcher.keyboard.inline_keyboard.flat().some(button => /Refresh/.test(button.text)));
+});
+
+
+test("durable manual review endpoint persists trusted spawn context per owning review", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const connectionStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = {
+    idFromName: () => "connection-links-v1",
+    get: () => ({ fetch: (input, init) => connectionStore.fetch(new Request(input, init)) }),
+  };
+  const db = createFakeManualReviewDatabase();
+  const secret = "manual-review-core-secret-with-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const context = {
+    source: "senpai_catcher", chat_id: -1001234567890,
+    message_id: 77, media_kind: "image",
+  };
+  const created = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "create", review_id: "c".repeat(32), user_id: "12345",
+    spawn_id: 77, anime_name: "KonoSuba", candidates: ["Megumin"],
+    spawn_context: context,
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  }, secret), env);
+  assert.equal(created.status, 201);
+
+  const own = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "list", user_id: "12345",
+  }, secret), env);
+  assert.deepEqual((await own.json()).items[0].spawn_context, context);
+
+  const foreign = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "list", user_id: "99999",
+  }, secret), env);
+  assert.deepEqual(await foreign.json(), { items: [] });
+});
+
+
+
+test("Catcher menu opens a native review queue and approval stays fail-closed", async () => {
+  const menu = (await import("./index.mjs")).resolveCallback(
+    "catch:open", "Test User", "MEMBER",
+    { core: "ready", account: "connected", catchEnabled: false, executionReady: false },
+    "fa",
+  );
+  assert.ok(menu.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "catch:reviews"));
+
+  const calls = [];
+  const registry = {
+    idFromName: () => "connection-links-v1",
+    get: () => ({
+      fetch: async (input, init = {}) => {
+        const path = new URL(input).pathname;
+        const body = init.body ? JSON.parse(init.body) : {};
+        if (path === "/user") return new Response(JSON.stringify({ user: { telegramUserId: 2001, role: "MEMBER", status: "active", language: "fa" } }));
+        if (path === "/activity/record") return new Response(JSON.stringify({ recorded: true }));
+        throw new Error("unexpected registry path");
+      },
+    }),
+  };
+  const env = {
+    TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    OWNER_TELEGRAM_ID: "9999",
+    CORE_API_URL: "https://core.example.test",
+    CORE_API_SECRET: "core-secret-with-at-least-thirty-two-bytes",
+    CONNECT_LINKS: registry,
+    FETCH: async (input, init = {}) => {
+      const url = new URL(input);
+      if (url.hostname === "core.example.test") {
+        if (url.pathname === "/v1/reviews/2001") {
+          return new Response(JSON.stringify({ items: [{
+            review_id: "a".repeat(32), anime_name: "KonoSuba",
+            candidates: ["Megumin"], spawn_context_available: true,
+          }] }), { status: 200 });
+        }
+        if (url.pathname.endsWith("/approve")) {
+          return new Response(JSON.stringify({ detail: "review_execution_not_configured" }), { status: 503 });
+        }
+        throw new Error("unexpected Core path");
+      }
+      const method = url.pathname.split("/").pop();
+      calls.push({ method, payload: init.body ? JSON.parse(init.body) : {} });
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const webhook = async (update) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": "hook-secret",
+    },
+    body: JSON.stringify(update),
+  }), env);
+
+  const listResponse = await webhook({
+    update_id: 71001,
+    callback_query: {
+      id: "review-list-callback", data: "catch:reviews",
+      from: { id: 2001, first_name: "Test" },
+      message: { message_id: 77, chat: { id: 2001, type: "private" } },
+    },
+  });
+  assert.equal(listResponse.status, 200, await listResponse.text());
+  const listEdit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(listEdit);
+  assert.match(listEdit.payload.text, /KonoSuba/);
+  assert.ok(listEdit.payload.reply_markup.inline_keyboard.flat().some(
+    (button) => button.callback_data === "review:approve:" + "a".repeat(32) + ":0",
+  ));
+
+  calls.length = 0;
+  await webhook({
+    update_id: 71002,
+    callback_query: {
+      id: "review-approve-callback",
+      data: "review:approve:" + "a".repeat(32) + ":0",
+      from: { id: 2001, first_name: "Test" },
+      message: { message_id: 77, chat: { id: 2001, type: "private" } },
+    },
+  });
+  const approvalEdit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(approvalEdit);
+  assert.match(approvalEdit.payload.text, /هیچ فرمانی به بات مقصد ارسال نشده است/);
+  assert.equal(calls.some((call) => call.method === "sendMessage"), false);
+});
+
+
+
+async function makeSignedQuotaRequest(payload, secret, nonce = crypto.randomUUID().replaceAll("-", "")) {
+  const path = "/internal/daily-quota";
+  const body = JSON.stringify(payload);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signingText = [timestamp, nonce, "POST", path, bodyHash].join("\n");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText))), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return new Request("https://kagecatch-control.ahora-project.workers.dev" + path, {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-KageCatch-Timestamp": timestamp, "X-KageCatch-Nonce": nonce, "X-KageCatch-Signature": signature },
+    body,
+  });
+}
+
+function createFakeQuotaDatabase(limit = 1) {
+  const limits = new Map();
+  const rows = new Map();
+  return {
+    rows,
+    prepare(sql) {
+      return {
+        bind(...values) {
+          return {
+            async run() {
+              if (sql.startsWith("INSERT OR IGNORE INTO daily_quota_limits")) {
+                const [owner, date] = values;
+                const key = owner + ":" + date;
+                if (!limits.has(key)) limits.set(key, { quota_limit: limit });
+                return { meta: { changes: 1 } };
+              }
+              if (sql.startsWith("INSERT INTO daily_quotas")) {
+                const [requestId, owner, date, chatId, spawnId, limitOwner, limitDate, countOwner, countDate, limitOwner2, limitDate2, duplicateId] = values;
+                if (rows.has(requestId)) return { meta: { changes: 0 } };
+                const quotaLimit = limits.get(owner + ":" + date)?.quota_limit ?? 0;
+                const used = [...rows.values()].filter((row) => row.owner_id === owner && row.quota_date === date && (row.status === "reserved" || row.consumes_quota === 1)).length;
+                if (limitOwner !== owner || limitDate !== date || countOwner !== owner || countDate !== date || limitOwner2 !== owner || limitDate2 !== date || duplicateId !== requestId || used >= quotaLimit) return { meta: { changes: 0 } };
+                rows.set(requestId, { request_id: requestId, owner_id: owner, quota_date: date, chat_id: chatId, spawn_message_id: spawnId, status: "reserved", consumes_quota: 1 });
+                return { meta: { changes: 1 } };
+              }
+              if (sql.startsWith("UPDATE daily_quotas SET status = 'confirmed'")) {
+                const row = rows.get(values[0]);
+                if (!row || row.status !== "reserved") return { meta: { changes: 0 } };
+                row.status = "confirmed";
+                return { meta: { changes: 1 } };
+              }
+              if (sql.startsWith("UPDATE daily_quotas SET status = 'failed'")) {
+                const row = rows.get(values[1]);
+                if (!row || row.status !== "reserved") return { meta: { changes: 0 } };
+                row.status = "failed";
+                row.consumes_quota = values[0];
+                return { meta: { changes: 1 } };
+              }
+              throw new Error("Unexpected quota SQL: " + sql);
+            },
+            async first() {
+              if (sql.startsWith("SELECT request_id, owner_id, quota_date, status, consumes_quota FROM daily_quotas")) {
+                const row = rows.get(values[0]);
+                return row ? { ...row } : null;
+              }
+              throw new Error("Unexpected quota SELECT: " + sql);
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+test("daily quota reserves atomically, confirms once, and rejects duplicate terminal transitions", async () => {
+  const secret = "quota-test-secret-with-at-least-thirty-two-bytes";
+  const db = createFakeQuotaDatabase(1);
+  const nonces = new Set();
+  const env = {
+    CORE_API_SECRET: secret,
+    KAGECATCH_DB: db,
+    CONNECT_LINKS: {
+      idFromName: () => "connection-links-v1",
+      get: () => ({ fetch: async (_url, init) => {
+        const nonce = JSON.parse(init.body).nonce;
+        if (nonces.has(nonce)) return new Response("replay", { status: 409 });
+        nonces.add(nonce);
+        return new Response("ok", { status: 200 });
+      } }),
+    },
+  };
+  const firstId = "a".repeat(32);
+  const reserve = await worker.fetch(await makeSignedQuotaRequest({
+    action: "reserve", request_id: firstId, owner_id: "2001", quota_date: "2026-11-13", chat_id: -100123, spawn_message_id: 77,
+  }, secret), env);
+  assert.equal(reserve.status, 201, await reserve.text());
+  assert.equal(db.rows.get(firstId).status, "reserved");
+
+  const secondId = "b".repeat(32);
+  const exhausted = await worker.fetch(await makeSignedQuotaRequest({
+    action: "reserve", request_id: secondId, owner_id: "2001", quota_date: "2026-11-13", chat_id: -100123, spawn_message_id: 78,
+  }, secret), env);
+  assert.equal(exhausted.status, 409);
+  assert.equal((await exhausted.json()).error, "quota_exhausted");
+
+  const confirmed = await worker.fetch(await makeSignedQuotaRequest({ action: "confirm", request_id: firstId }, secret), env);
+  assert.equal(confirmed.status, 200);
+  assert.equal((await confirmed.json()).status, "confirmed");
+
+  const duplicateConfirm = await worker.fetch(await makeSignedQuotaRequest({ action: "confirm", request_id: firstId }, secret), env);
+  assert.equal(duplicateConfirm.status, 409);
+  assert.equal(db.rows.get(firstId).status, "confirmed");
+});
+
+test("daily quota rejects unsigned requests and invalid reservation identifiers", async () => {
+  const secret = "quota-test-secret-with-at-least-thirty-two-bytes";
+  const env = { CORE_API_SECRET: secret, KAGECATCH_DB: createFakeQuotaDatabase(), CONNECT_LINKS: { get: () => ({ fetch: async () => new Response("ok") }), idFromName: () => "x" } };
+  const unsigned = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/internal/daily-quota", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }), env);
+  assert.equal(unsigned.status, 401);
+  const invalid = await worker.fetch(await makeSignedQuotaRequest({ action: "reserve", request_id: "bad", owner_id: "2001", quota_date: "2026-11-13", chat_id: 1, spawn_message_id: 2 }, secret), env);
+  assert.equal(invalid.status, 400);
 });

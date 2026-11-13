@@ -397,3 +397,70 @@ class CoreApiTests(unittest.TestCase):
             and event["message"] == "Catch completed and verified"
             for event in events
         ))
+
+    def test_signed_review_list_is_scoped_to_user_and_hides_execution_context(self):
+        from datetime import datetime, timedelta, timezone
+        from types import SimpleNamespace
+        from kagecatch.models.spawn import SpawnContext
+
+        class ReviewQueue:
+            async def get_pending(self, *, user_id):
+                if user_id != "2001":
+                    return []
+                return [SimpleNamespace(
+                    review_id="a" * 32, anime_name="KonoSuba",
+                    candidates=("Megumin", "Aqua"),
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+                    spawn_context=SpawnContext(
+                        source="senpai_catcher", chat_id=-1001234567890,
+                        message_id=77, media_kind="image",
+                    ),
+                )]
+
+        app = create_app(
+            core_secret=SECRET, runtime=self.runtime,
+            session_manager=self.sessions, review_queue=ReviewQueue(),
+            nonce_store=InMemoryNonceStore(),
+        )
+        path = "/v1/reviews/2001"
+        with TestClient(app) as client:
+            response = client.get(path, headers=signed_headers("GET", path))
+            foreign_path = "/v1/reviews/9999"
+            foreign = client.get(foreign_path, headers=signed_headers("GET", foreign_path, nonce="foreign-review-list-0001"))
+
+        self.assertEqual(response.status_code, 200)
+        item = response.json()["items"][0]
+        self.assertEqual(item["candidates"], ["Megumin", "Aqua"])
+        self.assertTrue(item["spawn_context_available"])
+        self.assertFalse(response.json()["approval_available"])
+        self.assertNotIn("-1001234567890", response.text)
+        self.assertEqual(foreign.json(), {"approval_available": False, "items": []})
+
+    def test_review_reject_is_user_scoped_and_approve_fails_closed_without_execution_service(self):
+        from types import SimpleNamespace
+        from kagecatch.manual_review_queue import ReviewStatus
+
+        class ReviewQueue:
+            async def reject(self, *, user_id, review_id):
+                if user_id != "2001":
+                    raise LookupError("not found")
+                return SimpleNamespace(status=ReviewStatus.REJECTED)
+
+        app = create_app(
+            core_secret=SECRET, runtime=self.runtime,
+            session_manager=self.sessions, review_queue=ReviewQueue(),
+            nonce_store=InMemoryNonceStore(),
+        )
+        with TestClient(app) as client:
+            reject_path = "/v1/reviews/2001/" + "a" * 32 + "/reject"
+            rejected = client.post(reject_path, headers=signed_headers("POST", reject_path))
+            foreign_path = "/v1/reviews/9999/" + "a" * 32 + "/reject"
+            foreign = client.post(foreign_path, headers=signed_headers("POST", foreign_path, nonce="foreign-review-reject-0001"))
+            approve_path = "/v1/reviews/2001/" + "a" * 32 + "/approve"
+            body = json.dumps({"candidate_index": 0}).encode()
+            approval = client.post(approve_path, content=body, headers=signed_headers("POST", approve_path, body, nonce="review-approve-000001"))
+
+        self.assertEqual(rejected.json(), {"status": "rejected"})
+        self.assertEqual(foreign.status_code, 404)
+        self.assertEqual(approval.status_code, 503)
+        self.assertEqual(approval.json()["detail"], "review_execution_not_configured")

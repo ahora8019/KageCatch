@@ -13,6 +13,11 @@ _EVENT_MESSAGES = {
     "session_reconnected": "Authorized Telegram session reconnected",
     "session_disconnected": "Telegram session disconnected",
     "core_started": "Core monitoring initialized",
+    "spawn_detected": "Incoming Telegram spawn detected",
+    "spawn_detection_failed": "Spawn detection failed; incoming update ignored",
+    "spawn_no_candidates": "Spawn detected but no character candidates were available",
+    "manual_review_queued": "Spawn candidates added to manual review",
+    "review_persistence_failed": "Manual review item could not be persisted",
 }
 
 

@@ -42,6 +42,12 @@ class FakeD1 {
           if (!row || row.status !== "pending") return null;
           row.status = "processing"; row.attempts += 1; return { ...row };
         }
+        if (sql.includes("WHERE owner_id = ? AND chat_id = ? AND panel_message_id = ?")) {
+          return [...db.rows.values()].find((row) =>
+            row.owner_id === v[0] && String(row.chat_id) === v[1]
+            && row.panel_message_id === v[2] && row.status === "completed"
+          ) || null;
+        }
         if (sql.includes("WHERE request_id = ?")) return db.rows.get(v[0]) || null;
         return null;
       },
@@ -331,3 +337,131 @@ test("engine enable callback sends an authenticated Core state change and refres
   assert.match(edit.payload.text, /وضعیت حالت: 🟢 روشن/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_off");
 });
+
+
+test("review callback payloads are strict and stay within Telegram's 64-byte limit", () => {
+  const reviewId = "b".repeat(32);
+  assert.deepEqual(parsePanelCallback("kr:" + reviewId + ":a:2"), {
+    kind: "review", reviewId, action: "approve", candidateIndex: 2,
+  });
+  assert.deepEqual(parsePanelCallback("kr:" + reviewId + ":r"), {
+    kind: "review", reviewId, action: "reject",
+  });
+  assert.equal(parsePanelCallback("kr:" + reviewId + ":a:-1"), null);
+  assert.equal(parsePanelCallback("kr:" + reviewId + ":owner"), null);
+  assert.ok(Buffer.byteLength("kr:" + reviewId + ":a:29") <= 64);
+});
+
+
+test("manual review list edits the existing group panel with owner-scoped candidate controls", async () => {
+  const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  let requestedUrl;
+  env.CORE_API_FETCH = async (url, init) => {
+    requestedUrl = { url, method: init.method, body: init.body };
+    return Response.json({ approval_available: true, items: [{
+      review_id: "b".repeat(32), anime_name: "KonoSuba",
+      candidates: ["Megumin", "Aqua"], expires_at: "2026-11-13T17:00:00+00:00",
+    }] });
+  };
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 987,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-reviews", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":reviews",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  assert.equal(requestedUrl.url, "https://core.example/v1/reviews/12345");
+  assert.equal(requestedUrl.method, "GET");
+  assert.equal(requestedUrl.body, undefined, "GET requests must not carry a body");
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.match(edit.payload.text, /KonoSuba/);
+  assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kr:" + "b".repeat(32) + ":a:0");
+  assert.equal(edit.payload.reply_markup.inline_keyboard[1][0].callback_data, "kr:" + "b".repeat(32) + ":a:1");
+  assert.equal(edit.payload.reply_markup.inline_keyboard.at(-1)[0].callback_data, "kp:" + requestId + ":refresh");
+});
+
+test("manual review approval is owner-bound, authenticated and does not claim a disabled engine executed", async () => {
+  const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  let captured;
+  env.CORE_API_FETCH = async (url, init) => {
+    captured = { url, method: init.method, body: init.body };
+    return Response.json({ status: "disabled" });
+  };
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 987,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-approve", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kr:" + "b".repeat(32) + ":a:1",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  assert.equal(captured.url, "https://core.example/v1/reviews/12345/" + "b".repeat(32) + "/approve");
+  assert.equal(captured.method, "POST");
+  assert.deepEqual(JSON.parse(captured.body), { candidate_index: 1 });
+  assert.match(calls.find((call) => call.method === "editMessageText").payload.text, /موتور Catch خاموش است/);
+});
+
+test("manual review callbacks are rejected outside the exact owner panel message", async () => {
+  const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  let coreCalled = false;
+  env.CORE_API_FETCH = async () => { coreCalled = true; return Response.json({ status: "disabled" }); };
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 987,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-foreign-review", from: { id: 99999 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kr:" + "b".repeat(32) + ":r",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  assert.equal(coreCalled, false);
+  assert.match(calls[0].payload.text, /دسترسی/);
+});
+
+
+test("review list hides execution approval buttons until the CatchEngine is actually ready", async () => {
+  const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  env.CORE_API_FETCH = async () => Response.json({ approval_available: false, items: [{
+    review_id: "c".repeat(32), anime_name: "KonoSuba",
+    candidates: ["Megumin", "Aqua"],
+  }] });
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 987,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-reviews-disabled", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":reviews",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.match(edit.payload.text, /موتور Catch هنوز برای تأیید اجرایی فعال نشده/);
+  assert.equal(
+    edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data.includes(":a:")),
+    false,
+  );
+  assert.equal(
+    edit.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "kr:" + "c".repeat(32) + ":r"),
+    true,
+  );
+});
+

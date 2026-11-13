@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from .monitoring import emit_monitor_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,17 +31,34 @@ class ReviewPipeline:
         if not isinstance(user_id, str) or not user_id or len(user_id) > 128:
             raise ValueError("valid user_id is required")
 
-        spawn = await self.detector.detect(event)
+        try:
+            spawn = await self.detector.detect(event)
+        except Exception:
+            # Telethon update handlers must remain isolated from target-specific
+            # recognition failures. Never log event payloads or exception text.
+            emit_monitor_event("spawn_detection_failed", level=logging.WARNING)
+            logger.warning("Spawn detection failed; incoming update ignored")
+            return {"status": "detection_failed"}
+
         if spawn is None:
             return {"status": "no_spawn"}
 
+        emit_monitor_event("spawn_detected")
         metadata = spawn.metadata
         anime_name = getattr(metadata, "anime_name", None)
         if not isinstance(anime_name, str) or not anime_name.strip():
+            emit_monitor_event("spawn_no_candidates", level=logging.INFO)
             return {"status": "no_candidates", "spawn_id": spawn.message_id}
 
-        resolved = await self.resolver.resolve(metadata)
+        try:
+            resolved = await self.resolver.resolve(metadata)
+        except Exception:
+            emit_monitor_event("spawn_no_candidates", level=logging.WARNING)
+            logger.warning("Character candidate resolution failed")
+            return {"status": "no_candidates", "spawn_id": spawn.message_id}
+
         if resolved is None or not getattr(resolved, "candidates", ()):
+            emit_monitor_event("spawn_no_candidates", level=logging.INFO)
             return {"status": "no_candidates", "spawn_id": spawn.message_id}
 
         try:
@@ -48,21 +67,18 @@ class ReviewPipeline:
                 spawn_id=spawn.message_id,
                 anime_name=anime_name,
                 candidates=resolved.candidates,
+                spawn_context=getattr(spawn, "spawn_context", None),
             )
         except httpx.TimeoutException:
-            logger.exception(
-                "Manual review persistence timed out (spawn_id=%s)",
-                spawn.message_id,
-            )
+            emit_monitor_event("review_persistence_failed", level=logging.WARNING)
+            logger.warning("Manual review persistence timed out")
             return {
                 "status": "review_persistence_failed",
                 "error": "D1 unreachable",
             }
         except httpx.TransportError:
-            logger.exception(
-                "Manual review transport failed (spawn_id=%s)",
-                spawn.message_id,
-            )
+            emit_monitor_event("review_persistence_failed", level=logging.WARNING)
+            logger.warning("Manual review transport failed")
             return {
                 "status": "review_persistence_failed",
                 "error": "D1 unreachable",
@@ -89,11 +105,11 @@ class ReviewPipeline:
             else:
                 error = "D1 request rejected"
 
-            logger.error(
-                "Manual review Worker returned HTTP %s error=%s (spawn_id=%s)",
+            emit_monitor_event("review_persistence_failed", level=logging.WARNING)
+            logger.warning(
+                "Manual review Worker rejected persistence (HTTP %s, category=%s)",
                 status_code,
-                worker_error or "unspecified",
-                spawn.message_id,
+                error,
             )
             return {
                 "status": "review_persistence_failed",
@@ -101,16 +117,15 @@ class ReviewPipeline:
             }
         except Exception:
             # A failed durable write is never represented as a successful enqueue.
-            # Keep the log free of event payloads, sessions, credentials and response bodies.
-            logger.exception(
-                "Manual review persistence failed (spawn_id=%s)",
-                spawn.message_id,
-            )
+            # Keep logs free of event payloads, sessions, credentials and response bodies.
+            emit_monitor_event("review_persistence_failed", level=logging.WARNING)
+            logger.warning("Manual review persistence failed")
             return {
                 "status": "review_persistence_failed",
                 "error": "D1 persistence failed",
             }
 
+        emit_monitor_event("manual_review_queued")
         return {
             "status": "review_queued",
             "spawn_id": spawn.message_id,

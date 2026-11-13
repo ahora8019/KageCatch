@@ -14,6 +14,8 @@ from enum import Enum
 from typing import Callable, Sequence
 from uuid import uuid4
 
+from .models.spawn import SpawnContext
+
 
 class ReviewStatus(str, Enum):
     PENDING = "pending"
@@ -35,6 +37,7 @@ class ReviewItem:
     expires_at: datetime
     status: ReviewStatus = ReviewStatus.PENDING
     selected_character: str | None = None
+    spawn_context: SpawnContext | None = None
 
 
 class ManualReviewQueue:
@@ -65,6 +68,7 @@ class ManualReviewQueue:
         spawn_id: int,
         anime_name: str,
         candidates: Sequence[str],
+        spawn_context: SpawnContext | None = None,
     ) -> ReviewItem:
         self._validate_user_id(user_id)
         if isinstance(spawn_id, bool) or not isinstance(spawn_id, int) or spawn_id < 0:
@@ -82,6 +86,9 @@ class ManualReviewQueue:
         if not normalized_candidates or len(normalized_candidates) != len(candidates):
             raise ValueError("candidates must contain non-empty strings")
 
+        if spawn_context is not None:
+            if not isinstance(spawn_context, SpawnContext) or spawn_context.message_id != spawn_id:
+                raise ValueError("spawn_context must match spawn_id")
         now = self._now()
         item = ReviewItem(
             review_id=uuid4().hex,
@@ -91,6 +98,7 @@ class ManualReviewQueue:
             candidates=normalized_candidates,
             created_at=now,
             expires_at=now + self._default_ttl,
+            spawn_context=spawn_context,
         )
         async with self._lock:
             self._items[item.review_id] = item

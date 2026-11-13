@@ -117,6 +117,27 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
             await queue.enqueue(user_id="12345", spawn_id=1, anime_name="KonoSuba", candidates=tuple(f"C{i}" for i in range(31)))
         self.assertEqual(store.records, {})
 
+
+    async def test_spawn_context_survives_queue_reconstruction(self):
+        from kagecatch.models.spawn import SpawnContext
+
+        store = FakeDurableStore()
+        context = SpawnContext(
+            source="senpai_catcher", chat_id=-1001234567890,
+            message_id=90, media_kind="image",
+        )
+        first = PersistentManualReviewQueue(store=store)
+        created = await first.enqueue(
+            user_id="12345", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin",), spawn_context=context,
+        )
+
+        restarted = PersistentManualReviewQueue(store=store)
+        loaded = await restarted.get_pending(user_id="12345")
+
+        self.assertEqual(loaded[0].spawn_context, context)
+        self.assertEqual(created.spawn_context, context)
+
     async def test_expiry_delegates_to_durable_store(self):
         class ExpiringStore(FakeDurableStore):
             async def expire(self):

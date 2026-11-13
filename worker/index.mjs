@@ -329,6 +329,62 @@ async function loadRuntimeStatus(env, telegramUserId, includeAccountInfo = false
   return result;
 }
 
+async function loadManualReviewPanel(env, telegramUserId, language = "fa") {
+  const locale = normalizeLanguage(language);
+  if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) {
+    return { text: "⛔ شناسهٔ کاربر معتبر نیست.", keyboard: backMenu(locale) };
+  }
+  const response = await coreRequest(env, "GET", "/v1/reviews/" + telegramUserId);
+  if (response.status < 200 || response.status >= 300 || !Array.isArray(response.data?.items)) {
+    return {
+      text: locale === "fa"
+        ? "🧾 <b>صف بررسی</b>\n\nهستهٔ بررسی در دسترس نیست؛ هیچ عملیاتی انجام نشد."
+        : "🧾 <b>Review Queue</b>\n\nReview Core is unavailable. No action was taken.",
+      parse_mode: "HTML",
+      keyboard: { inline_keyboard: [
+        [{ text: translate("common.refresh", locale), callback_data: "catch:reviews" }],
+        ...backMenu(locale).inline_keyboard,
+      ] },
+    };
+  }
+  const items = response.data.items.slice(0, 5);
+  const lines = [
+    locale === "fa" ? "🧾 <b>KAGECATCH | صف بررسی</b>" : "🧾 <b>KAGECATCH | REVIEW QUEUE</b>",
+    "<code>━━━━━━━━━━━━━━━━━━━━</code>",
+  ];
+  const keyboard = [];
+  if (!items.length) {
+    lines.push(locale === "fa" ? "درخواست بررسیِ در انتظاری وجود ندارد." : "There are no pending reviews.");
+  }
+  for (const item of items) {
+    if (!item || !/^[a-f0-9]{32}$/.test(item.review_id) || !Array.isArray(item.candidates)) continue;
+    lines.push("<b>" + escapeHtml(item.anime_name || "Unknown") + "</b>");
+    lines.push((locale === "fa" ? "شناسه: " : "Review: ") + "<code>" + item.review_id.slice(0, 8) + "</code>");
+    if (item.spawn_context_available !== true) {
+      lines.push(locale === "fa"
+        ? "⚠️ اطلاعات مبدأ کامل نیست؛ تأیید اجرا در دسترس نیست."
+        : "⚠️ Origin context is incomplete; execution approval is unavailable.");
+    }
+    for (let index = 0; index < Math.min(item.candidates.length, 5); index += 1) {
+      const candidate = item.candidates[index];
+      if (typeof candidate !== "string") continue;
+      const label = candidate.length > 40 ? candidate.slice(0, 37) + "…" : candidate;
+      keyboard.push([{
+        text: (locale === "fa" ? "🔒 " : "🔒 ") + label,
+        callback_data: "review:approve:" + item.review_id + ":" + index,
+      }]);
+    }
+    keyboard.push([{
+      text: locale === "fa" ? "❌ رد درخواست" : "❌ Reject review",
+      callback_data: "review:reject:" + item.review_id,
+    }]);
+    lines.push("");
+  }
+  keyboard.push([{ text: translate("common.refresh", locale), callback_data: "catch:reviews" }]);
+  keyboard.push(...backMenu(locale).inline_keyboard);
+  return { text: lines.join("\n"), parse_mode: "HTML", keyboard: { inline_keyboard: keyboard } };
+}
+
 async function miniAppCoreProxy(request, env, action) {
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
   if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
@@ -546,6 +602,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
           [{ text: translate("catcher.bots", locale), callback_data: "bots:open" }],
+          [{ text: translate("catcher.reviews", locale), callback_data: "catch:reviews" }],
           [{ text: translate("common.refresh", locale), callback_data: "catch:open" }],
           ...backMenu(locale).inline_keyboard,
         ] },
@@ -823,7 +880,7 @@ document.querySelector("#login-form").addEventListener("submit",async(event)=>{
   try{
     let result;
     if(loginStage==="phone"){
-      if(!/^\\+[1-9]\\d{7,14}$/.test(value))throw Object.assign(new Error("invalid_phone"),{status:400});
+      if(!/^\\+[1-9]\d{7,14}$/.test(value))throw Object.assign(new Error("invalid_phone"),{status:400});
       result=await accountApi("/api/account/connect",{phone:value});
       if(result.status==="already_authorized"){
         await accountApi("/api/account/reconnect");
@@ -994,7 +1051,7 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/activity/record') {
       const { telegramUserId, action, firstName, username } = body || {};
-      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || typeof action !== 'string' || !/^(start|panel|message|command|catch:open|bots:open|account:connect|account:list|stats:open|settings:open|security:open|account:disconnect|help:open|owner:[a-z0-9:_-]+|home:[a-z]+)$/.test(action)) return json({ error: 'invalid_activity' }, 400);
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || typeof action !== 'string' || !/^(start|panel|message|command|catch:open|catch:reviews|review:(approve|reject):[a-f0-9:]+|bots:open|account:connect|account:list|stats:open|settings:open|security:open|account:disconnect|help:open|owner:[a-z0-9:_-]+|home:[a-z]+)$/.test(action)) return json({ error: 'invalid_activity' }, 400);
       const key = 'user:' + telegramUserId;
       const existing = await this.state.storage.get(key);
       if (!existing) return json({ error: 'user_not_found' }, 404);
@@ -1135,7 +1192,8 @@ async function getTelegramUser(env, userId) {
 function activityLabel(action) {
   const labels = {
     start: "شروع بات", panel: "باز کردن پنل", message: "ارسال پیام (بدون ذخیره متن)", command: "اجرای دستور",
-    "catch:open": "ورود به کنترل Catch", "bots:open": "مشاهده بات‌های مقصد", "account:connect": "اتصال حساب تلگرام",
+    "catch:open": "ورود به کنترل Catch", "catch:reviews": "مشاهده صف بررسی",
+    "bots:open": "مشاهده بات‌های مقصد", "account:connect": "اتصال حساب تلگرام",
     "account:list": "مشاهده حساب متصل", "stats:open": "مشاهده آمار", "settings:open": "باز کردن تنظیمات",
     "security:open": "مشاهده امنیت حساب", "account:disconnect": "قطع اتصال حساب", "help:open": "مشاهده راهنما",
     "home:panel": "بازگشت به پنل کاربری", "home:admin": "باز کردن پنل Owner", "owner:monitor": "باز کردن نظارت کاربران",
@@ -1342,6 +1400,44 @@ async function handleCallback(callback, env) {
     result = buildOwnerMonitor(await loadOwnerMonitoring(env));
   } else if (callback.data?.startsWith("owner:")) {
     result = await handleOwnerCallback(callback, env);
+  } else if (callback.data === "catch:reviews") {
+    if (chat.id !== callback.from.id) {
+      result = { text: "این عملیات فقط در گفت‌وگوی خصوصی خودت مجاز است.", keyboard: backMenu(locale) };
+    } else {
+      result = await loadManualReviewPanel(env, callback.from.id, locale);
+    }
+  } else if ((callback.data || "").match(/^review:reject:([a-f0-9]{32})$/)) {
+    const match = callback.data.match(/^review:reject:([a-f0-9]{32})$/);
+    if (chat.id !== callback.from.id) {
+      result = { text: "⛔ دسترسی نامعتبر است.", keyboard: backMenu(locale) };
+    } else {
+      const path = "/v1/reviews/" + callback.from.id + "/" + match[1] + "/reject";
+      const rejected = await coreRequest(env, "POST", path);
+      result = rejected.status >= 200 && rejected.status < 300
+        ? await loadManualReviewPanel(env, callback.from.id, locale)
+        : { text: locale === "fa" ? "این درخواست دیگر در وضعیت انتظار نیست یا قابل دسترسی نیست." : "This review is no longer pending or is unavailable.", keyboard: { inline_keyboard: [[{ text: translate("catcher.reviews", locale), callback_data: "catch:reviews" }], ...backMenu(locale).inline_keyboard] } };
+    }
+  } else if ((callback.data || "").match(/^review:approve:([a-f0-9]{32}):(0|[1-9][0-9]?)$/)) {
+    const match = callback.data.match(/^review:approve:([a-f0-9]{32}):(0|[1-9][0-9]?)$/);
+    if (chat.id !== callback.from.id) {
+      result = { text: "⛔ دسترسی نامعتبر است.", keyboard: backMenu(locale) };
+    } else {
+      const path = "/v1/reviews/" + callback.from.id + "/" + match[1] + "/approve";
+      const approval = await coreRequest(env, "POST", path, { candidate_index: Number(match[2]) });
+      const disabled = approval.status === 503 && approval.data?.detail === "review_execution_not_configured";
+      result = {
+        text: disabled
+          ? (locale === "fa"
+            ? "🔒 <b>اجرای Catch هنوز به این کنترل متصل نیست.</b>\n\nانتخاب تو ثبت یا اجرا نشد؛ هیچ فرمانی به بات مقصد ارسال نشده است."
+            : "🔒 <b>Catch execution is not connected yet.</b>\n\nYour selection was not committed or executed. No command was sent to a target bot.")
+          : (locale === "fa" ? "تأیید انجام نشد؛ درخواست همچنان در صف بررسی است." : "Approval was not completed; the review remains pending."),
+        parse_mode: "HTML",
+        keyboard: { inline_keyboard: [
+          [{ text: translate("catcher.reviews", locale), callback_data: "catch:reviews" }],
+          ...backMenu(locale).inline_keyboard,
+        ] },
+      };
+    }
   } else {
     const needsRuntimeStatus = ["overview:open", "catch:open", "account:list"].includes(callback.data) || callback.data === "menu:main";
     const runtimeStatus = needsRuntimeStatus
@@ -1383,7 +1479,7 @@ const CONNECTION_LOGIN_HTML = `<!doctype html>
 const show=(next,message)=>{stage=next;phoneField.classList.toggle("hidden",next!=="phone");codeField.classList.toggle("hidden",next!=="code");passwordField.classList.toggle("hidden",next!=="password");document.querySelector("#phone").required=next==="phone";document.querySelector("#code").required=next==="code";document.querySelector("#password").required=next==="password";submit.textContent=next==="phone"?"ارسال کد":next==="code"?"تأیید کد":"تأیید و اتصال";intro.textContent=next==="phone"?"شماره‌ات رو وارد کن تا کد ورود تلگرام برات ارسال بشه.":next==="code"?"کدی که تلگرام فرستاده رو همین‌جا وارد کن.": "رمز دومرحله‌ای تلگرامت رو وارد کن.";status.textContent=message||"";};
 const api=async(action,data={})=>{const r=await fetch("/connect/api",{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+sessionToken},body:JSON.stringify({action,...data}),cache:"no-store"});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||"request_failed");return body;};
 (async()=>{const linkToken=location.pathname.split("/").pop();if(!/^[A-Za-z0-9_-]{40,}$/.test(linkToken)){show("phone","لینک اتصال معتبر نیست.");submit.disabled=true;return;}try{const r=await fetch("/connect/exchange",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:linkToken}),cache:"no-store"});const body=await r.json();if(!r.ok)throw new Error(body.error||"link_expired");sessionToken=body.sessionToken;history.replaceState(null,"","/connect");submit.disabled=false;status.textContent="لینک امن تأیید شد؛ می‌تونیم شروع کنیم."; }catch{show("phone","این لینک منقضی شده یا قبلاً استفاده شده. از داخل بات یه لینک تازه بگیر.");submit.disabled=true;}})();
-form.addEventListener("submit",async event=>{event.preventDefault();if(busy||!sessionToken)return;busy=true;submit.disabled=true;const submittedStage=stage;try{let result;if(stage==="phone"){const phone=document.querySelector("#phone").value.trim();if(!/^\\+[1-9]\\d{7,14}$/.test(phone))throw new Error("invalid_phone");result=await api("start",{phone});if(result.status==="already_authorized"){await api("reconnect");show("phone","حسابت از قبل مجاز بود؛ اتصال دوباره برقرار شد. 🎉");form.classList.add("hidden");return;}show("code","کد ورود ارسال شد. فقط همین‌جا واردش کن.");}else if(stage==="code"){result=await api("code",{code:document.querySelector("#code").value.trim()});if(result.status==="password_required"){show("password","حساب تلگرامت رمز دومرحله‌ای داره.");return;}show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}else{result=await api("password",{password:document.querySelector("#password").value});show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}}catch(error){const messages={invalid_phone:"شماره رو با کد کشور وارد کن.",telegram_code_request_failed:"تلگرام فعلاً نتونست کد بفرسته؛ کمی بعد دوباره امتحان کن.",invalid_telegram_code:"کد ورود درست نیست؛ دوباره بررسیش کن.",authorization_expired:"مهلت ورود تموم شد. از بات لینک تازه بگیر.",invalid_2fa_password:"رمز دومرحله‌ای درست نیست.",core_unavailable:"ارتباط با سرویس برقرار نشد؛ دوباره تلاش کن."};status.textContent=messages[error.message]||"اتصال انجام نشد. دوباره تلاش کن."; }finally{if(submittedStage==="code")document.querySelector("#code").value="";if(submittedStage==="password")document.querySelector("#password").value="";if(submittedStage==="phone"&&form.classList.contains("hidden"))document.querySelector("#phone").value="";busy=false;submit.disabled=!sessionToken||form.classList.contains("hidden");}});
+form.addEventListener("submit",async event=>{event.preventDefault();if(busy||!sessionToken)return;busy=true;submit.disabled=true;const submittedStage=stage;try{let result;if(stage==="phone"){const phone=document.querySelector("#phone").value.trim();if(!/^\\+[1-9]\d{7,14}$/.test(phone))throw new Error("invalid_phone");result=await api("start",{phone});if(result.status==="already_authorized"){await api("reconnect");show("phone","حسابت از قبل مجاز بود؛ اتصال دوباره برقرار شد. 🎉");form.classList.add("hidden");return;}show("code","کد ورود ارسال شد. فقط همین‌جا واردش کن.");}else if(stage==="code"){result=await api("code",{code:document.querySelector("#code").value.trim()});if(result.status==="password_required"){show("password","حساب تلگرامت رمز دومرحله‌ای داره.");return;}show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}else{result=await api("password",{password:document.querySelector("#password").value});show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}}catch(error){const messages={invalid_phone:"شماره رو با کد کشور وارد کن.",telegram_code_request_failed:"تلگرام فعلاً نتونست کد بفرسته؛ کمی بعد دوباره امتحان کن.",invalid_telegram_code:"کد ورود درست نیست؛ دوباره بررسیش کن.",authorization_expired:"مهلت ورود تموم شد. از بات لینک تازه بگیر.",invalid_2fa_password:"رمز دومرحله‌ای درست نیست.",core_unavailable:"ارتباط با سرویس برقرار نشد؛ دوباره تلاش کن."};status.textContent=messages[error.message]||"اتصال انجام نشد. دوباره تلاش کن."; }finally{if(submittedStage==="code")document.querySelector("#code").value="";if(submittedStage==="password")document.querySelector("#password").value="";if(submittedStage==="phone"&&form.classList.contains("hidden"))document.querySelector("#phone").value="";busy=false;submit.disabled=!sessionToken||form.classList.contains("hidden");}});
 })();
 </script></body></html>`;
 function securePageHeaders(extra={}){return { "content-type":"text/html; charset=utf-8","cache-control":"no-store, max-age=0","referrer-policy":"no-referrer","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'","permissions-policy":"camera=(), microphone=(), geolocation=()","x-robots-tag":"noindex, nofollow, noarchive",...extra};}
@@ -1471,7 +1567,7 @@ async function handleWebhook(request, env) {
       try {
         let actor = await getTelegramUser(env, message.from.id);
         const startPayload = message.text.trim().split(/\s+/, 2)[1] || '';
-        if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
+        if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
           actor = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID });
         } else if (!actor && command === '/start' && startPayload.startsWith('inv_')) {
           try {
@@ -1554,14 +1650,27 @@ async function handleWebhook(request, env) {
 
 function reviewRowToItem(row) {
   let candidates;
+  let spawnContext = null;
   try { candidates = JSON.parse(row.candidates_json); } catch { throw new Error("invalid stored candidates"); }
   if (!Array.isArray(candidates)) throw new Error("invalid stored candidates");
+  if (row.spawn_context_json) {
+    try { spawnContext = JSON.parse(row.spawn_context_json); }
+    catch { throw new Error("invalid stored spawn context"); }
+    if (!spawnContext || typeof spawnContext !== "object" || Array.isArray(spawnContext)
+      || typeof spawnContext.source !== "string" || !/^[A-Za-z0-9_.-]{1,80}$/.test(spawnContext.source)
+      || !Number.isSafeInteger(spawnContext.chat_id)
+      || !Number.isSafeInteger(spawnContext.message_id) || spawnContext.message_id !== row.spawn_id
+      || !["image", "video", "document", "animation", "audio"].includes(spawnContext.media_kind)) {
+      throw new Error("invalid stored spawn context");
+    }
+  }
   return {
     review_id: row.review_id,
     user_id: row.user_id,
     spawn_id: row.spawn_id,
     anime_name: row.anime_name,
     candidates,
+    spawn_context: spawnContext,
     created_at: row.created_at,
     expires_at: row.expires_at,
     status: row.status,
@@ -1610,7 +1719,7 @@ async function internalManualReviewStore(request, env) {
 
   try {
     if (payload.action === "create") {
-      const { review_id, user_id, spawn_id, anime_name, candidates, created_at, expires_at } = payload;
+      const { review_id, user_id, spawn_id, anime_name, candidates, created_at, expires_at, spawn_context } = payload;
       if (typeof review_id !== "string" || !/^[a-f0-9]{32}$/.test(review_id)
         || typeof user_id !== "string" || !user_id || user_id.length > 128
         || !Number.isSafeInteger(spawn_id) || spawn_id < 0
@@ -1619,10 +1728,17 @@ async function internalManualReviewStore(request, env) {
         || candidates.some((name) => typeof name !== "string" || !name.trim() || name.length > 100)
         || typeof created_at !== "string" || typeof expires_at !== "string"
         || !Number.isFinite(Date.parse(created_at)) || !Number.isFinite(Date.parse(expires_at))
-        || Date.parse(expires_at) <= Date.parse(created_at)) return json({ error: "invalid_review_item" }, 400);
+        || Date.parse(expires_at) <= Date.parse(created_at)
+        || (spawn_context !== undefined && spawn_context !== null && (
+          typeof spawn_context !== "object" || Array.isArray(spawn_context)
+          || typeof spawn_context.source !== "string" || !/^[A-Za-z0-9_.-]{1,80}$/.test(spawn_context.source)
+          || !Number.isSafeInteger(spawn_context.chat_id)
+          || !Number.isSafeInteger(spawn_context.message_id) || spawn_context.message_id !== spawn_id
+          || !["image", "video", "document", "animation", "audio"].includes(spawn_context.media_kind)
+        ))) return json({ error: "invalid_review_item" }, 400);
       const inserted = await env.KAGECATCH_DB.prepare(
-        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
-      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
+        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
+      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), spawn_context ? JSON.stringify(spawn_context) : null, new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
       if (Number(inserted?.meta?.changes || 0) !== 1) return json({ error: "pending_queue_limit_reached" }, 429);
       return json({ status: "created" }, 201);
     }
@@ -1640,7 +1756,7 @@ async function internalManualReviewStore(request, env) {
         "UPDATE manual_review_items SET status = 'expired' WHERE user_id = ? AND status = 'pending' AND expires_at <= ?"
       ).bind(payload.user_id, now).run();
       const result = await env.KAGECATCH_DB.prepare(
-        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE user_id = ? AND status = 'pending' ORDER BY created_at, review_id LIMIT 100"
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE user_id = ? AND status = 'pending' ORDER BY created_at, review_id LIMIT 100"
       ).bind(payload.user_id).all();
       return json({ items: (result?.results || []).map(reviewRowToItem) });
     }
@@ -1650,7 +1766,7 @@ async function internalManualReviewStore(request, env) {
       if (typeof user_id !== "string" || !user_id || user_id.length > 128
         || typeof review_id !== "string" || !/^[a-f0-9]{32}$/.test(review_id)) return json({ error: "invalid_review_id" }, 400);
       const row = await env.KAGECATCH_DB.prepare(
-        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
       ).bind(review_id, user_id).first();
       if (!row) return json({ error: "review_item_not_found" }, 404);
       if (row.status !== "pending") return json({ error: "review_item_already_resolved" }, 409);
@@ -1659,7 +1775,7 @@ async function internalManualReviewStore(request, env) {
           "UPDATE manual_review_items SET status = 'expired' WHERE review_id = ? AND user_id = ? AND status = 'pending'"
         ).bind(review_id, user_id).run();
         const expiredRow = await env.KAGECATCH_DB.prepare(
-          "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+          "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
         ).bind(review_id, user_id).first();
         return json({ item: reviewRowToItem(expiredRow) });
       }
@@ -1675,13 +1791,106 @@ async function internalManualReviewStore(request, env) {
       ).bind(nextStatus, selected, review_id, user_id, now).run();
       if (Number(update?.meta?.changes || 0) !== 1) return json({ error: "review_item_already_resolved" }, 409);
       const updatedRow = await env.KAGECATCH_DB.prepare(
-        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
+        "SELECT review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character FROM manual_review_items WHERE review_id = ? AND user_id = ?"
       ).bind(review_id, user_id).first();
       return json({ item: reviewRowToItem(updatedRow) });
     }
     return json({ error: "invalid_action" }, 400);
   } catch {
     return json({ error: "manual_review_store_unavailable" }, 503);
+  }
+}
+
+
+async function internalDailyQuotaStore(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
+  if (!env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) return json({ error: "quota_auth_not_configured" }, 503);
+  if (!env.KAGECATCH_DB || !env.CONNECT_LINKS) return json({ error: "quota_store_not_configured" }, 503);
+
+  let rawBody;
+  try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
+  if (rawBody.byteLength > 8192) return json({ error: "request_too_large" }, 413);
+  const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
+  const nonce = request.headers.get("X-KageCatch-Nonce") || "";
+  const supplied = request.headers.get("X-KageCatch-Signature") || "";
+  if (!/^\d{10,12}$/.test(timestampRaw) || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !/^[a-f0-9]{64}$/.test(supplied)) return json({ error: "invalid_auth_headers" }, 401);
+  const timestamp = Number(timestampRaw);
+  if (Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 60) return json({ error: "request_expired" }, 401);
+  const bodyHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signingText = [timestampRaw, nonce, request.method, new URL(request.url).pathname, bodyHash].join("\n");
+  const signingKey = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.CORE_API_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const expectedBytes = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, new TextEncoder().encode(signingText)));
+  const expected = Array.from(expectedBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  let difference = expected.length ^ supplied.length;
+  for (let index = 0; index < expected.length; index += 1) difference |= expected.charCodeAt(index) ^ supplied.charCodeAt(index);
+  if (difference !== 0) return json({ error: "invalid_signature" }, 401);
+
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const claim = await stub.fetch("https://connect-links.internal/claim-nonce", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nonce, expiresAt: Date.now() + 120000 }),
+  });
+  if (claim.status === 409) return json({ error: "request_replayed" }, 409);
+  if (!claim.ok) return json({ error: "replay_guard_unavailable" }, 503);
+
+  let payload;
+  try { payload = JSON.parse(new TextDecoder().decode(rawBody)); }
+  catch { return json({ error: "invalid_request" }, 400); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return json({ error: "invalid_request" }, 400);
+  const { action, request_id: requestId } = payload;
+  if (!["reserve", "confirm", "fail", "status"].includes(action)
+    || typeof requestId !== "string" || !/^[a-f0-9]{32}$/.test(requestId)) return json({ error: "invalid_quota_request" }, 400);
+
+  try {
+    if (action === "reserve") {
+      const { owner_id: ownerId, quota_date: quotaDate, chat_id: chatId, spawn_message_id: spawnMessageId } = payload;
+      if (typeof ownerId !== "string" || !/^[1-9][0-9]{0,15}$/.test(ownerId) || Number(ownerId) > (2 ** 52 - 1)
+        || typeof quotaDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(quotaDate)
+        || !Number.isSafeInteger(chatId) || !Number.isSafeInteger(spawnMessageId) || spawnMessageId <= 0
+        || !Number.isFinite(Date.parse(quotaDate + "T00:00:00Z")) || new Date(quotaDate + "T00:00:00Z").toISOString().slice(0, 10) !== quotaDate) return json({ error: "invalid_reservation" }, 400);
+
+      await env.KAGECATCH_DB.prepare(
+        "INSERT OR IGNORE INTO daily_quota_limits (owner_id, quota_date, quota_limit) VALUES (?, ?, 20)"
+      ).bind(ownerId, quotaDate).run();
+
+      const inserted = await env.KAGECATCH_DB.prepare(
+        "INSERT INTO daily_quotas (request_id, owner_id, quota_date, status, consumes_quota, chat_id, spawn_message_id, created_at, updated_at) SELECT ?, ?, ?, 'reserved', 1, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP WHERE EXISTS (SELECT 1 FROM daily_quota_limits WHERE owner_id = ? AND quota_date = ?) AND (SELECT COUNT(*) FROM daily_quotas WHERE owner_id = ? AND quota_date = ? AND (status = 'reserved' OR consumes_quota = 1)) < (SELECT quota_limit FROM daily_quota_limits WHERE owner_id = ? AND quota_date = ?) AND NOT EXISTS (SELECT 1 FROM daily_quotas WHERE request_id = ?)"
+      ).bind(requestId, ownerId, quotaDate, chatId, spawnMessageId, ownerId, quotaDate, ownerId, quotaDate, ownerId, quotaDate, requestId).run();
+      if (Number(inserted?.meta?.changes || 0) === 1) return json({ status: "reserved", request_id: requestId }, 201);
+      const existing = await env.KAGECATCH_DB.prepare(
+        "SELECT request_id, owner_id, quota_date, status, consumes_quota FROM daily_quotas WHERE request_id = ?"
+      ).bind(requestId).first();
+      if (existing && existing.owner_id === ownerId && existing.quota_date === quotaDate) {
+        return json({ status: existing.status, request_id: requestId, existing: true });
+      }
+      return json({ error: "quota_exhausted" }, 409);
+    }
+
+    if (action === "confirm") {
+      const result = await env.KAGECATCH_DB.prepare(
+        "UPDATE daily_quotas SET status = 'confirmed', consumes_quota = 1, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'reserved'"
+      ).bind(requestId).run();
+      if (Number(result?.meta?.changes || 0) !== 1) return json({ error: "quota_transition_conflict" }, 409);
+      return json({ status: "confirmed", request_id: requestId });
+    }
+
+    if (action === "fail") {
+      if (typeof payload.consumes_quota !== "boolean") return json({ error: "consumes_quota_required" }, 400);
+      const result = await env.KAGECATCH_DB.prepare(
+        "UPDATE daily_quotas SET status = 'failed', consumes_quota = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'reserved'"
+      ).bind(payload.consumes_quota ? 1 : 0, requestId).run();
+      if (Number(result?.meta?.changes || 0) !== 1) return json({ error: "quota_transition_conflict" }, 409);
+      return json({ status: "failed", request_id: requestId, consumes_quota: payload.consumes_quota });
+    }
+
+    const row = await env.KAGECATCH_DB.prepare(
+      "SELECT request_id, owner_id, quota_date, status, consumes_quota FROM daily_quotas WHERE request_id = ?"
+    ).bind(requestId).first();
+    if (!row) return json({ error: "quota_request_not_found" }, 404);
+    return json({ request_id: row.request_id, owner_id: row.owner_id, quota_date: row.quota_date, status: row.status, consumes_quota: Number(row.consumes_quota) === 1 });
+  } catch {
+    return json({ error: "quota_store_unavailable" }, 503);
   }
 }
 
@@ -1845,6 +2054,7 @@ export default {
       );
     }
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
+    if (url.pathname === "/internal/daily-quota") return internalDailyQuotaStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);

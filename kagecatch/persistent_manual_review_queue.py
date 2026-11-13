@@ -7,6 +7,7 @@ from typing import Callable, Sequence
 from uuid import uuid4
 
 from .manual_review_queue import ManualReviewQueue, ReviewItem, ReviewStatus
+from .models.spawn import SpawnContext
 
 
 class PersistentManualReviewQueue:
@@ -32,6 +33,7 @@ class PersistentManualReviewQueue:
     async def enqueue(
         self, *, user_id: str, spawn_id: int, anime_name: str,
         candidates: Sequence[str],
+        spawn_context: SpawnContext | None = None,
     ) -> ReviewItem:
         ManualReviewQueue._validate_user_id(user_id)
         if isinstance(spawn_id, bool) or not isinstance(spawn_id, int) or not 0 <= spawn_id <= (2**53 - 1):
@@ -48,11 +50,15 @@ class PersistentManualReviewQueue:
             raise ValueError("candidates must contain 1 to 30 non-empty strings")
         if any(len(name) > 100 for name in names):
             raise ValueError("candidate names must not exceed 100 characters")
+        if spawn_context is not None:
+            if not isinstance(spawn_context, SpawnContext) or spawn_context.message_id != spawn_id:
+                raise ValueError("spawn_context must match spawn_id")
         now = self._now()
         item = ReviewItem(
             review_id=uuid4().hex, user_id=user_id, spawn_id=spawn_id,
             anime_name=anime_name.strip(), candidates=names,
             created_at=now, expires_at=now + self._default_ttl,
+            spawn_context=spawn_context,
         )
         await self._store.create(self._serialize(item))
         return item
@@ -101,6 +107,14 @@ class PersistentManualReviewQueue:
             "candidates": list(item.candidates),
             "created_at": item.created_at.isoformat(),
             "expires_at": item.expires_at.isoformat(),
+            "spawn_context": (
+                {
+                    "source": item.spawn_context.source,
+                    "chat_id": item.spawn_context.chat_id,
+                    "message_id": item.spawn_context.message_id,
+                    "media_kind": item.spawn_context.media_kind,
+                } if item.spawn_context is not None else None
+            ),
         }
 
     @staticmethod
@@ -116,6 +130,10 @@ class PersistentManualReviewQueue:
                 expires_at=datetime.fromisoformat(record["expires_at"]).astimezone(timezone.utc),
                 status=ReviewStatus(record["status"]),
                 selected_character=record.get("selected_character"),
+                spawn_context=(
+                    SpawnContext(**record["spawn_context"])
+                    if isinstance(record.get("spawn_context"), dict) else None
+                ),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("manual review store returned an invalid record") from exc

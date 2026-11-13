@@ -122,6 +122,7 @@ export async function processPanelQueue(env, sendTelegram) {
         reply_markup: { inline_keyboard: [
           [{ text: "📊 آمار", callback_data: callback("stats") }, { text: "🎯 موتور Catch", callback_data: callback("engine") }],
           [{ text: "⚙️ تنظیمات", callback_data: callback("settings") }, { text: "🔄 بروزرسانی", callback_data: callback("refresh") }],
+          [{ text: "📝 بررسی‌های دستی", callback_data: callback("reviews") }],
           [{ text: "✖️ بستن پنل", callback_data: callback("close") }],
         ] },
       });
@@ -143,7 +144,11 @@ export async function processPanelQueue(env, sendTelegram) {
 
 export function parsePanelCallback(data) {
   if (typeof data !== "string") return null;
-  const match = data.match(/^kp:([a-f0-9]{32}):(stats|engine|engine_on|engine_off|settings|refresh|close)$/);
+  const reviewAction = data.match(/^kr:([a-f0-9]{32}):a:(0|[1-9][0-9]?)$/);
+  if (reviewAction) return { kind: "review", reviewId: reviewAction[1], action: "approve", candidateIndex: Number(reviewAction[2]) };
+  const reviewReject = data.match(/^kr:([a-f0-9]{32}):r$/);
+  if (reviewReject) return { kind: "review", reviewId: reviewReject[1], action: "reject" };
+  const match = data.match(/^kp:([a-f0-9]{32}):(stats|engine|engine_on|engine_off|settings|refresh|close|reviews)$/);
   return match ? { requestId: match[1], action: match[2] } : null;
 }
 
@@ -160,7 +165,7 @@ async function requestCore(env, method, path, payload) {
   const signatureBytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingText)));
   const signature = Array.from(signatureBytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   const fetcher = env.CORE_API_FETCH || fetch;
-  const response = await fetcher(env.CORE_API_URL.replace(/\/$/, "") + path, {
+  const requestInit = {
     method,
     headers: {
       "content-type": "application/json",
@@ -168,8 +173,9 @@ async function requestCore(env, method, path, payload) {
       "X-KageCatch-Nonce": nonce,
       "X-KageCatch-Signature": signature,
     },
-    body,
-  });
+  };
+  if (method !== "GET" && method !== "HEAD") requestInit.body = body;
+  const response = await fetcher(env.CORE_API_URL.replace(/\/$/, "") + path, requestInit);
   let result = {};
   try { result = await response.json(); } catch {}
   if (!response.ok) throw new Error(result.detail || "core_api_request_failed");
@@ -224,9 +230,15 @@ export async function handlePanelCallback(callback, env, telegramApi) {
   }
   let row;
   try {
-    row = await env.KAGECATCH_DB.prepare(
-      "SELECT request_id, owner_id, chat_id, panel_message_id, status, expires_at FROM panel_requests WHERE request_id = ?"
-    ).bind(parsed.requestId).first();
+    if (parsed.kind === "review") {
+      row = await env.KAGECATCH_DB.prepare(
+        "SELECT request_id, owner_id, chat_id, panel_message_id, status, expires_at FROM panel_requests WHERE owner_id = ? AND chat_id = ? AND panel_message_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1"
+      ).bind(String(actorId), String(chatId), messageId).first();
+    } else {
+      row = await env.KAGECATCH_DB.prepare(
+        "SELECT request_id, owner_id, chat_id, panel_message_id, status, expires_at FROM panel_requests WHERE request_id = ?"
+      ).bind(parsed.requestId).first();
+    }
   } catch { row = null; }
   if (!row || String(actorId) !== row.owner_id || String(chatId) !== row.chat_id
     || messageId !== row.panel_message_id || row.status !== "completed"
@@ -235,6 +247,38 @@ export async function handlePanelCallback(callback, env, telegramApi) {
     return true;
   }
   await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id });
+  if (parsed.kind === "review") {
+    const path = "/v1/reviews/" + row.owner_id + "/" + parsed.reviewId + "/" + parsed.action;
+    try {
+      const result = await requestCore(
+        env, "POST", path,
+        parsed.action === "approve" ? { candidate_index: parsed.candidateIndex } : {},
+      );
+      const status = result.status || "resolved";
+      const messageText = parsed.action === "reject"
+        ? "🗑️ مورد بررسی رد شد."
+        : status === "disabled"
+          ? "🛡️ انتخاب انسانی دریافت شد؛ موتور Catch خاموش است و هیچ فرمانی ارسال نشد."
+          : status === "adapter_unavailable"
+            ? "⚠️ آداپتر مقصد در دسترس نیست؛ هیچ Catch انجام نشد."
+            : status === "adapter_mismatch" || status === "media_mismatch"
+              ? "⛔ سازگاری منبع یا رسانه تأیید نشد؛ هیچ Catch انجام نشد."
+              : "✅ انتخاب انسانی پردازش شد: " + status;
+      await telegramApi(env, "editMessageText", {
+        chat_id: chatId, message_id: messageId,
+        text: messageText,
+        reply_markup: { inline_keyboard: [[{ text: "↩️ بازگشت به پنل", callback_data: "kp:" + row.request_id + ":refresh" }]] },
+      });
+    } catch {
+      await telegramApi(env, "editMessageText", {
+        chat_id: chatId, message_id: messageId,
+        text: "⚠️ عملیات بررسی انجام نشد؛ ممکن است مورد منقضی یا قبلاً پردازش شده باشد، یا سرویس تأیید هنوز آماده نباشد.",
+        reply_markup: { inline_keyboard: [[{ text: "📝 فهرست بررسی‌ها", callback_data: "kp:" + row.request_id + ":reviews" }]] },
+      });
+    }
+    return true;
+  }
+
   if (parsed.action === "close") {
     await env.KAGECATCH_DB.prepare(
       "UPDATE panel_requests SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'completed'"
@@ -273,6 +317,48 @@ export async function handlePanelCallback(callback, env, telegramApi) {
       }
     } catch {
       text = "⚠️ Core در دسترس نیست یا حساب متصل نیست؛ هیچ تغییری تأیید نشد. کمی بعد دوباره تلاش کن.";
+    }
+  } else if (parsed.action === "reviews") {
+    try {
+      const result = await requestCore(env, "GET", "/v1/reviews/" + row.owner_id);
+      const items = Array.isArray(result.items) ? result.items.slice(0, 5) : [];
+      const approvalAvailable = result.approval_available === true;
+      if (!items.length) {
+        text = "📝 بررسی‌های دستی\n━━━━━━━━━━━━━━\nموردی در انتظار تأیید نیست.";
+        replyMarkup = { inline_keyboard: [[{ text: "↩️ بازگشت به پنل", callback_data: "kp:" + row.request_id + ":refresh" }]] };
+      } else {
+        const keyboard = [];
+        const sections = [];
+        for (let i = 0; i < items.length; i += 1) {
+          const item = items[i];
+          if (typeof item.review_id !== "string" || !/^[a-f0-9]{32}$/.test(item.review_id)) continue;
+          const anime = String(item.anime_name || "نامشخص").replaceAll(String.fromCharCode(13), " ").replaceAll(String.fromCharCode(10), " ").replaceAll(String.fromCharCode(9), " ").slice(0, 80);
+          sections.push((i + 1) + ". " + anime);
+          const candidates = Array.isArray(item.candidates) ? item.candidates.slice(0, 10) : [];
+          const candidateLabels = [];
+          for (let j = 0; j < candidates.length; j += 1) {
+            if (typeof candidates[j] !== "string") continue;
+            const candidate = candidates[j].replaceAll(String.fromCharCode(13), " ").replaceAll(String.fromCharCode(10), " ").replaceAll(String.fromCharCode(9), " ").slice(0, 48);
+            candidateLabels.push(candidate);
+            if (approvalAvailable) {
+              keyboard.push([{ text: "✅ " + candidate, callback_data: "kr:" + item.review_id + ":a:" + j }]);
+            }
+          }
+          if (!approvalAvailable && candidateLabels.length) {
+            sections.push("   گزینه‌ها: " + candidateLabels.join("، "));
+          }
+          keyboard.push([{ text: "❌ رد مورد " + (i + 1), callback_data: "kr:" + item.review_id + ":r" }]);
+        }
+        text = "📝 بررسی‌های دستی (حداکثر ۵ مورد)\n━━━━━━━━━━━━━━\n" + sections.join("\n")
+          + (approvalAvailable
+            ? "\n\nبرای تأیید، شخصیت را انتخاب کن:"
+            : "\n\n⚠️ موتور Catch هنوز برای تأیید اجرایی فعال نشده؛ فعلاً فقط رد کردن ممکن است.");
+        keyboard.push([{ text: "↩️ بازگشت به پنل", callback_data: "kp:" + row.request_id + ":refresh" }]);
+        replyMarkup = { inline_keyboard: keyboard.slice(0, 51) };
+      }
+    } catch {
+      text = "⚠️ دریافت فهرست بررسی‌ها از Core ممکن نشد.";
+      replyMarkup = { inline_keyboard: [[{ text: "↩️ بازگشت به پنل", callback_data: "kp:" + row.request_id + ":refresh" }]] };
     }
   } else if (parsed.action === "stats") {
     try {
