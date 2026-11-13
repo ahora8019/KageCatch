@@ -1479,3 +1479,42 @@ test("scheduled keepalive never drains the panel queue or depends on D1", async 
   assert.equal(keepaliveCalls, 1);
   assert.equal(databaseCalls, 0);
 });
+
+
+test("manual webhook setup endpoint requires the Core admin secret and repairs then verifies Telegram webhook", async () => {
+  const secret = "core-admin-secret-with-at-least-32-bytes";
+  let webhookUrl = "";
+  const calls = [];
+  const env = {
+    CORE_API_SECRET: secret,
+    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "test_webhook_secret_123",
+    FETCH: async (url, init) => {
+      const method = String(url).split("/").pop();
+      const payload = JSON.parse(init.body);
+      calls.push({ method, payload });
+      if (method === "getWebhookInfo") return new Response(JSON.stringify({ ok: true, result: { url: webhookUrl } }), { status: 200 });
+      if (method === "setWebhook") { webhookUrl = payload.url; return new Response(JSON.stringify({ ok: true, result: true }), { status: 200 }); }
+      throw new Error("unexpected Telegram method");
+    },
+  };
+  const url = "https://kagecatch-control.ahora-project.workers.dev/admin/setup-webhook";
+  const denied = await worker.fetch(new Request(url, { method: "POST" }), env);
+  assert.equal(denied.status, 401);
+  const response = await worker.fetch(new Request(url, {
+    method: "POST", headers: { authorization: "Bearer " + secret },
+  }), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "configured", verified: true });
+  assert.equal(webhookUrl, "https://kagecatch-control.ahora-project.workers.dev/webhook");
+  assert.deepEqual(calls.map((call) => call.method), ["getWebhookInfo", "setWebhook", "getWebhookInfo"]);
+  assert.equal(calls[1].payload.secret_token, env.TELEGRAM_WEBHOOK_SECRET);
+  assert.equal(calls[1].payload.drop_pending_updates, false);
+});
+
+test("manual webhook setup endpoint rejects wrong methods and never exposes secrets", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/admin/setup-webhook", {
+    method: "GET",
+  }), { CORE_API_SECRET: "a".repeat(40) });
+  assert.equal(response.status, 405);
+});
