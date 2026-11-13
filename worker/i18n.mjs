@@ -54,6 +54,12 @@ const MESSAGES = {
     "help.body": "🎯 Catch — وضعیت شکار\n🤖 بات‌های مقصد — بات‌های پشتیبانی‌شده\n👤 حساب من — اتصال و مدیریت حساب\n📊 آمار من — نتیجه‌های تأییدشده\n⚙️ تنظیمات — تنظیمات برنامه\n\nدستورها: /start منو · /status وضعیت · /help راهنما",
     "menu.welcome": "🌸 خوش آمدی به KageCatch 😎",
     "menu.choose": "از منو هر بخشی را که لازم داری انتخاب کن:",
+    "overview.stats": "📈 آمار", "overview.help": "❓ راهنما",
+    "common.refresh": "🔄 تازه‌سازی",
+    "catcher.bots": "🤖 بات‌های مقصد", "catcher.control": "🎯 کنترل شکار",
+    "bots.title": "🤖 بات‌های مقصد",
+    "bots.body": "• HentaCatcherBot — عکس · /catch\n• Character_Catcher_Bot — عکس · /catch\n• SenpaiCatcherBot — ویدیو · /pick (فعلاً غیرفعال)\n\nهنوز تست واقعی نگرفته‌ایم؛ پس فعلاً قول Catch موفق نمی‌دهیم.",
+    "generic.invalid": "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.",
     "navigation.back": "⬅️ منوی اصلی"
   },
   en: {
@@ -111,6 +117,12 @@ const MESSAGES = {
     "help.body": "🎯 Catch — catch status\n🤖 Target bots — supported bots\n👤 My account — account connection and management\n📊 My stats — verified results\n⚙️ Settings — app preferences\n\nCommands: /start menu · /status status · /help help",
     "menu.welcome": "🌸 Welcome to KageCatch 😎",
     "menu.choose": "Choose a section from the menu:",
+    "overview.stats": "📈 Statistics", "overview.help": "❓ Help",
+    "common.refresh": "🔄 Refresh",
+    "catcher.bots": "🤖 Target bots", "catcher.control": "🎯 Catch controls",
+    "bots.title": "🤖 Target bots",
+    "bots.body": "• HentaCatcherBot — image · /catch\n• Character_Catcher_Bot — image · /catch\n• SenpaiCatcherBot — video · /pick (currently disabled)\n\nLive end-to-end tests have not been completed, so successful catches are not guaranteed.",
+    "generic.invalid": "This option is not valid. Please reopen the main menu.",
     "navigation.back": "⬅️ Main menu"
   }
 };
