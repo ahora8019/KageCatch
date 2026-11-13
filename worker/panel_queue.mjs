@@ -329,11 +329,11 @@ export async function handlePanelCallback(callback, env, telegramApi) {
         const sections = [];
         for (let i = 0; i < items.length; i += 1) {
           const item = items[i];
-          const anime = String(item.anime_name || "نامشخص").replace(/[\\r\\n\\t\\u0000-\\u001f]/g, " ").slice(0, 80);
+          const anime = String(item.anime_name || "نامشخص").replaceAll("\\r", " ").replaceAll("\\n", " ").replaceAll("\\t", " ").slice(0, 80);
           sections.push((i + 1) + ". " + anime);
           const candidates = Array.isArray(item.candidates) ? item.candidates.slice(0, 10) : [];
           for (let j = 0; j < candidates.length; j += 1) {
-            const candidate = String(candidates[j]).replace(/[\\r\\n\\t\\u0000-\\u001f]/g, " ").slice(0, 48);
+            const candidate = String(candidates[j]).replaceAll("\\r", " ").replaceAll("\\n", " ").replaceAll("\\t", " ").slice(0, 48);
             keyboard.push([{ text: "✅ " + candidate, callback_data: "kr:" + item.review_id + ":a:" + j }]);
           }
           keyboard.push([{ text: "❌ رد مورد " + (i + 1), callback_data: "kr:" + item.review_id + ":r" }]);
