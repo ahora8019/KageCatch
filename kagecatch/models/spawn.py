@@ -37,7 +37,7 @@ class SpawnContext:
             raise ValueError("chat_id must be a safe integer")
         if isinstance(self.message_id, bool) or not isinstance(self.message_id, int) or not 0 <= self.message_id <= (2**53 - 1):
             raise ValueError("message_id must be a non-negative safe integer")
-        if self.media_kind not in {"photo", "video", "document", "animation", "audio"}:
+        if self.media_kind not in {"image", "video", "document", "animation", "audio"}:
             raise ValueError("unsupported media_kind")
 
 
