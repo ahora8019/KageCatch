@@ -153,6 +153,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 if __name__ == "__main__":
     unittest.main()
 
+class SessionRuntimeTelemetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_authorized_reconnect_emits_structured_monitor_event_without_session_data(self):
         with self.assertLogs("kagecatch.core", level="INFO") as captured:
             await SessionRuntime(
