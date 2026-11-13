@@ -88,7 +88,7 @@ test("dashboard reflects verified Core, account, and Catch state without optimis
   assert.match(live, /وضعیت شکار: <b>فعال<\/b>/);
   const unavailable = buildDashboardText("Ahora", { core: "unavailable", account: "unknown", catchEnabled: null });
   assert.match(unavailable, /هستهٔ پایتون: <b>در دسترس نیست<\/b>/);
-  assert.match(unavailable, /Session: <b>Unknown<\/b>/);
+  assert.match(unavailable, /Session: <b>نامشخص<\/b>/);
   assert.match(unavailable, /وضعیت شکار: <b>نامشخص<\/b>/);
 });
 
@@ -1390,9 +1390,9 @@ test("Overview callback reads signed live Core, account, and Catch status then e
   const edit = calls.find((call) => call.kind === "telegram" && call.method === "editMessageText");
   assert.ok(edit);
   assert.equal(edit.payload.message_id, 77);
-  assert.match(edit.payload.text, /Python Core: <b>Online<\/b>/);
-  assert.match(edit.payload.text, /Session: <b>Connected<\/b>/);
-  assert.match(edit.payload.text, /Catch Mode: <b>Disabled<\/b>/);
+  assert.match(edit.payload.text, /هستهٔ پایتون: <b>آنلاین<\/b>/);
+  assert.match(edit.payload.text, /نشست: <b>متصل<\/b>/);
+  assert.match(edit.payload.text, /وضعیت شکار: <b>غیرفعال<\/b>/);
   assert.deepEqual(calls.filter((call) => call.kind === "core").map((call) => call.path), [
     "/v1/health", "/v1/accounts/999001", "/v1/accounts/999001/catch",
   ]);
