@@ -148,6 +148,56 @@ test("Owner HQ formats real statistics, has the requested four-row keyboard, and
   assert.equal(offline.keyboard.inline_keyboard.flat().some(button => button.callback_data === "owner:stats:refresh"), false);
 });
 
+test("Owner HQ callback fetches HMAC Core stats and edits the existing Telegram message", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 999001, ownerTelegramId: "999001" });
+  await post("/register", { telegramUserId: 500002, ownerTelegramId: "999001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    CONNECT_LINKS: binding,
+    OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CORE_API_URL: "https://core.example",
+    CORE_API_SECRET: "a".repeat(40),
+    FETCH: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/v1/owner/stats")) {
+        return new Response(JSON.stringify({
+          total_users: 1, active_sessions: 8, total_catches: 1245, system_uptime_seconds: 475200,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 900004, callback_query: {
+      id: "owner-stats", data: "owner:stats", from: { id: 999001 },
+      message: { message_id: 77, chat: { id: 999001, type: "private" } },
+    } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const coreCall = calls.find(call => call.url.endsWith("/v1/owner/stats"));
+  assert.equal(coreCall.init.method, "GET");
+  assert.ok(coreCall.init.headers["X-KageCatch-Signature"]);
+  const edit = calls.find(call => call.url.endsWith("/editMessageText"));
+  assert.ok(edit);
+  const payload = JSON.parse(edit.init.body);
+  assert.match(payload.text, /Total Users: 1/);
+  assert.match(payload.text, /Active Sessions: 8/);
+  assert.match(payload.text, /Total Catches: 1,245/);
+  assert.match(payload.text, /System Uptime: 5d 12h/);
+  assert.equal(payload.message_id, 77);
+  assert.equal(payload.reply_markup.inline_keyboard[2][0].callback_data, "owner:stats:refresh");
+});
+
 test("status and help remain available as slash-command shortcuts", () => {
   assert.match(commandReply("/status").text, /Python Core: متصل نیست/);
   assert.match(commandReply("/help").text, /کنترل Catch/);
@@ -468,6 +518,7 @@ test("member cannot invoke owner-only callbacks through the webhook", async () =
   assert.equal(response.status, 200);
   assert.ok(calls.some((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true));
   assert.ok(!calls.some((call) => call.method === "editMessageText"));
+  assert.ok(!calls.some((call) => call.url?.includes("/v1/owner/stats")));
 });
 
 
