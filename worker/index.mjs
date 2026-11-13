@@ -143,6 +143,80 @@ function formatOwnerUptime(seconds) {
   return `${days}d ${hours}h`;
 }
 
+export function buildOwnerMonitor(monitoring) {
+  const available = monitoring?.available === true;
+  const keyboard = { inline_keyboard: [
+    [{ text: "🔄 Refresh Live Data", callback_data: "owner:monitor:refresh" }],
+    [{ text: "🔙 Back to Owner HQ", callback_data: "owner:stats" }],
+  ] };
+  const lines = available ? [
+    "👁️ KAGECATCH | LIVE MONITOR",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "⚙️ Core: Online",
+    "🔄 Queue: " + (Number.isSafeInteger(monitoring.queuePending) ? monitoring.queuePending : "Unavailable") + " pending",
+    "👥 Active Workers: " + monitoring.activeWorkers,
+    "🗄️ D1: " + (monitoring.d1Status === "connected" ? "Connected" : "Unavailable"),
+    "🔌 Redis: " + (monitoring.redisStatus === "not_configured" ? "Not configured" : monitoring.redisStatus),
+    "━━━━━━━━━━━━━━━━━━━━",
+    "📋 Recent Events:",
+    ...(monitoring.recentEvents.length ? monitoring.recentEvents.map((event) => {
+      const time = new Date(event.timestamp * 1000).toISOString().slice(11, 16);
+      const level = ["DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL"].includes(event.level) ? event.level : "INFO";
+      return "[" + time + "] " + level + ": " + escapeHtml(event.message);
+    }) : ["No recent events."]),
+    "━━━━━━━━━━━━━━━━━━━━",
+  ] : [
+    "👁️ KAGECATCH | LIVE MONITOR",
+    "━━━━━━━━━━━━━━━━━━━━",
+    "🔴 Core Offline",
+    "🔄 Queue: Unavailable",
+    "👥 Active Workers: Unavailable",
+    "🗄️ D1: " + (monitoring?.d1Status === "connected" ? "Connected" : "Unavailable"),
+    "━━━━━━━━━━━━━━━━━━━━",
+    "📋 Recent Events: Unavailable",
+  ];
+  return { text: "<pre>" + lines.join("\\n") + "</pre>", parse_mode: "HTML", keyboard };
+}
+
+async function loadOwnerMonitoring(env) {
+  const [core, queue] = await Promise.all([
+    coreRequest(env, "GET", "/v1/owner/monitoring"),
+    (async () => {
+      if (!env.KAGECATCH_DB) return { available: false, pending: null };
+      try {
+        const row = await env.KAGECATCH_DB.prepare(
+          "SELECT COUNT(*) AS pending FROM panel_requests WHERE status = 'pending'"
+        ).first();
+        const pending = Number(row?.pending);
+        return Number.isSafeInteger(pending) && pending >= 0
+          ? { available: true, pending }
+          : { available: false, pending: null };
+      } catch {
+        return { available: false, pending: null };
+      }
+    })(),
+  ]);
+  const data = core.data;
+  const valid = core.status >= 200 && core.status < 300
+    && data?.core_status === "online"
+    && typeof data?.redis_status === "string"
+    && Number.isSafeInteger(data?.active_workers) && data.active_workers >= 0
+    && Array.isArray(data?.recent_events);
+  if (!valid) return { available: false, d1Status: queue.available ? "connected" : "unavailable" };
+  const recentEvents = data.recent_events.slice(0, 10).filter((event) =>
+    event && Number.isSafeInteger(event.timestamp) && event.timestamp >= 0
+    && typeof event.level === "string" && typeof event.message === "string"
+  );
+  return {
+    available: true,
+    redisStatus: data.redis_status,
+    activeWorkers: data.active_workers,
+    recentEvents,
+    d1Status: queue.available ? "connected" : "unavailable",
+    queuePending: queue.pending,
+  };
+}
+
 export function buildOwnerDashboard(stats) {
   const available = stats?.available === true;
   const keyboard = [
@@ -156,6 +230,7 @@ export function buildOwnerDashboard(stats) {
     ],
   ];
   if (available) keyboard.push([{ text: "🔄 Refresh", callback_data: "owner:stats:refresh" }]);
+  keyboard.push([{ text: "👁️ Live Monitor", callback_data: "owner:monitor" }]);
   keyboard.push([{ text: "🔙 Back to Main", callback_data: "home:panel" }]);
 
   const lines = available
@@ -1228,6 +1303,8 @@ async function handleCallback(callback, env) {
     result = { text: "❓ راهنمای KageCatch\n\nبرای ورود به امکانات، پنل کاربری را انتخاب کن. دستورهای /panel و /status هم میانبر هستند.", keyboard: { inline_keyboard: [[{ text: "🧩 پنل کاربری", callback_data: "home:panel" }], [{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
   } else if (callback.data === "owner:stats" || callback.data === "owner:stats:refresh") {
     result = buildOwnerDashboard(await loadOwnerStats(env));
+  } else if (callback.data === "owner:monitor" || callback.data === "owner:monitor:refresh") {
+    result = buildOwnerMonitor(await loadOwnerMonitoring(env));
   } else if (callback.data?.startsWith("owner:")) {
     result = await handleOwnerCallback(callback, env);
   } else {
