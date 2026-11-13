@@ -439,41 +439,42 @@ function escapeHtml(value) {
   })[character]);
 }
 
-function runtimeLabels(status = {}) {
-  const core = ({ ready: "Online", degraded: "Degraded", unavailable: "Unavailable", not_configured: "Not configured" })[status.core] || "Not checked";
-  const account = ({ connected: "Connected", authorized: "Authorized", not_connected: "Not connected" })[status.account] || "Unknown";
-  const catchMode = status.catchEnabled === true ? "Enabled" : status.catchEnabled === false ? "Disabled" : "Unknown";
-  const execution = status.executionReady === true ? "Ready" : status.executionReady === false ? "Not ready" : "Unknown";
+function runtimeLabels(status = {}, language = "fa") {
+  const locale = normalizeLanguage(language);
+  const core = translate("status." + (status.core || "not_checked"), locale);
+  const account = translate("status." + (status.account || "unknown"), locale);
+  const catchMode = translate(status.catchEnabled === true ? "status.enabled" : status.catchEnabled === false ? "status.disabled" : "status.unknown", locale);
+  const execution = translate(status.executionReady === true ? "status.ready" : status.executionReady === false ? "status.not_ready" : "status.unknown", locale);
   return { core, account, catchMode, execution };
 }
 
-export function buildDashboardText(userLabel = "Telegram user", status = {}) {
-  const labels = runtimeLabels(status);
+export function buildDashboardText(userLabel = "Telegram user", status = {}, language = "fa") {
+  const locale = normalizeLanguage(language);
+  const labels = runtimeLabels(status, locale);
   return [
-    "🌸 <b>KAGECATCH | DASHBOARD</b>",
+    translate("dashboard.title", locale),
     "<code>━━━━━━━━━━━━━━━━━━━━</code>",
-    "👤 User: <b>" + escapeHtml(userLabel) + "</b>",
-    "🟢 Control Plane: <b>Online</b>",
-    "⚙️ Python Core: <b>" + labels.core + "</b>",
-    "🔐 Session: <b>" + labels.account + "</b>",
-    "🎯 Catch Mode: <b>" + labels.catchMode + "</b>",
+    translate("dashboard.user", locale) + ": <b>" + escapeHtml(userLabel) + "</b>",
+    translate("dashboard.control", locale) + ": <b>" + translate("status.online", locale) + "</b>",
+    translate("dashboard.core", locale) + ": <b>" + labels.core + "</b>",
+    translate("dashboard.session", locale) + ": <b>" + labels.account + "</b>",
+    translate("dashboard.catch", locale) + ": <b>" + labels.catchMode + "</b>",
     "<code>━━━━━━━━━━━━━━━━━━━━</code>",
-    "Select an option:",
+    translate("dashboard.select", locale),
   ].join("\n");
 }
 
-export function buildCatcherText(status = {}) {
-  const labels = runtimeLabels(status);
+export function buildCatcherText(status = {}, language = "fa") {
+  const locale = normalizeLanguage(language);
+  const labels = runtimeLabels(status, locale);
   return [
-    "🎯 <b>KAGECATCH | CATCHER</b>",
+    translate("catcher.title", locale),
     "<code>━━━━━━━━━━━━━━━━━━━━</code>",
-    "🔐 Account: <b>" + labels.account + "</b>",
-    "🎯 Catch Mode: <b>" + labels.catchMode + "</b>",
-    "⚙️ Execution: <b>" + labels.execution + "</b>",
+    translate("catcher.account", locale) + ": <b>" + labels.account + "</b>",
+    translate("catcher.mode", locale) + ": <b>" + labels.catchMode + "</b>",
+    translate("catcher.execution", locale) + ": <b>" + labels.execution + "</b>",
     "<code>━━━━━━━━━━━━━━━━━━━━</code>",
-    status.executionReady === true
-      ? "Execution pipeline is ready. Catch remains under your explicit control."
-      : "Live execution is not ready. No catch action was started.",
+    status.executionReady === true ? translate("catcher.ready", locale) : translate("catcher.not_ready", locale),
   ].join("\n");
 }
 
@@ -487,7 +488,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
       return { text: translate("language.selected." + data.slice("language:selected:".length), locale), keyboard: { inline_keyboard: [[{ text: translate("settings.title", locale).replace(/<[^>]*>/g, ""), callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] } };
     case "overview:open":
       return {
-        text: buildDashboardText(userLabel, status),
+        text: buildDashboardText(userLabel, status, locale),
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
           [{ text: "📈 Statistics", callback_data: "stats:open" }],
@@ -536,7 +537,7 @@ export function resolveCallback(data, userLabel = "Telegram user", role = "MEMBE
     }
     case "catch:open":
       return {
-        text: buildCatcherText(status),
+        text: buildCatcherText(status, locale),
         parse_mode: "HTML",
         keyboard: { inline_keyboard: [
           [{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }],
@@ -1481,7 +1482,7 @@ async function handleWebhook(request, env) {
         const reply = role === 'BLOCKED' || role === 'DENIED'
           ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
           : {
-              text: buildDashboardText(message.from.first_name, await loadRuntimeStatus(env, message.from.id)),
+              text: buildDashboardText(message.from.first_name, await loadRuntimeStatus(env, message.from.id), locale),
               parse_mode: "HTML",
               reply_markup: command === "/start" ? buildStartMenu(role, locale) : buildRoleMenu(role, locale),
             };
