@@ -1462,7 +1462,7 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
     } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
-    body: JSON.stringify({ update_id: 900003, callback_query: { id: "cb3", data: "owner:monitor", from: { id: 999001 }, message: { message_id: 7, chat: { id: 999001, type: "private" } } } }),
+    body: JSON.stringify({ update_id: 900003, callback_query: { id: "cb3", data: "owner:members:monitor", from: { id: 999001 }, message: { message_id: 7, chat: { id: 999001, type: "private" } } } }),
   }), env);
   assert.equal(response.status, 200);
   assert.ok(sequence.indexOf("ack") >= 0 && sequence.indexOf("ack") < sequence.indexOf("core"), "callback must be acknowledged before slow Core status lookups");
