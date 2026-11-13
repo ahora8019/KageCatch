@@ -1181,7 +1181,7 @@ async function handleCallback(callback, env) {
   const isOwnerCallback = callback.data?.startsWith("owner:");
   const configuredOwnerId = String(env.OWNER_TELEGRAM_ID || "");
   const isExactOwner =
-    /^[1-9]\\d*$/.test(configuredOwnerId) &&
+    /^[1-9]\d*$/.test(configuredOwnerId) &&
     Number.isSafeInteger(callback.from?.id) &&
     String(callback.from.id) === configuredOwnerId;
   if (isOwnerCallback && !isExactOwner) {
