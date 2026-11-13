@@ -242,3 +242,61 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewPipelineTelemetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_detected_spawn_and_durable_review_emit_sanitized_events(self):
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(ReviewPipelineTests()._spawn()),
+            resolver=FakeResolver(),
+            review_queue=FakeQueue(),
+        )
+
+        with self.assertLogs("kagecatch.core", level="INFO") as captured:
+            result = await pipeline.process(event=object(), user_id="private-user-123")
+
+        self.assertEqual(result["status"], "review_queued")
+        events = [record for record in captured.records if getattr(record, "event_type", None)]
+        self.assertEqual(
+            [record.event_type for record in events],
+            ["spawn_detected", "manual_review_queued"],
+        )
+        self.assertTrue(all("private-user-123" not in record.getMessage() for record in events))
+
+    async def test_detector_failure_is_isolated_and_emits_safe_event(self):
+        class BrokenDetector:
+            async def detect(self, event):
+                raise RuntimeError("sensitive event payload must not be logged")
+
+        pipeline = ReviewPipeline(
+            detector=BrokenDetector(),
+            resolver=FakeResolver(),
+            review_queue=FakeQueue(),
+        )
+
+        with self.assertLogs("kagecatch.core", level="WARNING") as captured:
+            result = await pipeline.process(event=object(), user_id="private-user-123")
+
+        self.assertEqual(result, {"status": "detection_failed"})
+        self.assertTrue(any(
+            getattr(record, "event_type", None) == "spawn_detection_failed"
+            for record in captured.records
+        ))
+        self.assertTrue(all("sensitive event payload" not in record.getMessage() for record in captured.records))
+
+    async def test_review_persistence_failure_emits_safe_event(self):
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(ReviewPipelineTests()._spawn()),
+            resolver=FakeResolver(),
+            review_queue=FakeQueue(fail=True),
+        )
+
+        with self.assertLogs("kagecatch.core", level="WARNING") as captured:
+            result = await pipeline.process(event=object(), user_id="private-user-123")
+
+        self.assertEqual(result["status"], "review_persistence_failed")
+        self.assertTrue(any(
+            getattr(record, "event_type", None) == "review_persistence_failed"
+            for record in captured.records
+        ))
+        self.assertTrue(all("private-user-123" not in record.getMessage() for record in captured.records))
