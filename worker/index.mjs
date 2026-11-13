@@ -1660,7 +1660,7 @@ function reviewRowToItem(row) {
       || typeof spawnContext.source !== "string" || !/^[A-Za-z0-9_.-]{1,80}$/.test(spawnContext.source)
       || !Number.isSafeInteger(spawnContext.chat_id)
       || !Number.isSafeInteger(spawnContext.message_id) || spawnContext.message_id !== row.spawn_id
-      || !["photo", "video", "document", "animation", "audio"].includes(spawnContext.media_kind)) {
+      || !["image", "video", "document", "animation", "audio"].includes(spawnContext.media_kind)) {
       throw new Error("invalid stored spawn context");
     }
   }
@@ -1734,7 +1734,7 @@ async function internalManualReviewStore(request, env) {
           || typeof spawn_context.source !== "string" || !/^[A-Za-z0-9_.-]{1,80}$/.test(spawn_context.source)
           || !Number.isSafeInteger(spawn_context.chat_id)
           || !Number.isSafeInteger(spawn_context.message_id) || spawn_context.message_id !== spawn_id
-          || !["photo", "video", "document", "animation", "audio"].includes(spawn_context.media_kind)
+          || !["image", "video", "document", "animation", "audio"].includes(spawn_context.media_kind)
         ))) return json({ error: "invalid_review_item" }, 400);
       const inserted = await env.KAGECATCH_DB.prepare(
         "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, spawn_context_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
