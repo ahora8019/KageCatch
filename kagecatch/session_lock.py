@@ -1,4 +1,4 @@
-""""D1-backed, fenced lease lock for single-owner Telethon sessions."""
+"""D1-backed, fenced lease lock for single-owner Telethon sessions."""
 from __future__ import annotations
 
 import asyncio
@@ -200,7 +200,7 @@ class D1SessionLease:
         timestamp = str(int(self._clock()))
         nonce = uuid.uuid4().hex
         digest = hashlib.sha256(body).hexdigest()
-        signing = f"{timestamp}\\n{nonce}\\n{method}\\n{path}\\n{digest}".encode()
+        signing = f"{timestamp}\n{nonce}\n{method}\n{path}\n{digest}".encode()
         signature = hmac.new(self._secret, signing, hashlib.sha256).hexdigest()
         try:
             response = await self._client.request(
