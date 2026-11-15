@@ -14,6 +14,15 @@ class SessionLockTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(lease.held)
         await client.aclose()
 
+    async def test_http_409_lock_conflict_is_reported_as_not_acquired(self):
+        async def handler(request):
+            return httpx.Response(409, json={"acquired": False})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        lease = D1SessionLease("https://worker.example", "x" * 40, client=client)
+        self.assertFalse(await lease.acquire("123"))
+        self.assertFalse(lease.held)
+        await client.aclose()
+
     async def test_acquire_starts_owned_lease_and_release(self):
         calls = []
         payloads = []
