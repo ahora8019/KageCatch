@@ -83,9 +83,11 @@ class SessionRuntime:
                 raise RuntimeError("distributed session lease was lost during session startup")
             return await operation_task
         finally:
+            if not operation_task.done():
+                operation_task.cancel()
             if not lost_task.done():
                 lost_task.cancel()
-            await asyncio.gather(lost_task, return_exceptions=True)
+            await asyncio.gather(operation_task, lost_task, return_exceptions=True)
 
     async def connect_user(self, user_id: str) -> RuntimeClient:
         lock = await self._user_lock(user_id)
@@ -130,7 +132,7 @@ class SessionRuntime:
                 if lease is not None:
                     await lease.assert_held()
                     lease.start_heartbeat()
-            except Exception as exc:
+            except BaseException as exc:
                 if type(exc).__name__ == "FloodWaitError":
                     emit_monitor_event("flood_wait", level=logging.WARNING)
                 if client is not None:
