@@ -23,6 +23,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
             "telegram_api_hash_configured": True,
             "session_encryption_key_configured": True,
             "session_store_url_configured": False,
+            "distributed_session_lock_configured": False,
             "telethon_available": importlib.util.find_spec("telethon") is not None,
         })
         self.assertNotIn("private-core-secret-value", repr(report))
@@ -42,11 +43,23 @@ class RuntimeConfigurationTests(unittest.TestCase):
             "telethon_available": importlib.util.find_spec("telethon") is not None,
         })
 
+    def test_configuration_report_marks_distributed_lock_only_when_url_and_secret_exist(self):
+        values = {
+            "KAGECATCH_SESSION_STORE_URL": "https://private-worker.example",
+            "KAGECATCH_CORE_SECRET": "x" * 40,
+        }
+        with patch.dict(os.environ, values, clear=True):
+            report = _configuration_presence()
+        self.assertTrue(report["distributed_session_lock_configured"])
+        self.assertNotIn("private-worker.example", repr(report))
+        self.assertNotIn("x" * 40, repr(report))
+
     def test_configuration_report_marks_d1_session_store_url_without_exposing_it(self):
         with patch.dict(os.environ, {"KAGECATCH_SESSION_STORE_URL": "https://private-worker.example"}, clear=True):
             report = _configuration_presence()
 
         self.assertTrue(report["session_store_url_configured"])
+        self.assertFalse(report["distributed_session_lock_configured"])
         self.assertNotIn("private-worker.example", repr(report))
 
 
