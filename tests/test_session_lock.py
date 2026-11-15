@@ -16,10 +16,12 @@ class SessionLockTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_acquire_starts_owned_lease_and_release(self):
         calls = []
+        payloads = []
         async def handler(request):
             calls.append(request.url.path)
+            payloads.append(__import__("json").loads(request.content))
             if request.url.path.endswith("/acquire"):
-                return httpx.Response(200, json={"acquired": True, "expires_at": 2000})
+                return httpx.Response(200, json={"acquired": True, "expires_at": 2000, "fencing_token": 7})
             return httpx.Response(200, json={"released": True})
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         lease = D1SessionLease("https://worker.example", "x" * 40, client=client)
@@ -28,6 +30,7 @@ class SessionLockTests(unittest.IsolatedAsyncioTestCase):
         await lease.release()
         self.assertFalse(lease.held)
         self.assertIn("/internal/session-locks/release", calls)
+        self.assertEqual(payloads[-1]["fencing_token"], 7)
         await client.aclose()
 
     async def test_heartbeat_failure_marks_lease_lost(self):
