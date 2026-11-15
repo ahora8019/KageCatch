@@ -160,6 +160,34 @@ class SessionRuntimeDistributedLockTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.active_user_count, 0)
         self.assertIsNone(store.owner)
 
+
+    async def test_cancelled_connect_user_cleans_up_client_and_releases_lease(self):
+        store = SharedLeaseStore()
+        leases = LeaseFactory(store, "instance-owner-a")
+        connect_started = asyncio.Event()
+
+        class BlockingClient(FakeClient):
+            async def connect(self):
+                connect_started.set()
+                await asyncio.Event().wait()
+
+        clients = []
+        runtime = SessionRuntime(
+            session_manager=FakeSessionManager(),
+            client_factory=lambda session: clients.append(BlockingClient()) or clients[-1],
+            lease_factory=leases,
+        )
+        connect_task = asyncio.create_task(runtime.connect_user("user-a"))
+        await asyncio.wait_for(connect_started.wait(), timeout=1)
+        connect_task.cancel()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await connect_task
+
+        self.assertTrue(clients[0].disconnected)
+        self.assertEqual(runtime.active_user_count, 0)
+        self.assertIsNone(store.owner)
+
     async def test_runtime_shutdown_disconnects_client_and_releases_lease(self):
         store = SharedLeaseStore()
         leases = LeaseFactory(store, "instance-owner-a")
