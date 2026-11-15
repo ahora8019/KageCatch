@@ -42,6 +42,7 @@ class FakeLease:
         self.acquire_allowed = acquire_allowed
         self.lost = asyncio.Event()
         self.held = False
+        self.release_calls = 0
 
     async def acquire(self, session_id):
         if not self.acquire_allowed:
@@ -65,6 +66,7 @@ class FakeLease:
         await self.lost.wait()
 
     async def release(self):
+        self.release_calls += 1
         async with self.store.lock:
             if self.store.owner == self.owner:
                 self.store.owner = None
@@ -128,6 +130,7 @@ class SessionRuntimeDistributedLockTests(unittest.IsolatedAsyncioTestCase):
             await runtime.connect_user("user-a")
 
         self.assertEqual(clients, [])
+        self.assertEqual(runtime._lease_factory.instances[0].release_calls, 1)
 
     async def test_runtime_shutdown_disconnects_client_and_releases_lease(self):
         store = SharedLeaseStore()
