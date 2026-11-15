@@ -204,6 +204,16 @@ class SessionRuntime:
             if client is not None:
                 await self._discard_owned_client(user_id, client)
 
+    async def close(self) -> None:
+        """Disconnect all active clients and release their distributed leases."""
+        for user_id in list(self._clients):
+            try:
+                await self.disconnect_user(user_id)
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Failed to cleanly close a Telegram session during shutdown"
+                )
+
     async def revoke_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
         async with lock:
