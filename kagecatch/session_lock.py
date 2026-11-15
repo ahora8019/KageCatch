@@ -214,6 +214,10 @@ class D1SessionLease:
                     "X-KageCatch-Signature": signature,
                 },
             )
+            if response.status_code == 409 and path.endswith("/acquire"):
+                conflict = response.json()
+                if isinstance(conflict, dict) and conflict.get("acquired") is False:
+                    return conflict
             response.raise_for_status()
             result = response.json()
             if not isinstance(result, dict):
