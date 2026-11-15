@@ -162,6 +162,10 @@ class SessionRuntime:
         watcher = self._lease_watchers.pop(user_id, None)
         if watcher is not None and watcher is not asyncio.current_task():
             watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
         try:
             await client.disconnect()
             emit_monitor_event("session_disconnected")
