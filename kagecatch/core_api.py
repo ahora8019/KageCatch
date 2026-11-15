@@ -224,6 +224,14 @@ def create_app(
             set_handler(process_incoming)
 
     async def close_review_runtime() -> None:
+        runtime_close = getattr(runtime, "close", None) if runtime is not None else None
+        if runtime_close is not None:
+            try:
+                await runtime_close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Telegram session runtime shutdown failed"
+                )
         store = app.state.review_store
         close = getattr(store, "close", None) if store is not None else None
         if close is not None:
