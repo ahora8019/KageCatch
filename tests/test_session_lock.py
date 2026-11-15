@@ -48,7 +48,7 @@ class SessionLockTests(unittest.IsolatedAsyncioTestCase):
             nonlocal calls
             calls += 1
             if calls == 1:
-                return httpx.Response(200, json={"acquired": True, "expires_at": 2000})
+                return httpx.Response(200, json={"acquired": True, "expires_at": 2000, "fencing_token": 1})
             return httpx.Response(409, json={"renewed": False})
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         lease = D1SessionLease("https://worker.example", "x" * 40,
