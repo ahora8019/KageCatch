@@ -40,6 +40,7 @@ class RuntimeConfigurationTests(unittest.TestCase):
             "telegram_api_hash_configured": False,
             "session_encryption_key_configured": False,
             "session_store_url_configured": False,
+            "distributed_session_lock_configured": False,
             "telethon_available": importlib.util.find_spec("telethon") is not None,
         })
 
