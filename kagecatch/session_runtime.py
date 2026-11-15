@@ -64,6 +64,29 @@ class SessionRuntime:
         async with self._locks_guard:
             return self._locks.setdefault(user_id, asyncio.Lock())
 
+
+    async def _await_with_lease(self, operation, lease: SessionLease | None):
+        """Abort an in-flight startup operation as soon as lease ownership is lost."""
+        if lease is None:
+            return await operation
+
+        operation_task = asyncio.create_task(operation)
+        lost_task = asyncio.create_task(lease.wait_lost())
+        try:
+            done, _ = await asyncio.wait(
+                {operation_task, lost_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if lost_task in done:
+                operation_task.cancel()
+                await asyncio.gather(operation_task, return_exceptions=True)
+                raise RuntimeError("distributed session lease was lost during session startup")
+            return await operation_task
+        finally:
+            if not lost_task.done():
+                lost_task.cancel()
+            await asyncio.gather(lost_task, return_exceptions=True)
+
     async def connect_user(self, user_id: str) -> RuntimeClient:
         lock = await self._user_lock(user_id)
         async with lock:
@@ -97,13 +120,13 @@ class SessionRuntime:
                 # Never instantiate/connect Telethon until distributed ownership
                 # has been confirmed.
                 client = self._client_factory(session_string)
-                await client.connect()
+                await self._await_with_lease(client.connect(), lease)
                 if lease is not None:
                     await lease.assert_held()
-                if not await client.is_user_authorized():
+                if not await self._await_with_lease(client.is_user_authorized(), lease):
                     raise PermissionError("stored Telegram session is no longer authorized")
                 if self._handler_registrar is not None:
-                    await self._handler_registrar(client, user_id)
+                    await self._await_with_lease(self._handler_registrar(client, user_id), lease)
                 if lease is not None:
                     await lease.assert_held()
                     lease.start_heartbeat()
