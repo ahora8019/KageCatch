@@ -1,5 +1,6 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
 import { normalizeLanguage, translate, languageKeyboard } from "./i18n.mjs";
+import { handleSessionLocks } from "./session_locks.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -2055,6 +2056,7 @@ export default {
     }
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
     if (url.pathname === "/internal/daily-quota") return internalDailyQuotaStore(request, env);
+    if (url.pathname.startsWith("/internal/session-locks/")) return handleSessionLocks(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
