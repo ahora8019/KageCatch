@@ -106,7 +106,7 @@ test("acquire uses atomic upsert and returns a monotonically increasing fencing 
     fencing_token: 2,
   });
   assert.match(db.statements[0].sql, /ON CONFLICT\s*\(session_id\) DO UPDATE/i);
-  assert.match(db.statements[0].sql, /session_locks\\.fencing_token\\s*\\+\\s*1/i);
+  assert.match(db.statements[0].sql, /session_locks\.fencing_token\s*\+\s*1/i);
 });
 
 test("renew and release require the current fencing token", async () => {
