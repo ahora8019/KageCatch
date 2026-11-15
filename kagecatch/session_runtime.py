@@ -1,7 +1,7 @@
 """Lifecycle manager for explicitly authorized, per-user Telethon sessions.
 
-This runtime never performs interactive login. It only reconnects sessions that
-were previously authorized and stored through SessionManager.
+A configured distributed lease is acquired before a Telethon client is created
+or connected. Loss of that lease closes the client immediately.
 """
 from __future__ import annotations
 
@@ -19,7 +19,20 @@ class RuntimeClient(Protocol):
     async def disconnect(self) -> None: ...
 
 
+class SessionLease(Protocol):
+    async def acquire(self, session_id: str) -> bool: ...
+    async def assert_held(self) -> None: ...
+    def start_heartbeat(self) -> None: ...
+    async def wait_lost(self) -> None: ...
+    async def release(self) -> None: ...
+
+
 ClientFactory = Callable[[str], RuntimeClient]
+LeaseFactory = Callable[[str], SessionLease]
+
+
+class SessionAlreadyLockedError(RuntimeError):
+    """Another Core instance currently owns this Telegram session."""
 
 
 class SessionRuntime:
@@ -29,11 +42,15 @@ class SessionRuntime:
         session_manager: SessionManager,
         client_factory: ClientFactory,
         handler_registrar=None,
+        lease_factory: LeaseFactory | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._client_factory = client_factory
         self._handler_registrar = handler_registrar
+        self._lease_factory = lease_factory
         self._clients: dict[str, RuntimeClient] = {}
+        self._leases: dict[str, SessionLease] = {}
+        self._lease_watchers: dict[str, asyncio.Task] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
 
@@ -52,31 +69,105 @@ class SessionRuntime:
         async with lock:
             existing = self._clients.get(user_id)
             if existing is not None:
-                return existing
+                lease = self._leases.get(user_id)
+                if lease is None:
+                    return existing
+                try:
+                    await lease.assert_held()
+                    return existing
+                except Exception:
+                    await self._discard_owned_client(user_id, existing)
+                    # The stale lease is released before a fresh acquisition.
 
             session_string = await self._session_manager.load_session(user_id)
             if not session_string:
                 raise LookupError("no authorized Telegram session is stored for this user")
 
-            client = self._client_factory(session_string)
+            lease: SessionLease | None = None
+            client: RuntimeClient | None = None
             try:
+                if self._lease_factory is not None:
+                    lease = self._lease_factory(user_id)
+                    if not await lease.acquire(user_id):
+                        raise SessionAlreadyLockedError(
+                            "this Telegram session is already active on another Core instance"
+                        )
+                    await lease.assert_held()
+
+                # Never instantiate/connect Telethon until distributed ownership
+                # has been confirmed.
+                client = self._client_factory(session_string)
                 await client.connect()
+                if lease is not None:
+                    await lease.assert_held()
                 if not await client.is_user_authorized():
                     raise PermissionError("stored Telegram session is no longer authorized")
                 if self._handler_registrar is not None:
                     await self._handler_registrar(client, user_id)
+                if lease is not None:
+                    await lease.assert_held()
+                    lease.start_heartbeat()
             except Exception as exc:
                 if type(exc).__name__ == "FloodWaitError":
                     emit_monitor_event("flood_wait", level=logging.WARNING)
-                try:
-                    await client.disconnect()
-                except Exception:
-                    pass
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                if lease is not None:
+                    try:
+                        await lease.release()
+                    except Exception:
+                        logging.getLogger("kagecatch.core").exception(
+                            "Failed to release session lease after connection failure"
+                        )
                 raise
 
             self._clients[user_id] = client
+            if lease is not None:
+                self._leases[user_id] = lease
+                self._lease_watchers[user_id] = asyncio.create_task(
+                    self._watch_lease(user_id, client, lease),
+                    name=f"kagecatch-lease-watch-{user_id}",
+                )
             emit_monitor_event("session_reconnected")
             return client
+
+    async def _watch_lease(
+        self, user_id: str, client: RuntimeClient, lease: SessionLease
+    ) -> None:
+        try:
+            await lease.wait_lost()
+            lock = await self._user_lock(user_id)
+            async with lock:
+                if self._clients.get(user_id) is client and self._leases.get(user_id) is lease:
+                    await self._discard_owned_client(user_id, client)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.getLogger("kagecatch.core").exception(
+                "Session lease watcher failed; forcing client disconnect"
+            )
+            lock = await self._user_lock(user_id)
+            async with lock:
+                if self._clients.get(user_id) is client and self._leases.get(user_id) is lease:
+                    await self._discard_owned_client(user_id, client)
+
+    async def _discard_owned_client(self, user_id: str, client: RuntimeClient) -> None:
+        if self._clients.get(user_id) is not client:
+            return
+        self._clients.pop(user_id, None)
+        lease = self._leases.pop(user_id, None)
+        watcher = self._lease_watchers.pop(user_id, None)
+        if watcher is not None and watcher is not asyncio.current_task():
+            watcher.cancel()
+        try:
+            await client.disconnect()
+            emit_monitor_event("session_disconnected")
+        finally:
+            if lease is not None:
+                await lease.release()
 
     async def restore_saved_sessions(self) -> dict[str, int]:
         """Reconnect every previously authorized session without interactive login.
@@ -109,19 +200,17 @@ class SessionRuntime:
     async def disconnect_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
         async with lock:
-            client = self._clients.pop(user_id, None)
+            client = self._clients.get(user_id)
             if client is not None:
-                await client.disconnect()
-                emit_monitor_event("session_disconnected")
+                await self._discard_owned_client(user_id, client)
 
     async def revoke_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
         async with lock:
-            client = self._clients.pop(user_id, None)
+            client = self._clients.get(user_id)
             try:
                 if client is not None:
-                    await client.disconnect()
-                    emit_monitor_event("session_disconnected")
+                    await self._discard_owned_client(user_id, client)
             finally:
                 await self._session_manager.revoke_session(user_id)
 
