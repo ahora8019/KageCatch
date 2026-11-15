@@ -79,8 +79,6 @@ def _configured_runtime():
         from .d1_session_store import D1SessionStore
         from .session_lock import D1SessionLease
         store = D1SessionStore(session_store_url, core_secret)
-        # The same Worker base URL and HMAC secret protect both the encrypted
-        # session store and the fenced distributed lease endpoints.
         lease_factory = lambda user_id: D1SessionLease(session_store_url, core_secret)
     else:
         from .sqlite_session_store import SQLiteSessionStore
@@ -281,4 +279,374 @@ def create_app(
 
     @app.get("/v1/owner/monitoring", dependencies=[Depends(require_core_auth)])
     async def owner_monitoring():
-        # Redis is not part of thi
+        # Redis is not part of this deployment; locks and panel requests live in D1.
+        return {
+            "core_status": "online",
+            "redis_status": "not_configured",
+            # One active Core process; this is not the number of Telegram sessions.
+            "active_workers": 1,
+            "recent_events": list(reversed(_RECENT_MONITOR_EVENTS))[:10],
+        }
+
+    @app.get("/v1/owner/stats", dependencies=[Depends(require_core_auth)])
+    async def owner_stats():
+        if session_manager is None:
+            raise HTTPException(status_code=503, detail="session_store_not_configured")
+        list_user_ids = getattr(session_manager, "list_user_ids", None)
+        if not callable(list_user_ids):
+            raise HTTPException(status_code=503, detail="owner_stats_unavailable")
+        try:
+            # Core can count accounts with encrypted sessions. The Worker overlays
+            # the authoritative registered-user count from its Durable Object registry.
+            total_users = len(set(await list_user_ids()))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="owner_stats_unavailable") from exc
+
+        # CatchEngine has no persisted verified-result ledger yet and is not wired
+        # into the live runtime; zero is the only verified count at this stage.
+        return {
+            "total_users": total_users,
+            "active_sessions": int(getattr(runtime, "active_user_count", 0)),
+            "total_catches": 0,
+            "system_uptime_seconds": max(0, int(time.monotonic() - started_at_monotonic)),
+        }
+
+    @app.get("/v1/reviews/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
+    async def list_manual_reviews(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        queue = app.state.review_queue
+        if queue is None:
+            raise HTTPException(status_code=503, detail="review_queue_not_configured")
+        try:
+            items = await queue.get_pending(user_id=str(telegram_user_id))
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="review_queue_unavailable") from exc
+        approval_service = app.state.review_approval_service
+        approval_engine = getattr(approval_service, "engine", None)
+        approval_available = bool(
+            approval_engine is not None and getattr(approval_engine, "enabled", False)
+        )
+        return {
+            "approval_available": approval_available,
+            "items": [
+                {
+                    "review_id": item.review_id,
+                    "anime_name": item.anime_name,
+                    "candidates": list(item.candidates),
+                    "expires_at": item.expires_at.isoformat(),
+                    "spawn_context_available": item.spawn_context is not None,
+                }
+                for item in items[:20]
+            ]
+        }
+
+    @app.post("/v1/reviews/{telegram_user_id}/{review_id}/reject", dependencies=[Depends(require_core_auth)])
+    async def reject_manual_review(telegram_user_id: int, review_id: str):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if not re.fullmatch(r"[a-f0-9]{32}", review_id):
+            raise HTTPException(status_code=400, detail="invalid_review_id")
+        queue = app.state.review_queue
+        if queue is None:
+            raise HTTPException(status_code=503, detail="review_queue_not_configured")
+        try:
+            item = await queue.reject(user_id=str(telegram_user_id), review_id=review_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="review_item_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="review_item_already_resolved") from exc
+        return {"status": item.status.value}
+
+    @app.post("/v1/reviews/{telegram_user_id}/{review_id}/approve", dependencies=[Depends(require_core_auth)])
+    async def approve_manual_review(telegram_user_id: int, review_id: str, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if not re.fullmatch(r"[a-f0-9]{32}", review_id):
+            raise HTTPException(status_code=400, detail="invalid_review_id")
+        service = app.state.review_approval_service
+        if service is None:
+            raise HTTPException(status_code=503, detail="review_execution_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        candidate_index = payload.get("candidate_index") if isinstance(payload, dict) else None
+        if isinstance(candidate_index, bool) or not isinstance(candidate_index, int):
+            raise HTTPException(status_code=400, detail="candidate_index_required")
+        try:
+            result = await service.approve_and_execute(
+                user_id=str(telegram_user_id),
+                review_id=review_id,
+                candidate_index=candidate_index,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="review_item_not_found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_review_approval") from exc
+        return {"status": result.status}
+
+    @app.get("/v1/accounts/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
+    async def account_status(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if session_manager is None:
+            raise HTTPException(status_code=503, detail="session_store_not_configured")
+        user_id = str(telegram_user_id)
+        saved_session = await session_manager.load_session(user_id)
+        client = await runtime.get_client(user_id) if runtime is not None else None
+        connected = client is not None
+        session_saved = bool(saved_session)
+        status = "connected" if connected else "authorized" if session_saved else "not_connected"
+        return {
+            "telegram_user_id": telegram_user_id,
+            "status": status,
+            "session_saved": session_saved,
+            "connected": connected,
+        }
+
+    @app.get("/v1/accounts/{telegram_user_id}/info", dependencies=[Depends(require_core_auth)])
+    async def account_info(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if session_manager is None:
+            raise HTTPException(status_code=503, detail="session_store_not_configured")
+
+        user_id = str(telegram_user_id)
+        saved_session = await session_manager.load_session(user_id)
+        client = await runtime.get_client(user_id) if runtime is not None else None
+        session_health = "unknown" if saved_session else "not_connected"
+        phone_masked = None
+        last_active = None
+
+        if client is not None:
+            authorization_check = getattr(client, "is_user_authorized", None)
+            if callable(authorization_check):
+                try:
+                    authorized = await authorization_check()
+                except Exception:
+                    authorized = None
+                if authorized is False:
+                    session_health = "expired"
+                elif authorized is True:
+                    session_health = "valid"
+                    get_me = getattr(client, "get_me", None)
+                    if callable(get_me):
+                        try:
+                            account_user = await get_me()
+                        except Exception:
+                            account_user = None
+                        if account_user is not None:
+                            phone = getattr(account_user, "phone", None)
+                            if isinstance(phone, str) and phone:
+                                phone_masked = phone[:5] + "*" * max(0, len(phone) - 7) + phone[-2:] if len(phone) > 7 else "*" * len(phone)
+                            user_status = getattr(account_user, "status", None)
+                            was_online = getattr(user_status, "was_online", None)
+                            if hasattr(was_online, "isoformat"):
+                                last_active = was_online.isoformat()
+
+        return {
+            "telegram_user_id": telegram_user_id,
+            "session_health": session_health,
+            "phone_masked": phone_masked,
+            "last_active": last_active,
+        }
+
+    @app.get("/v1/accounts/{telegram_user_id}/catch", dependencies=[Depends(require_core_auth)])
+    async def catch_status(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if runtime is None or await runtime.get_client(str(telegram_user_id)) is None:
+            raise HTTPException(status_code=409, detail="telegram_account_not_connected")
+        controller = getattr(runtime, "_selfbot_controller", None)
+        if controller is None or not callable(getattr(controller, "is_enabled", None)):
+            raise HTTPException(status_code=503, detail="catch_controller_not_configured")
+        return {
+            "telegram_user_id": telegram_user_id,
+            "enabled": bool(controller.is_enabled(str(telegram_user_id))),
+            "execution_ready": bool(
+                app.state.review_approval_service is not None
+                and getattr(
+                    getattr(app.state.review_approval_service, "engine", None),
+                    "enabled",
+                    False,
+                )
+            ),
+        }
+
+    @app.put("/v1/accounts/{telegram_user_id}/catch", dependencies=[Depends(require_core_auth)])
+    async def set_catch_status(telegram_user_id: int, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if runtime is None or await runtime.get_client(str(telegram_user_id)) is None:
+            raise HTTPException(status_code=409, detail="telegram_account_not_connected")
+        controller = getattr(runtime, "_selfbot_controller", None)
+        setter = getattr(controller, "set_enabled", None) if controller is not None else None
+        if not callable(setter):
+            raise HTTPException(status_code=503, detail="catch_controller_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        enabled = payload.get("enabled") if isinstance(payload, dict) else None
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled_boolean_required")
+        result = bool(setter(str(telegram_user_id), enabled))
+        return {
+            "telegram_user_id": telegram_user_id,
+            "enabled": result,
+            "execution_ready": bool(
+                app.state.review_approval_service is not None
+                and getattr(
+                    getattr(app.state.review_approval_service, "engine", None),
+                    "enabled",
+                    False,
+                )
+            ),
+        }
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect", dependencies=[Depends(require_core_auth)])
+    async def connect_account(telegram_user_id: int, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        phone = payload.get("phone") if isinstance(payload, dict) else None
+        if not isinstance(phone, str):
+            raise HTTPException(status_code=400, detail="phone_required")
+        try:
+            result = await auth_flow.start(user_id=str(telegram_user_id), phone=phone)
+            return {"status": result}
+        except RuntimeError as exc:
+            if "already_authorized" in str(exc):
+                return {"status": "already_authorized"}
+            raise HTTPException(status_code=409, detail="authorization_already_pending") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_phone") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="telegram_code_request_failed") from exc
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect/code", dependencies=[Depends(require_core_auth)])
+    async def submit_connect_code(telegram_user_id: int, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        code = payload.get("code") if isinstance(payload, dict) else None
+        if not isinstance(code, str) or not code.strip():
+            raise HTTPException(status_code=400, detail="code_required")
+        try:
+            result = await auth_flow.submit_code(user_id=str(telegram_user_id), code=code)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="authorization_not_pending") from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=410, detail="authorization_expired") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_telegram_code") from exc
+        if result == "connected" and runtime is not None:
+            try:
+                await runtime.connect_user(str(telegram_user_id))
+            except Exception:
+                return {"status": "authorized"}
+        return {"status": result}
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect/password", dependencies=[Depends(require_core_auth)])
+    async def submit_connect_password(telegram_user_id: int, request: Request):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_request") from exc
+        password = payload.get("password") if isinstance(payload, dict) else None
+        if not isinstance(password, str) or not password:
+            raise HTTPException(status_code=400, detail="password_required")
+        try:
+            result = await auth_flow.submit_password(user_id=str(telegram_user_id), password=password)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="authorization_not_pending") from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=410, detail="authorization_expired") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid_2fa_password") from exc
+        if result == "connected" and runtime is not None:
+            try:
+                await runtime.connect_user(str(telegram_user_id))
+            except Exception:
+                return {"status": "authorized"}
+        return {"status": result}
+
+    @app.get("/v1/accounts/{telegram_user_id}/connect/status", dependencies=[Depends(require_core_auth)])
+    async def connect_status(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        status = await auth_flow.get_status(user_id=str(telegram_user_id))
+        if status.get("status") == "connected" and runtime is not None:
+            try:
+                await runtime.connect_user(str(telegram_user_id))
+            except Exception:
+                return {"status": "authorized"}
+        if status.get("status") == "not_pending" and session_manager is not None:
+            saved = await session_manager.load_session(str(telegram_user_id))
+            return {"status": "authorized" if saved else "not_connected"}
+        return status
+
+    @app.post("/v1/accounts/{telegram_user_id}/connect/cancel", dependencies=[Depends(require_core_auth)])
+    async def cancel_connect(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
+            raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
+        await auth_flow.cancel(user_id=str(telegram_user_id))
+        return {"status": "cancelled"}
+
+    @app.post("/v1/accounts/{telegram_user_id}/reconnect", dependencies=[Depends(require_core_auth)])
+    async def reconnect_account(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if session_manager is None or runtime is None:
+            raise HTTPException(status_code=503, detail="execution_runtime_not_configured")
+        if not await session_manager.load_session(str(telegram_user_id)):
+            raise HTTPException(status_code=404, detail="authorized_session_not_found")
+        try:
+            await runtime.connect_user(str(telegram_user_id))
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail="reauthorization_required") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="telegram_connection_failed") from exc
+        return {"telegram_user_id": telegram_user_id, "status": "connected"}
+
+    @app.post("/v1/accounts/{telegram_user_id}/disconnect", dependencies=[Depends(require_core_auth)])
+    async def disconnect_account(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if runtime is None:
+            raise HTTPException(status_code=503, detail="execution_runtime_not_configured")
+        await runtime.disconnect_user(str(telegram_user_id))
+        return {"telegram_user_id": telegram_user_id, "status": "disconnected"}
+
+    @app.delete("/v1/accounts/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
+    async def revoke_account(telegram_user_id: int):
+        if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if runtime is None:
+            raise HTTPException(status_code=503, detail="execution_runtime_not_configured")
+        await runtime.revoke_user(str(telegram_user_id))
+        return {"telegram_user_id": telegram_user_id, "status": "revoked"}
+
+    return app
+
+
+app = create_app()
