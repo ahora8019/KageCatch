@@ -21,6 +21,7 @@ class TelegramSafetyGuardTests(unittest.TestCase):
     def test_outbound_is_allowed_initially_then_rate_limited_per_chat(self):
         self.assertTrue(self.guard.check_send(chat_id=10).allowed)
         self.guard.record_send(chat_id=10)
+        self.clock.advance(0.5)
         decision = self.guard.check_send(chat_id=10)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "chat_cooldown")
