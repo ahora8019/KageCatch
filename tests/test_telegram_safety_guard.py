@@ -18,18 +18,18 @@ class TelegramSafetyGuardTests(unittest.TestCase):
         self.clock = FakeClock()
         self.guard = TelegramSafetyGuard(clock=self.clock, min_global_interval=0.5, min_chat_interval=1.0)
 
-    def test_outbound_is_allowed_initially_then_rate_limited_per_chat(self):
-        self.assertTrue(self.guard.check_send(chat_id=10).allowed)
-        self.guard.record_send(chat_id=10)
+    def test_reserve_send_atomically_applies_per_chat_and_global_pacing(self):
+        first = self.guard.reserve_send(chat_id=10)
+        self.assertTrue(first.allowed)
         self.clock.advance(0.5)
-        decision = self.guard.check_send(chat_id=10)
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.reason, "chat_cooldown")
-        self.assertGreater(decision.retry_after, 0)
+        same_chat = self.guard.reserve_send(chat_id=10)
+        self.assertFalse(same_chat.allowed)
+        self.assertEqual(same_chat.reason, "chat_cooldown")
+        other_chat = self.guard.reserve_send(chat_id=20)
+        self.assertTrue(other_chat.allowed)
 
     def test_global_cooldown_applies_across_chats(self):
-        self.assertTrue(self.guard.check_send(chat_id=10).allowed)
-        self.guard.record_send(chat_id=10)
+        self.assertTrue(self.guard.reserve_send(chat_id=10).allowed)
         decision = self.guard.check_send(chat_id=20)
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason, "global_cooldown")
