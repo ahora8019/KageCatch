@@ -75,3 +75,31 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    async def test_each_operation_closes_its_sqlite_connection(self):
+        import sqlite3
+        from unittest.mock import patch
+        import kagecatch.job_queue as queue_module
+
+        opened = []
+        original_connect = sqlite3.connect
+
+        class TrackingConnection(sqlite3.Connection):
+            was_closed = False
+            def close(self):
+                self.was_closed = True
+                return super().close()
+
+        def tracked_connect(*args, **kwargs):
+            kwargs["factory"] = TrackingConnection
+            connection = original_connect(*args, **kwargs)
+            opened.append(connection)
+            return connection
+
+        with patch.object(queue_module.sqlite3, "connect", side_effect=tracked_connect):
+            await self.queue.enqueue("tracked", {"ok": True})
+            await self.queue.pending_count()
+            await self.queue.claim_next("tracked-worker")
+        self.assertTrue(opened)
+        self.assertTrue(all(connection.was_closed for connection in opened))
