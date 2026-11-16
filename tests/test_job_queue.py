@@ -40,29 +40,30 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         second = await self.queue.claim_next("worker-b", lease_seconds=10)
         self.assertEqual(second.job_id, job.job_id)
         self.assertEqual(second.attempts, 2)
+        self.assertGreater(second.lease_generation, first.lease_generation)
 
     async def test_only_current_lease_owner_can_complete(self):
         job = await self.queue.enqueue("spawn.process", {"spawn_id": 14})
-        await self.queue.claim_next("worker-a", lease_seconds=30)
+        claim = await self.queue.claim_next("worker-a", lease_seconds=30)
         with self.assertRaises(PermissionError):
-            await self.queue.complete(job.job_id, "worker-b")
-        await self.queue.complete(job.job_id, "worker-a")
+            await self.queue.complete(job.job_id, "worker-b", lease_generation=claim.lease_generation)
+        await self.queue.complete(job.job_id, "worker-a", lease_generation=claim.lease_generation)
         self.assertEqual(await self.queue.pending_count(), 0)
 
     async def test_expired_worker_cannot_acknowledge_job(self):
         job = await self.queue.enqueue("spawn.process", {"spawn_id": 16})
-        await self.queue.claim_next("worker-a", lease_seconds=5)
+        claim = await self.queue.claim_next("worker-a", lease_seconds=5)
         self.now += 6
         with self.assertRaises(PermissionError):
-            await self.queue.complete(job.job_id, "worker-a")
+            await self.queue.complete(job.job_id, "worker-a", lease_generation=claim.lease_generation)
 
     async def test_failure_retries_then_moves_to_dead_letter(self):
         job = await self.queue.enqueue("spawn.process", {"spawn_id": 15}, max_attempts=2)
-        await self.queue.claim_next("worker-a", lease_seconds=30)
-        await self.queue.fail(job.job_id, "worker-a", retry_delay=0)
+        first = await self.queue.claim_next("worker-a", lease_seconds=30)
+        await self.queue.fail(job.job_id, "worker-a", lease_generation=first.lease_generation, retry_delay=0)
         second = await self.queue.claim_next("worker-b", lease_seconds=30)
         self.assertEqual(second.job_id, job.job_id)
-        await self.queue.fail(job.job_id, "worker-b", retry_delay=0)
+        await self.queue.fail(job.job_id, "worker-b", lease_generation=second.lease_generation, retry_delay=0)
         self.assertEqual(await self.queue.pending_count(), 0)
         self.assertEqual(await self.queue.dead_letter_count(), 1)
 
@@ -72,21 +73,17 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.queue.enqueue("spawn.process", {"bad": object()})
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
     async def test_each_operation_closes_its_sqlite_connection(self):
         import sqlite3
         from unittest.mock import patch
         import kagecatch.job_queue as queue_module
-
         opened = []
         original_connect = sqlite3.connect
 
         class TrackingConnection(sqlite3.Connection):
-            was_closed = False
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.was_closed = False
             def close(self):
                 self.was_closed = True
                 return super().close()
@@ -104,7 +101,6 @@ if __name__ == "__main__":
         self.assertTrue(opened)
         self.assertTrue(all(connection.was_closed for connection in opened))
 
-
     async def test_stale_lease_generation_cannot_complete_reclaimed_job(self):
         job = await self.queue.enqueue("spawn.process", {"spawn_id": 99})
         first = await self.queue.claim_next("reused-worker", lease_seconds=5)
@@ -115,3 +111,7 @@ if __name__ == "__main__":
         with self.assertRaises(PermissionError):
             await self.queue.complete(job.job_id, "reused-worker", lease_generation=first.lease_generation)
         await self.queue.complete(job.job_id, "reused-worker", lease_generation=second.lease_generation)
+
+
+if __name__ == "__main__":
+    unittest.main()
