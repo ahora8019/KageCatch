@@ -1,8 +1,4 @@
-"""Small, durable SQLite job queue for the Functional Core pipeline.
-
-The queue is intentionally storage-only: it does not execute Telegram operations.
-Workers must claim a lease and acknowledge completion using the same worker ID.
-"""
+"""Small, durable SQLite job queue for the Functional Core pipeline."""
 from __future__ import annotations
 
 import asyncio
@@ -31,12 +27,7 @@ class Job:
 class SQLiteJobQueue:
     """Persistent, priority-aware queue with idempotency and worker leases."""
 
-    def __init__(
-        self,
-        path: str,
-        *,
-        clock: Callable[[], float] = time.time,
-    ) -> None:
+    def __init__(self, path: str, *, clock: Callable[[], float] = time.time) -> None:
         if not isinstance(path, str) or not path.strip():
             raise ValueError("a database path is required")
         self.path = path
@@ -46,8 +37,7 @@ class SQLiteJobQueue:
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=NORMAL")
-            db.execute(
-                """
+            db.execute("""
                 CREATE TABLE IF NOT EXISTS catch_jobs (
                     job_id TEXT PRIMARY KEY,
                     job_type TEXT NOT NULL,
@@ -63,8 +53,7 @@ class SQLiteJobQueue:
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
-                """
-            )
+            """)
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_catch_jobs_claim "
                 "ON catch_jobs(status, run_after, priority DESC, created_at)"
@@ -77,13 +66,8 @@ class SQLiteJobQueue:
         return db
 
     async def enqueue(
-        self,
-        job_type: str,
-        payload: dict[str, Any],
-        *,
-        priority: int = 0,
-        idempotency_key: str | None = None,
-        max_attempts: int = 3,
+        self, job_type: str, payload: dict[str, Any], *, priority: int = 0,
+        idempotency_key: str | None = None, max_attempts: int = 3,
     ) -> Job:
         if not isinstance(job_type, str) or not job_type.strip() or len(job_type) > 128:
             raise ValueError("job_type must contain 1 to 128 characters")
@@ -101,23 +85,18 @@ class SQLiteJobQueue:
             payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise ValueError("payload must be JSON serializable") from exc
-
-        now = float(self._clock())
-        job_id = uuid4().hex
+        now, job_id = float(self._clock()), uuid4().hex
         async with self._lock:
             with self._connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
-                    db.execute(
-                        """
+                    db.execute("""
                         INSERT OR IGNORE INTO catch_jobs
                         (job_id, job_type, payload_json, priority, status, max_attempts,
                          idempotency_key, run_after, created_at, updated_at)
                         VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
-                        """,
-                        (job_id, job_type.strip(), payload_json, priority, max_attempts,
-                         idempotency_key, now, now, now),
-                    )
+                    """, (job_id, job_type.strip(), payload_json, priority, max_attempts,
+                          idempotency_key, now, now, now))
                     row = db.execute(
                         "SELECT * FROM catch_jobs WHERE idempotency_key = ?"
                         if idempotency_key is not None else
@@ -140,32 +119,25 @@ class SQLiteJobQueue:
             with self._connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
-                    row = db.execute(
-                        """
+                    row = db.execute("""
                         SELECT * FROM catch_jobs
                         WHERE status = 'queued' AND run_after <= ?
-                        ORDER BY priority DESC, created_at ASC
-                        LIMIT 1
-                        """,
-                        (now,),
-                    ).fetchone()
+                        ORDER BY priority DESC, created_at ASC LIMIT 1
+                    """, (now,)).fetchone()
                     if row is None:
                         db.execute("COMMIT")
                         return None
-                    updated = db.execute(
-                        """
+                    updated = db.execute("""
                         UPDATE catch_jobs
-                        SET status = 'running', attempts = attempts + 1,
-                            worker_id = ?, lease_until = ?, updated_at = ?
-                        WHERE job_id = ? AND status = 'queued'
-                        """,
-                        (worker_id, now + float(lease_seconds), now, row["job_id"]),
-                    )
+                        SET status='running', attempts=attempts+1,
+                            worker_id=?, lease_until=?, updated_at=?
+                        WHERE job_id=? AND status='queued'
+                    """, (worker_id, now + float(lease_seconds), now, row["job_id"]))
                     if updated.rowcount != 1:
                         db.execute("COMMIT")
                         return None
                     claimed = db.execute(
-                        "SELECT * FROM catch_jobs WHERE job_id = ?", (row["job_id"],)
+                        "SELECT * FROM catch_jobs WHERE job_id=?", (row["job_id"],)
                     ).fetchone()
                     db.execute("COMMIT")
                 except BaseException:
@@ -177,7 +149,7 @@ class SQLiteJobQueue:
         await self._owned_transition(
             job_id, worker_id,
             "UPDATE catch_jobs SET status='completed', worker_id=NULL, lease_until=NULL, updated_at=? "
-            "WHERE job_id=? AND status='running' AND worker_id=?",
+            "WHERE job_id=? AND status='running' AND worker_id=? AND lease_until>?",
         )
 
     async def fail(self, job_id: str, worker_id: str, *, retry_delay: float = 0) -> str:
@@ -190,8 +162,8 @@ class SQLiteJobQueue:
                 try:
                     row = db.execute(
                         "SELECT attempts, max_attempts FROM catch_jobs "
-                        "WHERE job_id=? AND status='running' AND worker_id=?",
-                        (job_id, worker_id),
+                        "WHERE job_id=? AND status='running' AND worker_id=? AND lease_until>?",
+                        (job_id, worker_id, now),
                     ).fetchone()
                     if row is None:
                         raise PermissionError("job is not leased by this worker")
@@ -213,15 +185,12 @@ class SQLiteJobQueue:
             with self._connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
-                    result = db.execute(
-                        """
+                    result = db.execute("""
                         UPDATE catch_jobs
-                        SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'queued' END,
-                            worker_id = NULL, lease_until = NULL, run_after = ?, updated_at = ?
-                        WHERE status = 'running' AND lease_until <= ?
-                        """,
-                        (now, now, now),
-                    )
+                        SET status=CASE WHEN attempts>=max_attempts THEN 'dead' ELSE 'queued' END,
+                            worker_id=NULL, lease_until=NULL, run_after=?, updated_at=?
+                        WHERE status='running' AND lease_until<=?
+                    """, (now, now, now))
                     count = result.rowcount
                     db.execute("COMMIT")
                     return count
@@ -246,13 +215,13 @@ class SQLiteJobQueue:
                 return int(row["count"])
 
     async def close(self) -> None:
-        """Compatibility hook; connections are scoped to individual operations."""
+        """Connections are scoped to individual operations."""
 
     async def _owned_transition(self, job_id: str, worker_id: str, sql: str) -> None:
         now = float(self._clock())
         async with self._lock:
             with self._connect() as db:
-                result = db.execute(sql, (now, job_id, worker_id))
+                result = db.execute(sql, (now, job_id, worker_id, now))
                 if result.rowcount != 1:
                     raise PermissionError("job is not leased by this worker")
 
@@ -261,13 +230,9 @@ class SQLiteJobQueue:
         if row is None:
             raise RuntimeError("job queue row disappeared")
         return Job(
-            job_id=row["job_id"],
-            job_type=row["job_type"],
-            payload=json.loads(row["payload_json"]),
-            priority=int(row["priority"]),
-            status=row["status"],
-            attempts=int(row["attempts"]),
-            max_attempts=int(row["max_attempts"]),
-            worker_id=row["worker_id"],
+            job_id=row["job_id"], job_type=row["job_type"],
+            payload=json.loads(row["payload_json"]), priority=int(row["priority"]),
+            status=row["status"], attempts=int(row["attempts"]),
+            max_attempts=int(row["max_attempts"]), worker_id=row["worker_id"],
             lease_until=row["lease_until"],
         )
