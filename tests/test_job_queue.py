@@ -1,5 +1,3 @@
-import asyncio
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,12 +17,8 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_enqueue_is_durable_and_deduplicates_idempotency_key(self):
-        first = await self.queue.enqueue(
-            "spawn.process", {"spawn_id": 12}, idempotency_key="source:chat:12"
-        )
-        second = await self.queue.enqueue(
-            "spawn.process", {"spawn_id": 12}, idempotency_key="source:chat:12"
-        )
+        first = await self.queue.enqueue("spawn.process", {"spawn_id": 12}, idempotency_key="source:chat:12")
+        second = await self.queue.enqueue("spawn.process", {"spawn_id": 12}, idempotency_key="source:chat:12")
         self.assertEqual(first.job_id, second.job_id)
         self.assertEqual(await self.queue.pending_count(), 1)
 
@@ -34,10 +28,7 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         claimed = await self.queue.claim_next("worker-a", lease_seconds=30)
         self.assertEqual(claimed.job_id, high.job_id)
         self.assertEqual(claimed.payload, {"n": 2})
-        self.assertEqual(
-            (await self.queue.claim_next("worker-b", lease_seconds=30)).job_id,
-            low.job_id,
-        )
+        self.assertEqual((await self.queue.claim_next("worker-b", lease_seconds=30)).job_id, low.job_id)
         self.assertIsNone(await self.queue.claim_next("worker-c", lease_seconds=30))
 
     async def test_expired_lease_is_recovered_and_reclaimed(self):
@@ -45,23 +36,29 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         first = await self.queue.claim_next("worker-a", lease_seconds=10)
         self.assertEqual(first.job_id, job.job_id)
         self.now += 11
-        recovered = await self.queue.recover_expired()
-        self.assertEqual(recovered, 1)
+        self.assertEqual(await self.queue.recover_expired(), 1)
         second = await self.queue.claim_next("worker-b", lease_seconds=10)
         self.assertEqual(second.job_id, job.job_id)
         self.assertEqual(second.attempts, 2)
 
     async def test_only_current_lease_owner_can_complete(self):
         job = await self.queue.enqueue("spawn.process", {"spawn_id": 14})
-        claimed = await self.queue.claim_next("worker-a", lease_seconds=30)
+        await self.queue.claim_next("worker-a", lease_seconds=30)
         with self.assertRaises(PermissionError):
             await self.queue.complete(job.job_id, "worker-b")
         await self.queue.complete(job.job_id, "worker-a")
         self.assertEqual(await self.queue.pending_count(), 0)
 
+    async def test_expired_worker_cannot_acknowledge_job(self):
+        job = await self.queue.enqueue("spawn.process", {"spawn_id": 16})
+        await self.queue.claim_next("worker-a", lease_seconds=5)
+        self.now += 6
+        with self.assertRaises(PermissionError):
+            await self.queue.complete(job.job_id, "worker-a")
+
     async def test_failure_retries_then_moves_to_dead_letter(self):
         job = await self.queue.enqueue("spawn.process", {"spawn_id": 15}, max_attempts=2)
-        first = await self.queue.claim_next("worker-a", lease_seconds=30)
+        await self.queue.claim_next("worker-a", lease_seconds=30)
         await self.queue.fail(job.job_id, "worker-a", retry_delay=0)
         second = await self.queue.claim_next("worker-b", lease_seconds=30)
         self.assertEqual(second.job_id, job.job_id)
