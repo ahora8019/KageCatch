@@ -95,7 +95,6 @@ class SessionRuntime:
         """Abort an in-flight startup operation as soon as lease ownership is lost."""
         if lease is None:
             return await operation
-
         operation_task = asyncio.create_task(operation)
         lost_task = asyncio.create_task(lease.wait_lost())
         try:
@@ -126,6 +125,9 @@ class SessionRuntime:
                 GuardMode.SECURITY_LOCKED,
                 GuardMode.MANUAL_LOCKED,
             }:
+                existing_locked_client = self._clients.get(user_id)
+                if existing_locked_client is not None:
+                    await self._discard_owned_client(user_id, existing_locked_client)
                 raise SessionSafetyLockedError(
                     "Telegram session is safety-locked; explicit reauthorization and review are required"
                 )
@@ -154,7 +156,6 @@ class SessionRuntime:
                             "this Telegram session is already active on another Core instance"
                         )
                     await lease.assert_held()
-
                 client = self._client_factory(session_string)
                 await self._await_with_lease(client.connect(), lease)
                 if lease is not None:
@@ -268,6 +269,9 @@ class SessionRuntime:
                 GuardMode.SECURITY_LOCKED,
                 GuardMode.MANUAL_LOCKED,
             }:
+                existing_locked_client = self._clients.get(user_id)
+                if existing_locked_client is not None:
+                    await self._discard_owned_client(user_id, existing_locked_client)
                 return None
             return self._clients.get(user_id)
 
@@ -319,7 +323,6 @@ class TelethonSessionClientFactory:
             from telethon.sessions import StringSession
         except ImportError as exc:
             raise RuntimeError("install KageCatch with the telegram extra") from exc
-
         return TelegramClient(
             StringSession(session_string),
             self._api_id,
