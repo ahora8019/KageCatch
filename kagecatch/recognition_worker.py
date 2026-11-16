@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any, Protocol
 
 from .models.spawn import CharacterMetadata, SpawnContext
@@ -39,10 +38,11 @@ class RecognitionWorker:
         job = await self.queue.claim_next(self.worker_id, lease_seconds=self.lease_seconds)
         if job is None:
             return RecognitionWorkResult("idle")
+        generation = job.lease_generation
         try:
             payload = job.payload
             if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-                await self.queue.complete(job.job_id, self.worker_id, lease_generation=job.lease_generation)
+                await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("invalid_payload", job.job_id)
             origin, recognition = payload.get("origin"), payload.get("recognition")
             user_id = payload.get("user_id")
@@ -54,18 +54,12 @@ class RecognitionWorker:
                 or not isinstance(origin.get("source"), str)
                 or not isinstance(origin.get("media_kind"), str)
             ):
-                await self.queue.complete(job.job_id, self.worker_id)
+                await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("invalid_metadata", job.job_id)
             anime_name = recognition.get("anime_name")
             if not isinstance(anime_name, str) or not anime_name.strip():
-                await self.queue.complete(job.job_id, self.worker_id)
+                await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("invalid_metadata", job.job_id)
-            timestamp = None
-            if isinstance(origin.get("timestamp"), str):
-                try:
-                    timestamp = datetime.fromisoformat(origin["timestamp"])
-                except ValueError:
-                    pass
             context = SpawnContext(source=origin["source"], chat_id=origin["chat_id"],
                 message_id=origin["message_id"], media_kind=origin["media_kind"])
             metadata = CharacterMetadata(anime_name=anime_name.strip(),
@@ -75,15 +69,15 @@ class RecognitionWorker:
             resolved = await self.resolver.resolve(metadata)
             candidates = getattr(resolved, "candidates", ()) if resolved is not None else ()
             if not candidates:
-                await self.queue.complete(job.job_id, self.worker_id)
+                await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("no_candidates", job.job_id)
             review_item = await self.review_queue.enqueue(user_id=user_id,
                 spawn_id=context.message_id, anime_name=anime_name.strip(),
                 candidates=tuple(candidates), spawn_context=context)
-            await self.queue.complete(job.job_id, self.worker_id)
+            await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
             return RecognitionWorkResult("review_queued", job.job_id, review_item)
         except Exception:
-            await self.queue.fail(job.job_id, self.worker_id, lease_generation=job.lease_generation, retry_delay=self.retry_delay)
+            await self.queue.fail(job.job_id, self.worker_id, lease_generation=generation, retry_delay=self.retry_delay)
             return RecognitionWorkResult("retry_scheduled", job.job_id)
 
     async def run_forever(self, *, stop_event: asyncio.Event, idle_sleep: float = 1.0) -> int:
