@@ -13,9 +13,9 @@ class FakeQueue:
         job, self.job = self.job, None
         return job
     async def complete(self, job_id, worker_id, *, lease_generation):
-        self.completed.append((job_id, worker_id))
+        self.completed.append((job_id, worker_id, lease_generation))
     async def fail(self, job_id, worker_id, *, lease_generation, retry_delay=0):
-        self.failed.append((job_id, worker_id, retry_delay))
+        self.failed.append((job_id, worker_id, retry_delay, lease_generation))
         return "queued"
 
 
@@ -70,20 +70,20 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "review_queued")
         self.assertEqual(reviews.calls[0]["candidates"], ("A", "B"))
         self.assertIsNone(resolver.metadata.character_name)
-        self.assertEqual(queue.completed, [("job-1", "recognizer")])
+        self.assertEqual(queue.completed, [("job-1", "recognizer", 1)])
         self.assertEqual(queue.failed, [])
 
     async def test_missing_anime_is_rejected_and_job_completed_as_nonreviewable(self):
         queue = FakeQueue(Job())
         payload = dict(Job.payload)
         payload["recognition"] = dict(payload["recognition"], anime_name=None)
-        job = type("BadJob", (), {"job_id": "job-2", "payload": payload})()
+        job = type("BadJob", (), {"job_id": "job-2", "lease_generation": 7, "payload": payload})()
         queue.job = job
         resolver, reviews = FakeResolver(), FakeReviewQueue()
         worker = RecognitionWorker(queue=queue, resolver=resolver, review_queue=reviews, worker_id="recognizer")
         result = await worker.run_once()
         self.assertEqual(result.status, "invalid_metadata")
-        self.assertEqual(queue.completed, [("job-2", "recognizer")])
+        self.assertEqual(queue.completed, [("job-2", "recognizer", 7)])
         self.assertEqual(reviews.calls, [])
 
     async def test_resolver_failure_retries_job(self):
@@ -107,7 +107,7 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await worker.run_once()
         self.assertEqual(result.status, "no_candidates")
-        self.assertEqual(queue.completed, [("job-1", "recognizer")])
+        self.assertEqual(queue.completed, [("job-1", "recognizer", 1)])
         self.assertEqual(reviews.calls, [])
 
     async def test_review_persistence_failure_retries_job(self):
