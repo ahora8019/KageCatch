@@ -12,7 +12,7 @@ from typing import Callable, Protocol
 
 from .session_manager import SessionManager
 from .monitoring import emit_monitor_event
-from .telegram_safety_guard import TelegramSafetyGuard
+from .telegram_safety_guard import GuardMode, TelegramSafetyGuard
 
 
 class RuntimeClient(Protocol):
@@ -40,6 +40,10 @@ class SessionAlreadyLockedError(RuntimeError):
 
 class SessionAuthorizationLostError(PermissionError):
     """Telegram no longer considers the stored owner session authorized."""
+
+
+class SessionSafetyLockedError(PermissionError):
+    """Safety lock requires explicit owner reauthorization or security review."""
 
 
 class SessionRuntime:
@@ -116,6 +120,15 @@ class SessionRuntime:
         async with lock:
             if self._closing:
                 raise RuntimeError("session runtime is shutting down")
+            guard = self.safety_guard_for(user_id)
+            if guard.mode in {
+                GuardMode.SESSION_LOCKED,
+                GuardMode.SECURITY_LOCKED,
+                GuardMode.MANUAL_LOCKED,
+            }:
+                raise SessionSafetyLockedError(
+                    "Telegram session is safety-locked; explicit reauthorization and review are required"
+                )
             existing = self._clients.get(user_id)
             if existing is not None:
                 lease = self._leases.get(user_id)
@@ -157,7 +170,7 @@ class SessionRuntime:
                     raise RuntimeError("session runtime is shutting down")
             except BaseException as exc:
                 if not isinstance(exc, asyncio.CancelledError):
-                    event = self.safety_guard_for(user_id).observe_error(exc)
+                    event = guard.observe_error(exc)
                     if event.category == "session_revoked":
                         emit_monitor_event("session_revoked", level=logging.ERROR)
                     elif event.category == "security_lock":
@@ -250,6 +263,12 @@ class SessionRuntime:
     async def get_client(self, user_id: str) -> RuntimeClient | None:
         lock = await self._user_lock(user_id)
         async with lock:
+            if self.safety_guard_for(user_id).mode in {
+                GuardMode.SESSION_LOCKED,
+                GuardMode.SECURITY_LOCKED,
+                GuardMode.MANUAL_LOCKED,
+            }:
+                return None
             return self._clients.get(user_id)
 
     async def disconnect_user(self, user_id: str) -> None:
