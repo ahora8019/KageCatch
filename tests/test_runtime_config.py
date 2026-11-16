@@ -3,7 +3,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from kagecatch.core_api import _configuration_presence
+from kagecatch.core_api import _configuration_presence, _resolve_session_store_mode
 
 
 class RuntimeConfigurationTests(unittest.TestCase):
@@ -62,6 +62,38 @@ class RuntimeConfigurationTests(unittest.TestCase):
         self.assertTrue(report["session_store_url_configured"])
         self.assertFalse(report["distributed_session_lock_configured"])
         self.assertNotIn("private-worker.example", repr(report))
+
+    def test_local_development_keeps_sqlite_when_distributed_lock_is_not_required(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_resolve_session_store_mode(), "sqlite")
+
+    def test_render_environment_fails_closed_when_d1_url_is_missing(self):
+        with patch.dict(os.environ, {"RENDER": "true"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "distributed session lock requires"):
+                _resolve_session_store_mode()
+
+    def test_explicit_distributed_mode_fails_closed_when_d1_url_is_missing(self):
+        with patch.dict(os.environ, {"KAGECATCH_REQUIRE_DISTRIBUTED_SESSION_LOCK": "true"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "distributed session lock requires"):
+                _resolve_session_store_mode()
+
+    def test_d1_url_without_valid_core_secret_fails_closed(self):
+        values = {
+            "KAGECATCH_SESSION_STORE_URL": "https://private-worker.example",
+            "KAGECATCH_CORE_SECRET": "too-short",
+        }
+        with patch.dict(os.environ, values, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "at least 32 bytes"):
+                _resolve_session_store_mode()
+
+    def test_distributed_mode_requires_both_d1_url_and_strong_secret(self):
+        values = {
+            "KAGECATCH_REQUIRE_DISTRIBUTED_SESSION_LOCK": "1",
+            "KAGECATCH_SESSION_STORE_URL": "https://private-worker.example",
+            "KAGECATCH_CORE_SECRET": "s" * 40,
+        }
+        with patch.dict(os.environ, values, clear=True):
+            self.assertEqual(_resolve_session_store_mode(), "d1")
 
 
 if __name__ == "__main__":
