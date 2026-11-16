@@ -35,8 +35,10 @@ async function signedRequest(path, payload, nonce = crypto.randomUUID().replaceA
 function makeEnv() {
   const usedNonces = new Set();
   const statements = [];
+  const lockRows = new Map();
   const db = {
     statements,
+    lockRows,
     prepare(sql) {
       return {
         bind(...values) {
@@ -44,15 +46,46 @@ function makeEnv() {
             async first() {
               statements.push({ sql, values });
               if (sql.includes("INSERT INTO session_locks")) {
-                return { session_id: values[0], locked_by: values[1], expires_at: values[2], fencing_token: 2 };
+                const [sessionId, owner, expiresAt, now, conflictNow, sameOwner] = values;
+                const existing = lockRows.get(sessionId);
+                if (!existing) {
+                  const row = { session_id: sessionId, locked_by: owner, expires_at: expiresAt, fencing_token: 1 };
+                  lockRows.set(sessionId, row);
+                  return { ...row };
+                }
+                if (existing.expires_at <= conflictNow || existing.locked_by === sameOwner) {
+                  const row = {
+                    session_id: sessionId,
+                    locked_by: owner,
+                    expires_at: expiresAt,
+                    fencing_token: existing.fencing_token + 1,
+                  };
+                  lockRows.set(sessionId, row);
+                  return { ...row };
+                }
+                return null;
               }
-              if (sql.includes("UPDATE session_locks")) {
-                return { expires_at: values[0], fencing_token: values[4] };
+              if (sql.includes("UPDATE session_locks") && sql.includes("RETURNING expires_at")) {
+                const [expiresAt, now, sessionId, owner, token, leaseNow] = values;
+                const existing = lockRows.get(sessionId);
+                if (!existing || existing.locked_by !== owner
+                  || existing.fencing_token !== token || existing.expires_at <= leaseNow) return null;
+                existing.expires_at = expiresAt;
+                return { expires_at: expiresAt, fencing_token: existing.fencing_token };
               }
               return null;
             },
             async run() {
               statements.push({ sql, values });
+              if (sql.startsWith("UPDATE session_locks SET expires_at = ?")) {
+                const [expiresAt, now, sessionId, owner, token] = values;
+                const existing = lockRows.get(sessionId);
+                if (!existing || existing.locked_by !== owner || existing.fencing_token !== token) {
+                  return { meta: { changes: 0 } };
+                }
+                existing.expires_at = expiresAt;
+                return { meta: { changes: 1 } };
+              }
               return { meta: { changes: 1 } };
             },
           };
@@ -90,7 +123,7 @@ test("session lock routes reject requests without valid HMAC authentication", as
   assert.equal(response.status, 401);
 });
 
-test("acquire uses atomic upsert and returns a monotonically increasing fencing token", async () => {
+test("acquire uses atomic upsert and creates the first fencing generation", async () => {
   const { env, db } = makeEnv();
   const path = "/internal/session-locks/acquire";
   const response = await worker.fetch(await signedRequest(path, {
@@ -103,7 +136,7 @@ test("acquire uses atomic upsert and returns a monotonically increasing fencing 
   assert.deepEqual(await response.json(), {
     acquired: true,
     expires_at: db.statements[0].values[2],
-    fencing_token: 2,
+    fencing_token: 1,
   });
   assert.match(db.statements[0].sql, /ON CONFLICT\s*\(session_id\) DO UPDATE/i);
   assert.match(db.statements[0].sql, /session_locks\.fencing_token\s*\+\s*1/i);
@@ -112,26 +145,98 @@ test("acquire uses atomic upsert and returns a monotonically increasing fencing 
 
 test("renew and release require the current fencing token", async () => {
   const { env, db } = makeEnv();
+  const acquire = await worker.fetch(await signedRequest("/internal/session-locks/acquire", {
+    session_id: "telegram-user-42",
+    locked_by: "instance-owner-000001",
+    lease_seconds: 90,
+  }), env);
+  assert.equal(acquire.status, 200);
+
   const renew = await worker.fetch(await signedRequest("/internal/session-locks/renew", {
     session_id: "telegram-user-42",
     locked_by: "instance-owner-000001",
     lease_seconds: 90,
-    fencing_token: 2,
+    fencing_token: 1,
   }), env);
   assert.equal(renew.status, 200);
-  assert.deepEqual(await renew.json(), { renewed: true, expires_at: db.statements[0].values[0], fencing_token: 2 });
-  assert.match(db.statements[0].sql, /fencing_token\s*=\s*\?/i);
+  assert.deepEqual(await renew.json(), {
+    renewed: true,
+    expires_at: db.statements[1].values[0],
+    fencing_token: 1,
+  });
+  assert.match(db.statements[1].sql, /fencing_token\s*=\s*\?/i);
 
   const release = await worker.fetch(await signedRequest("/internal/session-locks/release", {
     session_id: "telegram-user-42",
     locked_by: "instance-owner-000001",
-    fencing_token: 2,
+    fencing_token: 1,
   }), env);
   assert.equal(release.status, 200);
   assert.deepEqual(await release.json(), { released: true });
-  assert.match(db.statements[1].sql, /fencing_token\s*=\s*\?/i);
-  assert.match(db.statements[1].sql, /^UPDATE session_locks SET expires_at = \?/i);
-  assert.doesNotMatch(db.statements[1].sql, /^DELETE FROM session_locks/i);
+  assert.match(db.statements[2].sql, /fencing_token\s*=\s*\?/i);
+  assert.match(db.statements[2].sql, /^UPDATE session_locks SET expires_at = \?/i);
+  assert.doesNotMatch(db.statements[2].sql, /^DELETE FROM session_locks/i);
+});
+
+test("release preserves fencing history and stale owners cannot mutate a newer lease", async () => {
+  const { env, db } = makeEnv();
+  const acquirePath = "/internal/session-locks/acquire";
+  const first = await worker.fetch(await signedRequest(acquirePath, {
+    session_id: "telegram-user-42", locked_by: "instance-owner-000001", lease_seconds: 90,
+  }), env);
+  assert.deepEqual(await first.json(), {
+    acquired: true,
+    expires_at: db.statements[0].values[2],
+    fencing_token: 1,
+  });
+
+  const release = await worker.fetch(await signedRequest("/internal/session-locks/release", {
+    session_id: "telegram-user-42", locked_by: "instance-owner-000001", fencing_token: 1,
+  }), env);
+  assert.deepEqual(await release.json(), { released: true });
+  assert.equal(db.lockRows.get("telegram-user-42").fencing_token, 1);
+
+  const second = await worker.fetch(await signedRequest(acquirePath, {
+    session_id: "telegram-user-42", locked_by: "instance-owner-000002", lease_seconds: 90,
+  }), env);
+  assert.deepEqual(await second.json(), {
+    acquired: true,
+    expires_at: db.statements[2].values[2],
+    fencing_token: 2,
+  });
+
+  const staleRenew = await worker.fetch(await signedRequest("/internal/session-locks/renew", {
+    session_id: "telegram-user-42", locked_by: "instance-owner-000001",
+    lease_seconds: 90, fencing_token: 1,
+  }), env);
+  assert.equal(staleRenew.status, 409);
+  assert.deepEqual(await staleRenew.json(), { renewed: false });
+
+  const staleRelease = await worker.fetch(await signedRequest("/internal/session-locks/release", {
+    session_id: "telegram-user-42", locked_by: "instance-owner-000001", fencing_token: 1,
+  }), env);
+  assert.deepEqual(await staleRelease.json(), { released: false });
+  assert.equal(db.lockRows.get("telegram-user-42").locked_by, "instance-owner-000002");
+  assert.equal(db.lockRows.get("telegram-user-42").fencing_token, 2);
+});
+
+test("reacquiring with the same owner still advances the fencing generation", async () => {
+  const { env, db } = makeEnv();
+  const path = "/internal/session-locks/acquire";
+  const payload = {
+    session_id: "telegram-user-42",
+    locked_by: "instance-owner-000001",
+    lease_seconds: 90,
+  };
+  const first = await worker.fetch(await signedRequest(path, payload), env);
+  const second = await worker.fetch(await signedRequest(path, payload), env);
+
+  assert.deepEqual(await first.json(), {
+    acquired: true, expires_at: db.statements[0].values[2], fencing_token: 1,
+  });
+  assert.deepEqual(await second.json(), {
+    acquired: true, expires_at: db.statements[1].values[2], fencing_token: 2,
+  });
 });
 
 test("session lock routes reject replayed HMAC nonces", async () => {
