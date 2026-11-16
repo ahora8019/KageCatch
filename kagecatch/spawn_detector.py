@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 from typing import Any, Iterable
 
-from .models.spawn import CharacterMetadata, SpawnContext, SpawnEvent
+from .models.spawn import SpawnContext, SpawnEvent
 from .targets.base import BaseTargetAdapter
 
 logger = logging.getLogger(__name__)
@@ -42,8 +42,19 @@ class SpawnDetector:
                 if not adapter.is_spawn_message(event):
                     continue
                 metadata = await adapter.extract_metadata(event)
-                if not isinstance(metadata, CharacterMetadata):
-                    raise TypeError("target adapter returned invalid character metadata")
+                # Target adapters may expose a lightweight metadata object; keep
+                # this boundary duck-typed while validating fields below.
+                character_name = getattr(metadata, "character_name", None)
+                confidence = (
+                    getattr(metadata, "character_confidence", 0.0)
+                    if character_name else 0.0
+                )
+                anime_name = getattr(metadata, "anime_name", None)
+                metadata_source = getattr(metadata, "source", None)
+                if anime_name is not None and not isinstance(anime_name, str):
+                    raise TypeError("target adapter returned invalid anime metadata")
+                if not isinstance(metadata_source, str) or not metadata_source:
+                    raise TypeError("target adapter returned invalid metadata source")
             except Exception:
                 # Isolate target-specific failures; never log message/media payloads.
                 logger.warning(
@@ -52,8 +63,9 @@ class SpawnDetector:
                 )
                 continue
 
-            character_name = metadata.character_name
-            confidence = metadata.character_confidence if character_name else 0.0
+            if not isinstance(character_name, str) or not character_name.strip():
+                character_name = None
+                confidence = 0.0
             if (
                 isinstance(confidence, bool)
                 or not isinstance(confidence, (int, float))
@@ -65,7 +77,7 @@ class SpawnDetector:
             chat_id = getattr(event, "chat_id", None)
             if chat_id is None:
                 chat_id = getattr(message, "chat_id", None)
-            media_kind = self._media_kind(message)
+            media_kind = SpawnDetector._media_kind(message)
             spawn_context = None
             if (
                 isinstance(target_name, str) and target_name
