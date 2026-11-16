@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+import logging
 from typing import Any
 
 from .adapters import TARGETS, build_catch_command
 from .engine import CatchReceipt, Spawn
+from .monitoring import emit_monitor_event
 from .telegram_safety_guard import TelegramSafetyGuard
 
 
@@ -61,13 +63,22 @@ class TelethonCatchAdapter:
             raise RuntimeError("Telegram safety guard is unavailable")
         decision = self.safety_guard.check_send(chat_id=spawn.chat_id)
         if not decision.allowed:
+            emit_monitor_event("telegram_outbound_blocked", level=logging.WARNING)
             raise RuntimeError(f"Telegram safety guard blocked outbound action: {decision.reason}")
 
         command = build_catch_command(self.source, character_name)
         try:
             message = await self.client.send_message(self.target_username, command)
         except Exception as exc:
-            self.safety_guard.observe_error(exc)
+            event = self.safety_guard.observe_error(exc)
+            if event.category == "rate_limit":
+                emit_monitor_event("flood_wait", level=logging.WARNING)
+            elif event.category == "session_revoked":
+                emit_monitor_event("session_revoked", level=logging.ERROR)
+                await self._disconnect_after_session_loss()
+            elif event.category == "security_lock":
+                emit_monitor_event("telegram_security_lock", level=logging.CRITICAL)
+                await self._disconnect_after_session_loss()
             raise
 
         # The API accepted the send even if the response object is malformed.
@@ -79,6 +90,18 @@ class TelethonCatchAdapter:
         receipt = CatchReceipt(reference=reference, character_name=character_name)
         self._sent[reference] = message
         return receipt
+
+    async def _disconnect_after_session_loss(self) -> None:
+        disconnect = getattr(self.client, "disconnect", None)
+        if disconnect is None:
+            return
+        try:
+            result = disconnect()
+            if hasattr(result, "__await__"):
+                await result
+        except Exception:
+            # Safety lock remains active even if transport cleanup fails.
+            pass
 
     async def verify_catch(self, receipt: CatchReceipt) -> bool:
         message = self._sent.get(receipt.reference)
