@@ -103,3 +103,15 @@ if __name__ == "__main__":
             await self.queue.claim_next("tracked-worker")
         self.assertTrue(opened)
         self.assertTrue(all(connection.was_closed for connection in opened))
+
+
+    async def test_stale_lease_generation_cannot_complete_reclaimed_job(self):
+        job = await self.queue.enqueue("spawn.process", {"spawn_id": 99})
+        first = await self.queue.claim_next("reused-worker", lease_seconds=5)
+        self.now += 6
+        self.assertEqual(await self.queue.recover_expired(), 1)
+        second = await self.queue.claim_next("reused-worker", lease_seconds=5)
+        self.assertEqual(first.job_id, second.job_id)
+        with self.assertRaises(PermissionError):
+            await self.queue.complete(job.job_id, "reused-worker", lease_generation=first.lease_generation)
+        await self.queue.complete(job.job_id, "reused-worker", lease_generation=second.lease_generation)
