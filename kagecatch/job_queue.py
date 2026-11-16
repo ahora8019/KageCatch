@@ -23,6 +23,7 @@ class Job:
     max_attempts: int
     worker_id: str | None
     lease_until: float | None
+    lease_generation: int
 
 
 class SQLiteJobQueue:
@@ -50,11 +51,15 @@ class SQLiteJobQueue:
                     idempotency_key TEXT UNIQUE,
                     worker_id TEXT,
                     lease_until REAL,
+                    lease_generation INTEGER NOT NULL DEFAULT 0,
                     run_after REAL NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 )
             """)
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(catch_jobs)")}
+            if "lease_generation" not in columns:
+                db.execute("ALTER TABLE catch_jobs ADD COLUMN lease_generation INTEGER NOT NULL DEFAULT 0")
             db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_catch_jobs_claim "
                 "ON catch_jobs(status, run_after, priority DESC, created_at)"
@@ -131,6 +136,7 @@ class SQLiteJobQueue:
                     updated = db.execute("""
                         UPDATE catch_jobs
                         SET status='running', attempts=attempts+1,
+                            lease_generation=lease_generation+1,
                             worker_id=?, lease_until=?, updated_at=?
                         WHERE job_id=? AND status='queued'
                     """, (worker_id, now + float(lease_seconds), now, row["job_id"]))
@@ -146,14 +152,14 @@ class SQLiteJobQueue:
                     raise
         return self._to_job(claimed)
 
-    async def complete(self, job_id: str, worker_id: str) -> None:
+    async def complete(self, job_id: str, worker_id: str, *, lease_generation: int) -> None:
         await self._owned_transition(
-            job_id, worker_id,
+            job_id, worker_id, lease_generation,
             "UPDATE catch_jobs SET status='completed', worker_id=NULL, lease_until=NULL, updated_at=? "
-            "WHERE job_id=? AND status='running' AND worker_id=? AND lease_until>?",
+            "WHERE job_id=? AND status='running' AND worker_id=? AND lease_generation=? AND lease_until>?",
         )
 
-    async def fail(self, job_id: str, worker_id: str, *, retry_delay: float = 0) -> str:
+    async def fail(self, job_id: str, worker_id: str, *, lease_generation: int, retry_delay: float = 0) -> str:
         if isinstance(retry_delay, bool) or not isinstance(retry_delay, (int, float)) or retry_delay < 0:
             raise ValueError("retry_delay must be non-negative")
         now = float(self._clock())
@@ -163,8 +169,8 @@ class SQLiteJobQueue:
                 try:
                     row = db.execute(
                         "SELECT attempts, max_attempts FROM catch_jobs "
-                        "WHERE job_id=? AND status='running' AND worker_id=? AND lease_until>?",
-                        (job_id, worker_id, now),
+                        "WHERE job_id=? AND status='running' AND worker_id=? AND lease_generation=? AND lease_until>?",
+                        (job_id, worker_id, lease_generation, now),
                     ).fetchone()
                     if row is None:
                         raise PermissionError("job is not leased by this worker")
@@ -218,11 +224,11 @@ class SQLiteJobQueue:
     async def close(self) -> None:
         """Connections are scoped to individual operations."""
 
-    async def _owned_transition(self, job_id: str, worker_id: str, sql: str) -> None:
+    async def _owned_transition(self, job_id: str, worker_id: str, lease_generation: int, sql: str) -> None:
         now = float(self._clock())
         async with self._lock:
             with closing(self._connect()) as db:
-                result = db.execute(sql, (now, job_id, worker_id, now))
+                result = db.execute(sql, (now, job_id, worker_id, lease_generation, now))
                 if result.rowcount != 1:
                     raise PermissionError("job is not leased by this worker")
 
@@ -235,5 +241,5 @@ class SQLiteJobQueue:
             payload=json.loads(row["payload_json"]), priority=int(row["priority"]),
             status=row["status"], attempts=int(row["attempts"]),
             max_attempts=int(row["max_attempts"]), worker_id=row["worker_id"],
-            lease_until=row["lease_until"],
+            lease_until=row["lease_until"], lease_generation=int(row["lease_generation"]),
         )
