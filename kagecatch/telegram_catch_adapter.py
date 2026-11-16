@@ -61,7 +61,7 @@ class TelethonCatchAdapter:
             raise ValueError("spawn does not match this catcher")
         if self.safety_guard is None:
             raise RuntimeError("Telegram safety guard is unavailable")
-        decision = self.safety_guard.check_send(chat_id=spawn.chat_id)
+        decision = self.safety_guard.reserve_send(chat_id=spawn.chat_id)
         if not decision.allowed:
             emit_monitor_event("telegram_outbound_blocked", level=logging.WARNING)
             raise RuntimeError(f"Telegram safety guard blocked outbound action: {decision.reason}")
@@ -81,8 +81,6 @@ class TelethonCatchAdapter:
                 await self._disconnect_after_session_loss()
             raise
 
-        # The API accepted the send even if the response object is malformed.
-        self.safety_guard.record_send(chat_id=spawn.chat_id)
         message_id = getattr(message, "id", None)
         if not isinstance(message_id, int) or message_id <= 0:
             raise RuntimeError("Telegram did not return a sent message identifier")
