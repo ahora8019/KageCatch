@@ -46,11 +46,11 @@ class TelegramSafetyGuard:
         "sessionrevokederror",
         "authkeyunregisterederror",
         "userdeactivatederror",
-        "userdeactivatedbanerror",
+        "sessionauthorizationlosterror",
     }
     _SECURITY_FAILURES = {
         "authkeyduplicatederror",
-        "phone number banned".replace(" ", ""),
+        "phonenumberbanned",
         "userdeactivatedbanerror",
     }
 
