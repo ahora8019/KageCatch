@@ -53,6 +53,7 @@ class SessionRuntime:
         self._lease_watchers: dict[str, asyncio.Task] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._locks_guard = asyncio.Lock()
+        self._closing = False
 
     @property
     def active_user_count(self) -> int:
@@ -92,6 +93,8 @@ class SessionRuntime:
     async def connect_user(self, user_id: str) -> RuntimeClient:
         lock = await self._user_lock(user_id)
         async with lock:
+            if self._closing:
+                raise RuntimeError("session runtime is shutting down")
             existing = self._clients.get(user_id)
             if existing is not None:
                 lease = self._leases.get(user_id)
@@ -132,6 +135,8 @@ class SessionRuntime:
                 if lease is not None:
                     await lease.assert_held()
                     lease.start_heartbeat()
+                if self._closing:
+                    raise RuntimeError("session runtime is shutting down")
             except BaseException as exc:
                 if type(exc).__name__ == "FloodWaitError":
                     emit_monitor_event("flood_wait", level=logging.WARNING)
@@ -223,8 +228,9 @@ class SessionRuntime:
         return await self.restore_saved_sessions()
 
     async def get_client(self, user_id: str) -> RuntimeClient | None:
-        await self._user_lock(user_id)
-        return self._clients.get(user_id)
+        lock = await self._user_lock(user_id)
+        async with lock:
+            return self._clients.get(user_id)
 
     async def disconnect_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
@@ -234,10 +240,16 @@ class SessionRuntime:
                 await self._discard_owned_client(user_id, client)
 
     async def close(self) -> None:
-        """Disconnect all active clients and release their distributed leases."""
-        for user_id in list(self._clients):
+        """Stop new connections, await in-flight startups, and release all leases."""
+        self._closing = True
+        # Include in-flight connection attempts, not just clients already published.
+        for user_id in list(self._locks):
             try:
-                await self.disconnect_user(user_id)
+                lock = await self._user_lock(user_id)
+                async with lock:
+                    client = self._clients.get(user_id)
+                    if client is not None:
+                        await self._discard_owned_client(user_id, client)
             except Exception:
                 logging.getLogger("kagecatch.core").exception(
                     "Failed to cleanly close a Telegram session during shutdown"
