@@ -48,22 +48,46 @@ class InMemoryNonceStore:
 
 
 
+def _resolve_session_store_mode(environ=None) -> str:
+    """Select local SQLite or fail-closed D1 mode for hosted/distributed runtimes."""
+    values = os.environ if environ is None else environ
+    session_store_url = str(values.get("KAGECATCH_SESSION_STORE_URL", "")).strip()
+    core_secret = str(values.get("KAGECATCH_CORE_SECRET", ""))
+    require_flag = str(values.get("KAGECATCH_REQUIRE_DISTRIBUTED_SESSION_LOCK", "")).strip().lower()
+    render_flag = str(values.get("RENDER", "")).strip().lower()
+    distributed_required = require_flag in {"1", "true", "yes", "on"} or render_flag in {"1", "true", "yes", "on"}
+
+    if session_store_url:
+        if not session_store_url.startswith("https://"):
+            raise RuntimeError("KAGECATCH_SESSION_STORE_URL must use HTTPS")
+        if len(core_secret.encode("utf-8")) < 32:
+            raise RuntimeError("KAGECATCH_CORE_SECRET must contain at least 32 bytes for D1 session storage")
+        return "d1"
+
+    if distributed_required:
+        raise RuntimeError(
+            "distributed session lock requires KAGECATCH_SESSION_STORE_URL and a 32-byte KAGECATCH_CORE_SECRET"
+        )
+    return "sqlite"
+
+
 def _configuration_presence(core_secret: str | None = None) -> dict[str, bool]:
     """Return safe configuration presence flags without exposing secret values."""
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
-    session_store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "")
+    session_store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
     return {
         "core_auth_configured": bool(secret),
         "telegram_api_id_configured": bool(os.getenv("KAGECATCH_API_ID")),
         "telegram_api_hash_configured": bool(os.getenv("KAGECATCH_API_HASH")),
         "session_encryption_key_configured": bool(os.getenv("KAGECATCH_FERNET_KEY")),
         "session_store_url_configured": bool(session_store_url),
-        "distributed_session_lock_configured": bool(session_store_url and secret),
+        "distributed_session_lock_configured": bool(session_store_url.startswith("https://") and len(secret.encode("utf-8")) >= 32),
         "telethon_available": importlib.util.find_spec("telethon") is not None,
     }
 
 
 def _configured_runtime():
+    session_store_mode = _resolve_session_store_mode()
     api_id = os.getenv("KAGECATCH_API_ID")
     api_hash = os.getenv("KAGECATCH_API_HASH")
     fernet_key = os.getenv("KAGECATCH_FERNET_KEY")
@@ -72,10 +96,10 @@ def _configured_runtime():
 
     from .session_manager import SessionManager
     from .session_runtime import SessionRuntime, TelethonSessionClientFactory
-    session_store_url = os.getenv("KAGECATCH_SESSION_STORE_URL")
+    session_store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
     core_secret = os.getenv("KAGECATCH_CORE_SECRET", "")
     lease_factory = None
-    if session_store_url:
+    if session_store_mode == "d1":
         from .d1_session_store import D1SessionStore
         from .session_lock import D1SessionLease
         store = D1SessionStore(session_store_url, core_secret)
@@ -197,8 +221,7 @@ def create_app(
             if store_url and store_secret:
                 from .d1_manual_review_store import D1ManualReviewStore
                 app.state.review_store = D1ManualReviewStore(store_url, store_secret)
-        if app.state.review_queue is None and app.state.review_store is not None:
-            from .persistent_manual_review_queue import PersistentManualReviewQueue
+        if app.state.review_queue is None and app.state.review_store is not None:            from .persistent_manual_review_queue import PersistentManualReviewQueue
             app.state.review_queue = PersistentManualReviewQueue(store=app.state.review_store)
         if (
             app.state.review_pipeline is None
@@ -397,8 +420,7 @@ def create_app(
     @app.get("/v1/accounts/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
     async def account_status(telegram_user_id: int):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
-            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
-        if session_manager is None:
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")        if session_manager is None:
             raise HTTPException(status_code=503, detail="session_store_not_configured")
         user_id = str(telegram_user_id)
         saved_session = await session_manager.load_session(user_id)
@@ -597,8 +619,7 @@ def create_app(
     @app.get("/v1/accounts/{telegram_user_id}/connect/status", dependencies=[Depends(require_core_auth)])
     async def connect_status(telegram_user_id: int):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
-            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
-        if auth_flow is None:
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")        if auth_flow is None:
             raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
         status = await auth_flow.get_status(user_id=str(telegram_user_id))
         if status.get("status") == "connected" and runtime is not None:
