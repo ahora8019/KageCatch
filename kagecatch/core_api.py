@@ -221,7 +221,8 @@ def create_app(
             if store_url and store_secret:
                 from .d1_manual_review_store import D1ManualReviewStore
                 app.state.review_store = D1ManualReviewStore(store_url, store_secret)
-        if app.state.review_queue is None and app.state.review_store is not None:            from .persistent_manual_review_queue import PersistentManualReviewQueue
+        if app.state.review_queue is None and app.state.review_store is not None:
+            from .persistent_manual_review_queue import PersistentManualReviewQueue
             app.state.review_queue = PersistentManualReviewQueue(store=app.state.review_store)
         if (
             app.state.review_pipeline is None
@@ -420,7 +421,8 @@ def create_app(
     @app.get("/v1/accounts/{telegram_user_id}", dependencies=[Depends(require_core_auth)])
     async def account_status(telegram_user_id: int):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
-            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")        if session_manager is None:
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if session_manager is None:
             raise HTTPException(status_code=503, detail="session_store_not_configured")
         user_id = str(telegram_user_id)
         saved_session = await session_manager.load_session(user_id)
@@ -619,7 +621,8 @@ def create_app(
     @app.get("/v1/accounts/{telegram_user_id}/connect/status", dependencies=[Depends(require_core_auth)])
     async def connect_status(telegram_user_id: int):
         if telegram_user_id <= 0 or telegram_user_id > (2**52 - 1):
-            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")        if auth_flow is None:
+            raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
+        if auth_flow is None:
             raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
         status = await auth_flow.get_status(user_id=str(telegram_user_id))
         if status.get("status") == "connected" and runtime is not None:
