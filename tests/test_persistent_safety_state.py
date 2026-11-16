@@ -87,6 +87,36 @@ class PersistentSafetyStateTests(unittest.TestCase):
             self.assertFalse(decision.allowed)
             self.assertEqual(decision.retry_after, 20)
 
+    def test_unknown_or_incomplete_persisted_state_fails_closed(self):
+        class MalformedStore:
+            def load(self, owner_id):
+                return {"version": 1}
+
+            def save(self, owner_id, state):
+                raise AssertionError("malformed state must not be overwritten")
+
+        with self.assertRaisesRegex(RuntimeError, "could not be restored"):
+            TelegramSafetyGuard(
+                clock=FakeClock(), state_store=MalformedStore(), owner_id="owner-a"
+            )
+
+    def test_manual_lock_reason_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "safety.sqlite3"
+            guard = TelegramSafetyGuard(
+                clock=FakeClock(), state_store=SQLiteSafetyStateStore(path),
+                owner_id="owner-a",
+            )
+            guard.lock(reason="owner_emergency_stop")
+
+            restarted = TelegramSafetyGuard(
+                clock=FakeClock(), state_store=SQLiteSafetyStateStore(path),
+                owner_id="owner-a",
+            )
+
+            self.assertEqual(restarted.mode, GuardMode.MANUAL_LOCKED)
+            self.assertEqual(restarted.lock_reason, "owner_emergency_stop")
+
 
 if __name__ == "__main__":
     unittest.main()
