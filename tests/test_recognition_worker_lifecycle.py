@@ -23,9 +23,13 @@ class LifecycleWorker(RecognitionWorker):
             outcome = self.outcomes.pop(0)
             if outcome == "stop":
                 self.stop_event.set()
+                status = "idle"
+            else:
+                status = "review_queued"
         else:
             self.stop_event.set()
-        return type("Result", (), {"status": "review_queued" if self.calls == 1 else "idle"})()
+            status = "idle"
+        return type("Result", (), {"status": status})()
 
 
 class RecognitionWorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
