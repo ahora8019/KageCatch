@@ -36,10 +36,10 @@ class SafetyEvent:
 class TelegramSafetyGuard:
     """In-memory guard for one authorized Telegram account/session runtime.
 
-    The caller must invoke check_send immediately before every outbound action
-    and record_send only after a successful send. A distributed deployment must
-    persist/coordinate this state outside this object before enabling multiple
-    workers; this implementation is safe for a single runtime instance only.
+    The caller must reserve a send slot immediately before every outbound
+    action. Reservation is synchronous/atomic within one Python event loop.
+    Distributed deployments must coordinate this state in a shared store
+    before enabling multiple workers.
     """
 
     _SESSION_FAILURES = {
@@ -96,13 +96,21 @@ class TelegramSafetyGuard:
                 return SendDecision(False, "chat_cooldown", remaining)
         return SendDecision(True, "allowed")
 
-    def record_send(self, *, chat_id: int | str) -> None:
+    def reserve_send(self, *, chat_id: int | str) -> SendDecision:
+        """Atomically consume a send slot before yielding to network I/O."""
         decision = self.check_send(chat_id=chat_id)
         if not decision.allowed:
-            raise RuntimeError(f"outbound Telegram operation blocked: {decision.reason}")
+            return decision
         now = float(self._clock())
         self._last_global_send = now
         self._last_chat_send[chat_id] = now
+        return decision
+
+    def record_send(self, *, chat_id: int | str) -> None:
+        """Compatibility wrapper; new callers should reserve before network I/O."""
+        decision = self.reserve_send(chat_id=chat_id)
+        if not decision.allowed:
+            raise RuntimeError(f"outbound Telegram operation blocked: {decision.reason}")
 
     def observe_error(self, error: BaseException) -> SafetyEvent:
         name = type(error).__name__.lower()
