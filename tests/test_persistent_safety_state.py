@@ -117,6 +117,27 @@ class PersistentSafetyStateTests(unittest.TestCase):
             self.assertEqual(restarted.mode, GuardMode.MANUAL_LOCKED)
             self.assertEqual(restarted.lock_reason, "owner_emergency_stop")
 
+    def test_per_chat_pacing_survives_restart_for_numeric_chat_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "safety.sqlite3"
+            first = TelegramSafetyGuard(
+                clock=FakeClock(100), wall_clock=FakeClock(1_800_000_000),
+                min_global_interval=0, min_chat_interval=5,
+                state_store=SQLiteSafetyStateStore(path), owner_id="owner-a",
+            )
+            self.assertTrue(first.reserve_send(chat_id=-100123).allowed)
+
+            restarted = TelegramSafetyGuard(
+                clock=FakeClock(100), wall_clock=FakeClock(1_800_000_001),
+                min_global_interval=0, min_chat_interval=5,
+                state_store=SQLiteSafetyStateStore(path), owner_id="owner-a",
+            )
+
+            decision = restarted.check_send(chat_id=-100123)
+            self.assertFalse(decision.allowed)
+            self.assertEqual(decision.reason, "chat_cooldown")
+            self.assertEqual(decision.retry_after, 4)
+
 
 if __name__ == "__main__":
     unittest.main()
