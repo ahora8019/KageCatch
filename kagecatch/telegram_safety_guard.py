@@ -49,26 +49,17 @@ class TelegramSafetyGuard:
     """
 
     _SESSION_FAILURES = {
-        "sessionrevokederror",
-        "authkeyunregisterederror",
-        "userdeactivatederror",
+        "sessionrevokederror", "authkeyunregisterederror", "userdeactivatederror",
         "sessionauthorizationlosterror",
     }
     _SECURITY_FAILURES = {
-        "authkeyduplicatederror",
-        "phonenumberbanned",
-        "userdeactivatedbanerror",
+        "authkeyduplicatederror", "phonenumberbanned", "userdeactivatedbanerror",
     }
 
     def __init__(
-        self,
-        *,
-        clock: Callable[[], float],
-        min_global_interval: float = 1.0,
-        min_chat_interval: float = 1.0,
-        state_store: SafetyStateStore | None = None,
-        owner_id: str | None = None,
-        wall_clock: Callable[[], float] = time.time,
+        self, *, clock: Callable[[], float], min_global_interval: float = 1.0,
+        min_chat_interval: float = 1.0, state_store: SafetyStateStore | None = None,
+        owner_id: str | None = None, wall_clock: Callable[[], float] = time.time,
     ) -> None:
         for name, value in (
             ("min_global_interval", min_global_interval),
@@ -91,9 +82,18 @@ class TelegramSafetyGuard:
         self.lock_reason: str | None = None
         self._cooldown_until = 0.0
         self._last_global_send: float | None = None
-        self._last_chat_send: dict[int | str, float] = {}
+        self._last_chat_send: dict[str, float] = {}
         if self._state_store is not None:
             self._restore_state()
+
+    @staticmethod
+    def _chat_key(chat_id: int | str) -> str:
+        if isinstance(chat_id, bool) or not isinstance(chat_id, (int, str)):
+            raise ValueError("chat_id must be an integer or string")
+        key = str(chat_id)
+        if not key or len(key) > 64:
+            raise ValueError("chat_id must contain 1 to 64 characters")
+        return key
 
     @staticmethod
     def _finite_state_number(value: Any, field: str, *, default: float = 0.0) -> float:
@@ -122,9 +122,7 @@ class TelegramSafetyGuard:
 
             now_mono = self._finite_state_number(self._clock(), "monotonic clock")
             now_wall = self._finite_state_number(self._wall_clock(), "wall clock")
-            cooldown_epoch = self._finite_state_number(
-                state.get("cooldown_until_epoch"), "cooldown deadline"
-            )
+            cooldown_epoch = self._finite_state_number(state.get("cooldown_until_epoch"), "cooldown deadline")
             self.mode = mode
             self.lock_reason = lock_reason
             if mode == GuardMode.RATE_LIMITED:
@@ -137,9 +135,7 @@ class TelegramSafetyGuard:
 
             last_global_epoch = state.get("last_global_send_epoch")
             if last_global_epoch is not None:
-                last_global_epoch = self._finite_state_number(
-                    last_global_epoch, "last global send time"
-                )
+                last_global_epoch = self._finite_state_number(last_global_epoch, "last global send time")
                 age = max(0.0, now_wall - last_global_epoch)
                 self._last_global_send = now_mono - age
 
@@ -153,7 +149,6 @@ class TelegramSafetyGuard:
                 age = max(0.0, now_wall - sent_epoch)
                 self._last_chat_send[chat_id] = now_mono - age
         except Exception as exc:
-            # Corrupt, incomplete, or unreadable state must never silently unlock.
             self.mode = GuardMode.SECURITY_LOCKED
             self.lock_reason = "safety_state_restore_failed"
             self._cooldown_until = 0.0
@@ -179,13 +174,14 @@ class TelegramSafetyGuard:
                 if self._last_global_send is not None else None
             ),
             "last_chat_send_epochs": {
-                str(chat_id): now_wall - max(0.0, now_mono - timestamp)
+                chat_id: now_wall - max(0.0, now_mono - timestamp)
                 for chat_id, timestamp in self._last_chat_send.items()
             },
         }
         self._state_store.save(self._owner_id, state)  # type: ignore[union-attr]
 
     def check_send(self, *, chat_id: int | str) -> SendDecision:
+        key = self._chat_key(chat_id)
         now = float(self._clock())
         if self.mode == GuardMode.RATE_LIMITED:
             remaining = self._cooldown_until - now
@@ -201,7 +197,7 @@ class TelegramSafetyGuard:
             remaining = self.min_global_interval - (now - self._last_global_send)
             if remaining > 0:
                 return SendDecision(False, "global_cooldown", remaining)
-        last_chat = self._last_chat_send.get(chat_id)
+        last_chat = self._last_chat_send.get(key)
         if last_chat is not None:
             remaining = self.min_chat_interval - (now - last_chat)
             if remaining > 0:
@@ -209,18 +205,16 @@ class TelegramSafetyGuard:
         return SendDecision(True, "allowed")
 
     def reserve_send(self, *, chat_id: int | str) -> SendDecision:
-        """Consume and persist a send slot before yielding to network I/O."""
         decision = self.check_send(chat_id=chat_id)
         if not decision.allowed:
             return decision
         now = float(self._clock())
         self._last_global_send = now
-        self._last_chat_send[chat_id] = now
+        self._last_chat_send[self._chat_key(chat_id)] = now
         self._persist_state()
         return decision
 
     def record_send(self, *, chat_id: int | str) -> None:
-        """Compatibility wrapper; new callers should reserve before network I/O."""
         decision = self.reserve_send(chat_id=chat_id)
         if not decision.allowed:
             raise RuntimeError(f"outbound Telegram operation blocked: {decision.reason}")
@@ -257,19 +251,14 @@ class TelegramSafetyGuard:
         self._persist_state()
 
     def clear_lock(
-        self,
-        *,
-        operator_confirmed: bool,
-        session_reauthorized: bool,
+        self, *, operator_confirmed: bool, session_reauthorized: bool,
         security_reviewed: bool = False,
     ) -> bool:
         if not operator_confirmed:
             return False
         if self.mode == GuardMode.SESSION_LOCKED and not session_reauthorized:
             return False
-        if self.mode == GuardMode.SECURITY_LOCKED and not (
-            session_reauthorized and security_reviewed
-        ):
+        if self.mode == GuardMode.SECURITY_LOCKED and not (session_reauthorized and security_reviewed):
             return False
         if self.mode == GuardMode.RATE_LIMITED:
             return False
