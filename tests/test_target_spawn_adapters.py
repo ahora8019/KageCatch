@@ -34,7 +34,7 @@ class HentaiCatcherAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.adapter.is_spawn_message(event("hello")))
 
     async def test_metadata_does_not_invent_character_identity(self):
-        metadata = await self.adapter.extract_metadata(event("NEW CHARACTER SPAWN"))
+        metadata = await self.adapter.extract_metadata(event("NEW CHARACTER SPAWN /catch Name"))
         self.assertIsNone(metadata.character_name)
         self.assertEqual(metadata.character_confidence, 0.0)
         self.assertEqual(metadata.source, "hentai_catcher")
