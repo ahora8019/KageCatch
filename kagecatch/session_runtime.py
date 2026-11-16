@@ -55,14 +55,16 @@ class SessionRuntime:
         handler_registrar=None,
         lease_factory: LeaseFactory | None = None,
         safety_guard_factory: SafetyGuardFactory | None = None,
+        safety_state_store=None,
+        safety_wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self._session_manager = session_manager
         self._client_factory = client_factory
         self._handler_registrar = handler_registrar
         self._lease_factory = lease_factory
-        self._safety_guard_factory = safety_guard_factory or (
-            lambda: TelegramSafetyGuard(clock=time.monotonic)
-        )
+        self._safety_guard_factory = safety_guard_factory
+        self._safety_state_store = safety_state_store
+        self._safety_wall_clock = safety_wall_clock
         self._safety_guards: dict[str, TelegramSafetyGuard] = {}
         self._clients: dict[str, RuntimeClient] = {}
         self._leases: dict[str, SessionLease] = {}
@@ -81,7 +83,15 @@ class SessionRuntime:
             raise ValueError("valid user_id is required")
         guard = self._safety_guards.get(user_id)
         if guard is None:
-            guard = self._safety_guard_factory()
+            if self._safety_guard_factory is not None:
+                guard = self._safety_guard_factory()
+            else:
+                guard = TelegramSafetyGuard(
+                    clock=time.monotonic,
+                    wall_clock=self._safety_wall_clock,
+                    state_store=self._safety_state_store,
+                    owner_id=user_id if self._safety_state_store is not None else None,
+                )
             self._safety_guards[user_id] = guard
         return guard
 
