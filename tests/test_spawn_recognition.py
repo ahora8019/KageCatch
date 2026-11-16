@@ -195,15 +195,15 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SpawnDetectorTests(unittest.IsolatedAsyncioTestCase):
-    async def test_uses_first_recognizing_adapter_and_returns_spawn_event(self):
-        metadata = CharacterMetadata(
+    async def asyncSetUp(self):
+        self.metadata = CharacterMetadata(
             anime_name="Example Anime",
-            character_name=None,
-            similarity=0.96,
-            source="trace.moe",
+            source="fixture",
             character_confidence=0.0,
         )
-        detector = SpawnDetector([OtherAdapter(), OtherAdapter(True, metadata)])
+
+    async def test_uses_first_recognizing_adapter_and_returns_spawn_event(self):
+        detector = SpawnDetector([OtherAdapter(), OtherAdapter(True, self.metadata)])
         event = FakeEvent(date=datetime(2026, 1, 1, tzinfo=timezone.utc))
         result = await detector.detect(event)
         self.assertIsInstance(result, SpawnEvent)
@@ -213,14 +213,9 @@ class SpawnDetectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.target_name, "other")
 
     async def test_adapter_failure_does_not_block_later_adapters(self):
-        metadata = CharacterMetadata(
-            anime_name="Example Anime",
-            source="trace.moe",
-            character_confidence=0.0,
-        )
         detector = SpawnDetector([
             OtherAdapter(True, error=RuntimeError("broken adapter")),
-            OtherAdapter(True, metadata),
+            OtherAdapter(True, self.metadata),
         ])
         result = await detector.detect(FakeEvent())
         self.assertIsNotNone(result)
@@ -229,6 +224,39 @@ class SpawnDetectorTests(unittest.IsolatedAsyncioTestCase):
     async def test_returns_none_when_no_adapter_recognizes_event(self):
         detector = SpawnDetector([OtherAdapter(False)])
         self.assertIsNone(await detector.detect(FakeEvent()))
+
+    async def test_message_media_photo_is_normalized_to_image_with_trusted_origin(self):
+        class MessageMediaPhoto:
+            pass
+
+        message = SimpleNamespace(
+            id=88,
+            chat_id=-100123,
+            media=MessageMediaPhoto(),
+        )
+        event = SimpleNamespace(message=message, date=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        detector = SpawnDetector([OtherAdapter(True, self.metadata)])
+
+        result = await detector.detect(event)
+
+        self.assertIsNotNone(result.spawn_context)
+        self.assertEqual(result.spawn_context.media_kind, "image")
+        self.assertEqual(result.spawn_context.chat_id, -100123)
+        self.assertEqual(result.spawn_context.message_id, 88)
+
+    async def test_direct_video_attribute_is_recognized_as_video_media(self):
+        message = SimpleNamespace(
+            id=89,
+            chat_id=-100123,
+            video=object(),
+        )
+        event = SimpleNamespace(message=message)
+        detector = SpawnDetector([OtherAdapter(True, self.metadata)])
+
+        result = await detector.detect(event)
+
+        self.assertIsNotNone(result.spawn_context)
+        self.assertEqual(result.spawn_context.media_kind, "video")
 
 
 if __name__ == "__main__":
