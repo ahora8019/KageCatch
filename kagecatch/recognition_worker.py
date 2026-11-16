@@ -11,8 +11,8 @@ from .models.spawn import CharacterMetadata, SpawnContext
 
 class Queue(Protocol):
     async def claim_next(self, worker_id: str, *, lease_seconds: float = 60): ...
-    async def complete(self, job_id: str, worker_id: str) -> None: ...
-    async def fail(self, job_id: str, worker_id: str, *, retry_delay: float = 0) -> str: ...
+    async def complete(self, job_id: str, worker_id: str, *, lease_generation: int) -> None: ...
+    async def fail(self, job_id: str, worker_id: str, *, lease_generation: int, retry_delay: float = 0) -> str: ...
     async def recover_expired(self) -> int: ...
 
 
@@ -42,7 +42,7 @@ class RecognitionWorker:
         try:
             payload = job.payload
             if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-                await self.queue.complete(job.job_id, self.worker_id)
+                await self.queue.complete(job.job_id, self.worker_id, lease_generation=job.lease_generation)
                 return RecognitionWorkResult("invalid_payload", job.job_id)
             origin, recognition = payload.get("origin"), payload.get("recognition")
             user_id = payload.get("user_id")
@@ -83,7 +83,7 @@ class RecognitionWorker:
             await self.queue.complete(job.job_id, self.worker_id)
             return RecognitionWorkResult("review_queued", job.job_id, review_item)
         except Exception:
-            await self.queue.fail(job.job_id, self.worker_id, retry_delay=self.retry_delay)
+            await self.queue.fail(job.job_id, self.worker_id, lease_generation=job.lease_generation, retry_delay=self.retry_delay)
             return RecognitionWorkResult("retry_scheduled", job.job_id)
 
     async def run_forever(self, *, stop_event: asyncio.Event, idle_sleep: float = 1.0) -> int:
