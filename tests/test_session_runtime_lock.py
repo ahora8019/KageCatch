@@ -224,6 +224,66 @@ class SessionRuntimeDistributedLockTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.disconnected)
         self.assertIsNone(await runtime.get_client("user-a"))
 
+    async def test_runtime_shutdown_wins_race_with_inflight_connect(self):
+        store = SharedLeaseStore()
+        leases = LeaseFactory(store, "instance-owner-a")
+        connect_started = asyncio.Event()
+        allow_connect_to_finish = asyncio.Event()
+
+        class BlockingClient(FakeClient):
+            async def connect(self):
+                connect_started.set()
+                await allow_connect_to_finish.wait()
+                self.connected = True
+
+        clients = []
+        runtime = SessionRuntime(
+            session_manager=FakeSessionManager(),
+            client_factory=lambda session: clients.append(BlockingClient()) or clients[-1],
+            lease_factory=leases,
+        )
+        connect_task = asyncio.create_task(runtime.connect_user("user-a"))
+        await asyncio.wait_for(connect_started.wait(), timeout=1)
+
+        close_task = asyncio.create_task(runtime.close())
+        await asyncio.sleep(0)
+        allow_connect_to_finish.set()
+
+        await asyncio.wait_for(close_task, timeout=1)
+        result = await asyncio.gather(connect_task, return_exceptions=True)
+
+        self.assertIsInstance(result[0], RuntimeError)
+        self.assertEqual(runtime.active_user_count, 0)
+        self.assertTrue(clients[0].disconnected)
+        self.assertIsNone(store.owner)
+
+    async def test_get_client_waits_for_disconnect_cleanup_to_finish(self):
+        disconnect_started = asyncio.Event()
+        allow_disconnect_to_finish = asyncio.Event()
+
+        class BlockingDisconnectClient(FakeClient):
+            async def disconnect(self):
+                disconnect_started.set()
+                await allow_disconnect_to_finish.wait()
+                await super().disconnect()
+
+        clients = []
+        runtime = SessionRuntime(
+            session_manager=FakeSessionManager(),
+            client_factory=lambda session: clients.append(BlockingDisconnectClient()) or clients[-1],
+        )
+        await runtime.connect_user("user-a")
+        disconnect_task = asyncio.create_task(runtime.disconnect_user("user-a"))
+        await asyncio.wait_for(disconnect_started.wait(), timeout=1)
+
+        lookup_task = asyncio.create_task(runtime.get_client("user-a"))
+        await asyncio.sleep(0)
+        self.assertFalse(lookup_task.done())
+
+        allow_disconnect_to_finish.set()
+        await disconnect_task
+        self.assertIsNone(await lookup_task)
+
 
 if __name__ == "__main__":
     unittest.main()
