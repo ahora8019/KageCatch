@@ -12,9 +12,9 @@ class FakeQueue:
     async def claim_next(self, worker_id, *, lease_seconds=60):
         job, self.job = self.job, None
         return job
-    async def complete(self, job_id, worker_id):
+    async def complete(self, job_id, worker_id, *, lease_generation):
         self.completed.append((job_id, worker_id))
-    async def fail(self, job_id, worker_id, *, retry_delay=0):
+    async def fail(self, job_id, worker_id, *, lease_generation, retry_delay=0):
         self.failed.append((job_id, worker_id, retry_delay))
         return "queued"
 
@@ -41,6 +41,7 @@ class FakeReviewQueue:
 
 class Job:
     job_id = "job-1"
+    lease_generation = 1
     payload = {
         "schema_version": 1,
         "user_id": "owner-1",
