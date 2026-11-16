@@ -13,6 +13,7 @@ class FakeClient:
     def __init__(self, error=None):
         self.sent = []
         self.error = error
+        self.disconnected = False
 
     async def send_message(self, username, text):
         self.sent.append((username, text))
@@ -20,12 +21,16 @@ class FakeClient:
             raise self.error
         return FakeMessage(77)
 
+    async def disconnect(self):
+        self.disconnected = True
+
 
 class FakeGuard:
-    def __init__(self, allowed=True):
+    def __init__(self, allowed=True, category="transient"):
         self.allowed = allowed
         self.events = []
         self.sent = []
+        self.category = category
 
     def check_send(self, *, chat_id):
         return type("Decision", (), {
@@ -38,6 +43,7 @@ class FakeGuard:
 
     def observe_error(self, error):
         self.events.append(type(error).__name__)
+        return type("Event", (), {"category": self.category})()
 
 
 class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -127,9 +133,9 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.sent, [])
         self.assertEqual(guard.sent, [])
 
-    async def test_telegram_session_error_locks_guard_and_is_not_retried(self):
+    async def test_session_revocation_disconnects_client_and_locks_guard(self):
         error = type("SessionRevokedError", (Exception,), {})()
-        client, guard = FakeClient(error=error), FakeGuard()
+        client, guard = FakeClient(error=error), FakeGuard(category="session_revoked")
         adapter = TelethonCatchAdapter(
             client=client, source="henta_catcher", dispatch_enabled=True,
             safety_guard=guard,
@@ -137,6 +143,7 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(type(error)):
             await adapter.send_catch(self.spawn(), "Sakura")
         self.assertEqual(guard.events, ["SessionRevokedError"])
+        self.assertTrue(client.disconnected)
         self.assertEqual(guard.sent, [])
 
 
