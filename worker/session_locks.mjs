@@ -107,11 +107,7 @@ export async function handleSessionLocks(request, env) {
           locked_by = excluded.locked_by,
           expires_at = excluded.expires_at,
           updated_at = excluded.updated_at,
-          fencing_token = CASE
-            WHEN session_locks.locked_by = excluded.locked_by
-              THEN session_locks.fencing_token
-            ELSE session_locks.fencing_token + 1
-          END
+          fencing_token = session_locks.fencing_token + 1
          WHERE session_locks.expires_at <= ? OR session_locks.locked_by = ?
          RETURNING session_id, locked_by, expires_at, fencing_token`,
       ).bind(sessionId, owner, expiresAt, now, now, owner).first();
@@ -140,9 +136,11 @@ export async function handleSessionLocks(request, env) {
         : json({ renewed: false }, 409);
     }
 
+    // Retain the row as a fencing-token tombstone. Deleting it would reset the
+    // next acquisition to token 1 and allow stale generations to collide.
     const result = await db.prepare(
-      "DELETE FROM session_locks WHERE session_id = ? AND locked_by = ? AND fencing_token = ?",
-    ).bind(sessionId, owner, body.fencing_token).run();
+      "UPDATE session_locks SET expires_at = ?, updated_at = ? WHERE session_id = ? AND locked_by = ? AND fencing_token = ?",
+    ).bind(now, now, sessionId, owner, body.fencing_token).run();
     return json({ released: Number(result?.meta?.changes || 0) === 1 });
   } catch (error) {
     console.error(JSON.stringify({
