@@ -29,17 +29,17 @@ class FakeGuard:
     def __init__(self, allowed=True, category="transient"):
         self.allowed = allowed
         self.events = []
-        self.sent = []
+        self.reservations = []
         self.category = category
 
-    def check_send(self, *, chat_id):
-        return type("Decision", (), {
+    def reserve_send(self, *, chat_id):
+        decision = type("Decision", (), {
             "allowed": self.allowed,
             "reason": "manual_lock",
         })()
-
-    def record_send(self, *, chat_id):
-        self.sent.append(chat_id)
+        if self.allowed:
+            self.reservations.append(chat_id)
+        return decision
 
     def observe_error(self, error):
         self.events.append(type(error).__name__)
@@ -56,7 +56,7 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
             candidates=(Candidate("Sakura", 0.99),),
         )
 
-    async def test_sends_command_only_after_safety_guard_allows_it(self):
+    async def test_sends_command_only_after_safety_guard_reserves_slot(self):
         client, guard = FakeClient(), FakeGuard()
         adapter = TelethonCatchAdapter(
             client=client, source="henta_catcher", dispatch_enabled=True,
@@ -66,7 +66,7 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(client.sent, [("HentaCatcherBot", "/catch Sakura")])
         self.assertEqual(receipt.reference, "HentaCatcherBot:77")
-        self.assertEqual(guard.sent, [100])
+        self.assertEqual(guard.reservations, [100])
         self.assertFalse(await adapter.verify_catch(receipt))
 
     async def test_only_target_response_verifier_can_confirm_success(self):
@@ -106,6 +106,7 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await adapter.send_catch(wrong, "Sakura")
         self.assertEqual(client.sent, [])
+        self.assertEqual(guard.reservations, [])
 
     async def test_dispatch_is_disabled_by_default(self):
         client = FakeClient()
@@ -131,7 +132,7 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await adapter.send_catch(self.spawn(), "Sakura")
         self.assertEqual(client.sent, [])
-        self.assertEqual(guard.sent, [])
+        self.assertEqual(guard.reservations, [])
 
     async def test_session_revocation_disconnects_client_and_locks_guard(self):
         error = type("SessionRevokedError", (Exception,), {})()
@@ -144,7 +145,7 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
             await adapter.send_catch(self.spawn(), "Sakura")
         self.assertEqual(guard.events, ["SessionRevokedError"])
         self.assertTrue(client.disconnected)
-        self.assertEqual(guard.sent, [])
+        self.assertEqual(guard.reservations, [100])
 
 
 if __name__ == "__main__":
