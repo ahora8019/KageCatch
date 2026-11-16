@@ -100,13 +100,19 @@ def _configured_runtime():
     core_secret = os.getenv("KAGECATCH_CORE_SECRET", "")
     lease_factory = None
     if session_store_mode == "d1":
-        from .d1_session_store import D1SessionStore
-        from .session_lock import D1SessionLease
-        store = D1SessionStore(session_store_url, core_secret)
-        lease_factory = lambda user_id: D1SessionLease(session_store_url, core_secret)
+        # The current safety guard has a synchronous state-store contract.
+        # Do not start a distributed Telethon runtime with process-local locks:
+        # the shared D1 safety-state adapter must land before this mode is enabled.
+        raise RuntimeError(
+            "distributed runtime requires shared durable Telegram safety state; "
+            "the D1 safety-state adapter is not available yet"
+        )
     else:
         from .sqlite_session_store import SQLiteSessionStore
-        store = SQLiteSessionStore(os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3"))
+        from .sqlite_safety_state_store import SQLiteSafetyStateStore
+        database_path = os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3")
+        store = SQLiteSessionStore(database_path)
+        safety_state_store = SQLiteSafetyStateStore(database_path)
     manager = SessionManager(fernet_key=fernet_key, store=store)
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
     from .telegram_selfbot import TelegramSelfbotController
@@ -125,6 +131,7 @@ def _configured_runtime():
         client_factory=factory,
         handler_registrar=selfbot.attach,
         lease_factory=lease_factory,
+        safety_state_store=safety_state_store,
     )
     runtime._selfbot_controller = selfbot
     runtime._panel_queue_client = panel_queue if panel_requester is not None else None
