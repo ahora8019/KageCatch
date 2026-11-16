@@ -54,7 +54,7 @@ class RuntimeSafetyPersistenceTests(unittest.IsolatedAsyncioTestCase):
             )
             with self.assertRaises(Exception):
                 await runtime.connect_user("owner-1")
-            self.assertFalse(runtime.safety_guard_for("owner-2").check_send(chat_id=42).allowed is False)
+            self.assertTrue(runtime.safety_guard_for("owner-2").check_send(chat_id=42).allowed)
 
 
 if __name__ == "__main__":
