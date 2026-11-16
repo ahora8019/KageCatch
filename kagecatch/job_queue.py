@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 import json
 import sqlite3
 import time
@@ -34,7 +35,7 @@ class SQLiteJobQueue:
         self._clock = clock
         self._lock = asyncio.Lock()
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as db:
+        with closing(self._connect()) as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=NORMAL")
             db.execute("""
@@ -87,7 +88,7 @@ class SQLiteJobQueue:
             raise ValueError("payload must be JSON serializable") from exc
         now, job_id = float(self._clock()), uuid4().hex
         async with self._lock:
-            with self._connect() as db:
+            with closing(self._connect()) as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
                     db.execute("""
@@ -116,7 +117,7 @@ class SQLiteJobQueue:
             raise ValueError("lease_seconds must be between 1 and 3600")
         now = float(self._clock())
         async with self._lock:
-            with self._connect() as db:
+            with closing(self._connect()) as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
                     row = db.execute("""
@@ -157,7 +158,7 @@ class SQLiteJobQueue:
             raise ValueError("retry_delay must be non-negative")
         now = float(self._clock())
         async with self._lock:
-            with self._connect() as db:
+            with closing(self._connect()) as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
                     row = db.execute(
@@ -182,7 +183,7 @@ class SQLiteJobQueue:
     async def recover_expired(self) -> int:
         now = float(self._clock())
         async with self._lock:
-            with self._connect() as db:
+            with closing(self._connect()) as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
                     result = db.execute("""
@@ -200,7 +201,7 @@ class SQLiteJobQueue:
 
     async def pending_count(self) -> int:
         async with self._lock:
-            with self._connect() as db:
+            with closing(self._connect()) as db:
                 row = db.execute(
                     "SELECT COUNT(*) AS count FROM catch_jobs WHERE status IN ('queued','running')"
                 ).fetchone()
@@ -208,7 +209,7 @@ class SQLiteJobQueue:
 
     async def dead_letter_count(self) -> int:
         async with self._lock:
-            with self._connect() as db:
+            with closing(self._connect()) as db:
                 row = db.execute(
                     "SELECT COUNT(*) AS count FROM catch_jobs WHERE status='dead'"
                 ).fetchone()
@@ -220,7 +221,7 @@ class SQLiteJobQueue:
     async def _owned_transition(self, job_id: str, worker_id: str, sql: str) -> None:
         now = float(self._clock())
         async with self._lock:
-            with self._connect() as db:
+            with closing(self._connect()) as db:
                 result = db.execute(sql, (now, job_id, worker_id, now))
                 if result.rowcount != 1:
                     raise PermissionError("job is not leased by this worker")
