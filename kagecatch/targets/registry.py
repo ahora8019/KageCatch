@@ -29,3 +29,24 @@ def build_default_target_adapters():
             sender_username=DEFAULT_TARGET_USERNAMES["senpai_catcher"],
         ),
     }
+
+
+def build_default_spawn_detector(
+    *,
+    senpai_frame_extractor=None,
+    senpai_trace_client=None,
+):
+    """Compose the approved source adapters into the functional detector.
+
+    Optional Senpai dependencies are injectable so tests can use deterministic
+    fixtures; production media/network access is not started by this factory.
+    """
+    from ..spawn_detector import SpawnDetector
+
+    adapters = build_default_target_adapters()
+    adapters["senpai_catcher"] = SenpaiCatcherAdapter(
+        sender_username=DEFAULT_TARGET_USERNAMES["senpai_catcher"],
+        frame_extractor=senpai_frame_extractor,
+        trace_client=senpai_trace_client,
+    )
+    return SpawnDetector(adapters.values())
