@@ -107,6 +107,7 @@ test("acquire uses atomic upsert and returns a monotonically increasing fencing 
   });
   assert.match(db.statements[0].sql, /ON CONFLICT\s*\(session_id\) DO UPDATE/i);
   assert.match(db.statements[0].sql, /session_locks\.fencing_token\s*\+\s*1/i);
+  assert.doesNotMatch(db.statements[0].sql, /CASE\s+WHEN\s+session_locks\.locked_by/i);
 });
 
 test("renew and release require the current fencing token", async () => {
@@ -129,6 +130,8 @@ test("renew and release require the current fencing token", async () => {
   assert.equal(release.status, 200);
   assert.deepEqual(await release.json(), { released: true });
   assert.match(db.statements[1].sql, /fencing_token\s*=\s*\?/i);
+  assert.match(db.statements[1].sql, /^UPDATE session_locks SET expires_at = \?/i);
+  assert.doesNotMatch(db.statements[1].sql, /^DELETE FROM session_locks/i);
 });
 
 test("session lock routes reject replayed HMAC nonces", async () => {
