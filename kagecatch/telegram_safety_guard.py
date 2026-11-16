@@ -1,13 +1,13 @@
 """Fail-closed outbound Telegram safety gate with optional durable state.
 
-This module is transport-agnostic and has no Telegram dependency. A configured
-state store persists lock and cooldown metadata per owner. Local SQLite is for
-one host only; distributed workers must use a shared atomic coordinator.
+Local SQLite is for one host and one active runtime only. Distributed workers
+must use a shared atomic coordinator before they can be enabled.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 import time
 from typing import Any, Callable, Protocol
 
@@ -74,8 +74,8 @@ class TelegramSafetyGuard:
             ("min_global_interval", min_global_interval),
             ("min_chat_interval", min_chat_interval),
         ):
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-                raise ValueError(f"{name} must be a non-negative number")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be a non-negative finite number")
         if (state_store is None) != (owner_id is None):
             raise ValueError("state_store and owner_id must be provided together")
         if owner_id is not None and (not isinstance(owner_id, str) or not owner_id or len(owner_id) > 128):
@@ -88,43 +88,78 @@ class TelegramSafetyGuard:
         self.min_global_interval = float(min_global_interval)
         self.min_chat_interval = float(min_chat_interval)
         self.mode = GuardMode.OPEN
+        self.lock_reason: str | None = None
         self._cooldown_until = 0.0
         self._last_global_send: float | None = None
         self._last_chat_send: dict[int | str, float] = {}
         if self._state_store is not None:
             self._restore_state()
 
+    @staticmethod
+    def _finite_state_number(value: Any, field: str, *, default: float = 0.0) -> float:
+        if value is None:
+            value = default
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"invalid {field} in Telegram safety state")
+        return float(value)
+
     def _restore_state(self) -> None:
         try:
             state = self._state_store.load(self._owner_id)  # type: ignore[union-attr]
             if state is None:
                 return
-            mode = GuardMode(state.get("mode", GuardMode.OPEN.value))
-            now_mono = float(self._clock())
-            now_wall = float(self._wall_clock())
-            cooldown_epoch = float(state.get("cooldown_until_epoch", 0.0))
+            if not isinstance(state, dict) or state.get("version") != 1:
+                raise ValueError("unsupported Telegram safety state schema")
+            raw_mode = state.get("mode")
+            if not isinstance(raw_mode, str):
+                raise ValueError("missing Telegram safety mode")
+            mode = GuardMode(raw_mode)
+            lock_reason = state.get("lock_reason")
+            if lock_reason is not None and (
+                not isinstance(lock_reason, str) or not lock_reason or len(lock_reason) > 128
+            ):
+                raise ValueError("invalid Telegram safety lock reason")
+
+            now_mono = self._finite_state_number(self._clock(), "monotonic clock")
+            now_wall = self._finite_state_number(self._wall_clock(), "wall clock")
+            cooldown_epoch = self._finite_state_number(
+                state.get("cooldown_until_epoch"), "cooldown deadline"
+            )
             self.mode = mode
+            self.lock_reason = lock_reason
             if mode == GuardMode.RATE_LIMITED:
                 remaining = max(0.0, cooldown_epoch - now_wall)
                 if remaining:
                     self._cooldown_until = now_mono + remaining
                 else:
                     self.mode = GuardMode.OPEN
+                    self.lock_reason = None
+
             last_global_epoch = state.get("last_global_send_epoch")
             if last_global_epoch is not None:
-                age = max(0.0, now_wall - float(last_global_epoch))
+                last_global_epoch = self._finite_state_number(
+                    last_global_epoch, "last global send time"
+                )
+                age = max(0.0, now_wall - last_global_epoch)
                 self._last_global_send = now_mono - age
+
             chat_epochs = state.get("last_chat_send_epochs", {})
-            if not isinstance(chat_epochs, dict):
+            if not isinstance(chat_epochs, dict) or len(chat_epochs) > 1000:
                 raise ValueError("invalid chat pacing state")
             for chat_id, timestamp in chat_epochs.items():
-                age = max(0.0, now_wall - float(timestamp))
-                self._last_chat_send[str(chat_id)] = now_mono - age
+                if not isinstance(chat_id, str) or not chat_id or len(chat_id) > 64:
+                    raise ValueError("invalid chat identifier in pacing state")
+                sent_epoch = self._finite_state_number(timestamp, "chat send time")
+                age = max(0.0, now_wall - sent_epoch)
+                self._last_chat_send[chat_id] = now_mono - age
         except Exception as exc:
-            # Corrupt or unreadable safety state must never silently unlock.
+            # Corrupt, incomplete, or unreadable state must never silently unlock.
             self.mode = GuardMode.SECURITY_LOCKED
+            self.lock_reason = "safety_state_restore_failed"
             self._cooldown_until = 0.0
-            raise RuntimeError("Telegram safety state could not be restored; outbound actions remain locked") from exc
+            raise RuntimeError(
+                "Telegram safety state could not be restored; outbound actions remain locked"
+            ) from exc
 
     def _persist_state(self) -> None:
         if self._state_store is None:
@@ -134,6 +169,7 @@ class TelegramSafetyGuard:
         state = {
             "version": 1,
             "mode": self.mode.value,
+            "lock_reason": self.lock_reason,
             "cooldown_until_epoch": (
                 now_wall + max(0.0, self._cooldown_until - now_mono)
                 if self.mode == GuardMode.RATE_LIMITED else 0.0
@@ -156,6 +192,7 @@ class TelegramSafetyGuard:
             if remaining > 0:
                 return SendDecision(False, "telegram_rate_limit", remaining)
             self.mode = GuardMode.OPEN
+            self.lock_reason = None
             self._cooldown_until = 0.0
             self._persist_state()
         if self.mode != GuardMode.OPEN:
@@ -192,24 +229,30 @@ class TelegramSafetyGuard:
         name = type(error).__name__.lower()
         if name in self._SECURITY_FAILURES:
             self.mode = GuardMode.SECURITY_LOCKED
+            self.lock_reason = type(error).__name__[:128]
             self._cooldown_until = 0.0
             self._persist_state()
             return SafetyEvent("security_lock", type(error).__name__)
         if name in self._SESSION_FAILURES:
             self.mode = GuardMode.SESSION_LOCKED
+            self.lock_reason = type(error).__name__[:128]
             self._cooldown_until = 0.0
             self._persist_state()
             return SafetyEvent("session_revoked", type(error).__name__)
         retry_after = self._retry_after(error)
         if retry_after > 0 and ("floodwait" in name or hasattr(error, "retry_after")):
             self.mode = GuardMode.RATE_LIMITED
+            self.lock_reason = "telegram_rate_limit"
             self._cooldown_until = max(self._cooldown_until, float(self._clock()) + retry_after)
             self._persist_state()
             return SafetyEvent("rate_limit", type(error).__name__, retry_after)
         return SafetyEvent("transient", type(error).__name__)
 
     def lock(self, *, reason: str = "operator") -> None:
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 128:
+            raise ValueError("lock reason must contain 1 to 128 characters")
         self.mode = GuardMode.MANUAL_LOCKED
+        self.lock_reason = reason.strip()
         self._cooldown_until = 0.0
         self._persist_state()
 
@@ -231,6 +274,7 @@ class TelegramSafetyGuard:
         if self.mode == GuardMode.RATE_LIMITED:
             return False
         self.mode = GuardMode.OPEN
+        self.lock_reason = None
         self._cooldown_until = 0.0
         self._last_global_send = None
         self._last_chat_send.clear()
@@ -242,6 +286,6 @@ class TelegramSafetyGuard:
         raw = getattr(error, "retry_after", None)
         if raw is None and "floodwait" in type(error).__name__.lower():
             raw = getattr(error, "seconds", None)
-        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
             return 0.0
         return max(0.0, min(float(raw), 86400.0))
