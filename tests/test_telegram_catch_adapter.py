@@ -110,11 +110,10 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dispatch_without_safety_guard_fails_closed(self):
         client = FakeClient()
-        adapter = TelethonCatchAdapter(
-            client=client, source="henta_catcher", dispatch_enabled=True
-        )
         with self.assertRaises(RuntimeError):
-            await adapter.send_catch(self.spawn(), "Sakura")
+            TelethonCatchAdapter(
+                client=client, source="henta_catcher", dispatch_enabled=True
+            )
         self.assertEqual(client.sent, [])
 
     async def test_locked_guard_prevents_outbound_send(self):
