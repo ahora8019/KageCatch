@@ -90,6 +90,10 @@ class D1TelegramSafetyClientTests(unittest.IsolatedAsyncioTestCase):
             await self.client.update_backoff("7135051954", "unknown", 100)
         with self.assertRaises(ValueError):
             await self.client.set_owner_lock("7135051954", True, reason="x" * 161)
+        with self.assertRaises(ValueError):
+            await self.client.update_backoff("7135051954", "flood_wait", 2**53)
+        with self.assertRaises(ValueError):
+            await self.client.reserve_outbound("7135051954", 123, now=2**53)
         self.assertEqual(self.requests, [])
 
     async def test_http_errors_are_not_converted_to_success(self):
