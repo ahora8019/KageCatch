@@ -16,6 +16,9 @@ import uuid
 import httpx
 
 
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
 class D1TelegramSafetyClient:
     def __init__(
         self,
@@ -181,6 +184,11 @@ class D1TelegramSafetyClient:
 
     @staticmethod
     def _validate_epoch(value: int, field: str) -> int:
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"{field} must be a non-negative integer")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value > MAX_SAFE_INTEGER
+        ):
+            raise ValueError(f"{field} must be a safe non-negative integer")
         return value
