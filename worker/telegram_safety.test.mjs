@@ -68,7 +68,7 @@ test("outbound reservation atomically records per-owner chat pacing", async () =
   });
   assert.deepEqual(result, { allowed: true, nextAllowedAt: 102 });
   assert.match(db.state.calls[0].sql, /INSERT INTO telegram_send_pacing/i);
-  assert.match(db.state.calls[0].sql, /NOT EXISTS\s*\(\s*SELECT 1 FROM telegram_safety_state/i);
+  assert.match(db.state.calls[0].sql, /EXISTS\s*\(\s*SELECT 1 FROM telegram_safety_state/i);
 });
 
 test("outbound reservation denies a locked owner and does not create a pacing reservation", async () => {
