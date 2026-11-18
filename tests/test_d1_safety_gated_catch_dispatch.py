@@ -64,7 +64,7 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
             source="henta_catcher",
             dispatch_enabled=True,
             distributed_safety_client=safety or FakeDistributedSafetyClient(),
-            owner_id="7135051954",
+            owner_id="123456789",
             wall_clock=lambda: 1_800_000_000,
             **kwargs,
         )
@@ -76,7 +76,7 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         receipt = await adapter.send_catch(self.spawn(), "Sakura")
 
-        self.assertEqual(safety.reservations, [("7135051954", -100123456, 1)])
+        self.assertEqual(safety.reservations, [("123456789", -100123456, 1)])
         self.assertEqual(telegram.sent, [("HentaCatcherBot", "/catch Sakura")])
         self.assertEqual(receipt.reference, "HentaCatcherBot:77")
 
@@ -126,7 +126,7 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(type(error)):
             await adapter.send_catch(self.spawn(), "Sakura")
 
-        self.assertEqual(safety.backoffs, [("7135051954", "flood_wait", 1_800_000_008)])
+        self.assertEqual(safety.backoffs, [("123456789", "flood_wait", 1_800_000_008)])
 
     async def test_session_revocation_sets_shared_owner_lock_and_disconnects(self):
         error = type("SessionRevokedError", (Exception,), {})()
@@ -137,7 +137,7 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(type(error)):
             await adapter.send_catch(self.spawn(), "Sakura")
 
-        self.assertEqual(safety.locks, [("7135051954", True, "session_revoked")])
+        self.assertEqual(safety.locks, [("123456789", True, "session_revoked")])
         self.assertTrue(telegram.disconnected)
 
     async def test_failed_shared_error_update_fails_closed(self):
@@ -151,6 +151,59 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "refusing further catch dispatch"):
             await adapter.send_catch(self.spawn(), "Sakura")
+
+
+    async def test_phone_number_banned_sets_shared_security_lock_and_disconnects(self):
+        error = type("PhoneNumberBannedError", (Exception,), {})()
+        telegram = FakeTelegramClient(error)
+        safety = FakeDistributedSafetyClient()
+        adapter = self.adapter(telegram, safety)
+
+        with self.assertRaises(type(error)):
+            await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertEqual(safety.locks, [("123456789", True, "telegram_security_lock")])
+        self.assertTrue(telegram.disconnected)
+
+    async def test_failed_shared_error_update_blocks_subsequent_dispatch(self):
+        error = type("FloodWaitError", (Exception,), {"seconds": 8})()
+        telegram = FakeTelegramClient(error)
+        safety = FakeDistributedSafetyClient()
+
+        async def fail_update(owner_id, kind, until):
+            raise OSError("shared store unavailable")
+
+        safety.update_backoff = fail_update
+        adapter = self.adapter(telegram, safety)
+
+        with self.assertRaisesRegex(RuntimeError, "catch dispatch is now blocked"):
+            await adapter.send_catch(self.spawn(), "Sakura")
+        with self.assertRaisesRegex(RuntimeError, "blocked after a distributed safety state update failure"):
+            await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertEqual(len(safety.reservations), 1)
+        self.assertEqual(len(telegram.sent), 1)
+
+    async def test_failed_session_lock_update_disconnects_and_blocks_dispatch(self):
+        error = type("SessionRevokedError", (Exception,), {})()
+        telegram = FakeTelegramClient(error)
+        safety = FakeDistributedSafetyClient()
+
+        async def fail_lock(owner_id, locked, *, reason=None):
+            raise OSError("shared store unavailable")
+
+        safety.set_owner_lock = fail_lock
+        adapter = self.adapter(telegram, safety)
+
+        with self.assertRaisesRegex(RuntimeError, "catch dispatch is now blocked"):
+            await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertTrue(telegram.disconnected)
+        with self.assertRaisesRegex(RuntimeError, "blocked after a distributed safety state update failure"):
+            await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertEqual(len(safety.reservations), 1)
+        self.assertEqual(len(telegram.sent), 1)
 
 
 if __name__ == "__main__":
