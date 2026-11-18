@@ -14,9 +14,9 @@ function makeDb({ safety = null, pacing = null } = {}) {
               state.calls.push({ sql, values });
               if (sql.includes("INSERT INTO telegram_send_pacing")) {
                 const [ownerId, chatId, nextAllowedAt, ownerForGuard, nowA, nowB, pacingNow] = values;
-                const blocked = state.safety && state.safety.owner_id === ownerForGuard
-                  && (state.safety.security_locked || state.safety.session_revoked
-                    || state.safety.flood_wait_until > nowA || state.safety.bot_retry_after > nowB);
+                const blocked = !state.safety || state.safety.owner_id !== ownerForGuard
+                  || state.safety.security_locked || state.safety.session_revoked
+                  || state.safety.flood_wait_until > nowA || state.safety.bot_retry_after > nowB;
                 if (blocked || (state.pacing && state.pacing.owner_id === ownerId
                   && state.pacing.chat_id === chatId && state.pacing.next_allowed_at > pacingNow)) return null;
                 state.pacing = { owner_id: ownerId, chat_id: chatId, next_allowed_at: nextAllowedAt };
@@ -61,7 +61,8 @@ test("outbound reservation fails closed when the shared D1 binding is absent", a
 });
 
 test("outbound reservation atomically records per-owner chat pacing", async () => {
-  const db = makeDb();
+  const db = makeDb({ safety: { owner_id: "owner-1", security_locked: 0, session_revoked: 0,
+    flood_wait_until: 0, bot_retry_after: 0 } });
   const result = await reserveOutbound({ KAGECATCH_DB: db }, {
     ownerId: "owner-1", chatId: "chat-1", now: 100, minimumIntervalSeconds: 2,
   });
