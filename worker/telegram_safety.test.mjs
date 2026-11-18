@@ -13,13 +13,13 @@ function makeDb({ safety = null, pacing = null } = {}) {
             async first() {
               state.calls.push({ sql, values });
               if (sql.includes("INSERT INTO telegram_send_pacing")) {
-                const [ownerId, chatId, nextAllowedAt, ownerForGuard, nowA, nowB, pacingNow] = values;
+                const [ownerId, chatId, nextAllowedAt, updatedAt, ownerForGuard, nowA, nowB, pacingNow] = values;
                 const blocked = !state.safety || state.safety.owner_id !== ownerForGuard
                   || state.safety.security_locked || state.safety.session_revoked
                   || state.safety.flood_wait_until > nowA || state.safety.bot_retry_after > nowB;
                 if (blocked || (state.pacing && state.pacing.owner_id === ownerId
                   && state.pacing.chat_id === chatId && state.pacing.next_allowed_at > pacingNow)) return null;
-                state.pacing = { owner_id: ownerId, chat_id: chatId, next_allowed_at: nextAllowedAt };
+                state.pacing = { owner_id: ownerId, chat_id: chatId, next_allowed_at: nextAllowedAt, updated_at: updatedAt };
                 return { next_allowed_at: nextAllowedAt };
               }
               if (sql.includes("SELECT security_locked")) {
