@@ -13,12 +13,16 @@ class FakeTelegramClient:
     def __init__(self, error=None):
         self.error = error
         self.sent = []
+        self.disconnected = False
 
     async def send_message(self, username, command):
         self.sent.append((username, command))
         if self.error:
             raise self.error
         return FakeMessage()
+
+    async def disconnect(self):
+        self.disconnected = True
 
 
 class FakeDistributedSafetyClient:
@@ -54,16 +58,21 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
             candidates=(Candidate("Sakura", 0.99),),
         )
 
+    def adapter(self, telegram=None, safety=None, **kwargs):
+        return TelethonCatchAdapter(
+            client=telegram or FakeTelegramClient(),
+            source="henta_catcher",
+            dispatch_enabled=True,
+            distributed_safety_client=safety or FakeDistributedSafetyClient(),
+            owner_id="7135051954",
+            wall_clock=lambda: 1_800_000_000,
+            **kwargs,
+        )
+
     async def test_shared_reservation_precedes_telethon_send(self):
         telegram = FakeTelegramClient()
         safety = FakeDistributedSafetyClient()
-        adapter = TelethonCatchAdapter(
-            client=telegram,
-            source="henta_catcher",
-            dispatch_enabled=True,
-            distributed_safety_client=safety,
-            owner_id="7135051954",
-        )
+        adapter = self.adapter(telegram, safety)
 
         receipt = await adapter.send_catch(self.spawn(), "Sakura")
 
@@ -74,13 +83,7 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_reservation_denial_prevents_telegram_send(self):
         telegram = FakeTelegramClient()
         safety = FakeDistributedSafetyClient({"allowed": False, "reason": "owner_locked"})
-        adapter = TelethonCatchAdapter(
-            client=telegram,
-            source="henta_catcher",
-            dispatch_enabled=True,
-            distributed_safety_client=safety,
-            owner_id="7135051954",
-        )
+        adapter = self.adapter(telegram, safety)
 
         with self.assertRaisesRegex(RuntimeError, "owner_locked"):
             await adapter.send_catch(self.spawn(), "Sakura")
@@ -90,13 +93,7 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_safety_service_failure_is_fail_closed(self):
         telegram = FakeTelegramClient()
         safety = FakeDistributedSafetyClient(error=OSError("control plane unavailable"))
-        adapter = TelethonCatchAdapter(
-            client=telegram,
-            source="henta_catcher",
-            dispatch_enabled=True,
-            distributed_safety_client=safety,
-            owner_id="7135051954",
-        )
+        adapter = self.adapter(telegram, safety)
 
         with self.assertRaises(OSError):
             await adapter.send_catch(self.spawn(), "Sakura")
@@ -119,6 +116,41 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
                 source="henta_catcher",
                 dispatch_enabled=True,
             )
+
+    async def test_flood_wait_is_persisted_in_shared_backoff(self):
+        error = type("FloodWaitError", (Exception,), {"seconds": 8})()
+        telegram = FakeTelegramClient(error)
+        safety = FakeDistributedSafetyClient()
+        adapter = self.adapter(telegram, safety)
+
+        with self.assertRaises(type(error)):
+            await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertEqual(safety.backoffs, [("7135051954", "flood_wait", 1_800_000_008)])
+
+    async def test_session_revocation_sets_shared_owner_lock_and_disconnects(self):
+        error = type("SessionRevokedError", (Exception,), {})()
+        telegram = FakeTelegramClient(error)
+        safety = FakeDistributedSafetyClient()
+        adapter = self.adapter(telegram, safety)
+
+        with self.assertRaises(type(error)):
+            await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertEqual(safety.locks, [("7135051954", True, "session_revoked")])
+        self.assertTrue(telegram.disconnected)
+
+    async def test_failed_shared_error_update_fails_closed(self):
+        error = type("FloodWaitError", (Exception,), {"seconds": 8})()
+        telegram = FakeTelegramClient(error)
+        safety = FakeDistributedSafetyClient()
+        async def fail_update(owner_id, kind, until):
+            raise OSError("shared store unavailable")
+        safety.update_backoff = fail_update
+        adapter = self.adapter(telegram, safety)
+
+        with self.assertRaisesRegex(RuntimeError, "refusing further catch dispatch"):
+            await adapter.send_catch(self.spawn(), "Sakura")
 
 
 if __name__ == "__main__":
