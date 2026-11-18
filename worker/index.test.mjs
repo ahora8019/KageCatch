@@ -1,3 +1,4 @@
+import "./session_locks.test.mjs";
 import "./panel_queue.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";

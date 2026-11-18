@@ -465,3 +465,81 @@ test("review list hides execution approval buttons until the CatchEngine is actu
   );
 });
 
+
+
+test("stats submenu keeps a working return-to-main-panel button", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-stats-back", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":stats",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some(
+    (button) => button.callback_data === "kp:" + requestId + ":refresh",
+  ));
+});
+
+test("refresh callback restores the complete main panel keyboard after leaving a submenu", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-refresh-back", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":refresh",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  const callbacks = edit.payload.reply_markup.inline_keyboard.flat().map((button) => button.callback_data);
+  assert.deepEqual(callbacks, [
+    "kp:" + requestId + ":stats", "kp:" + requestId + ":engine",
+    "kp:" + requestId + ":settings", "kp:" + requestId + ":refresh",
+    "kp:" + requestId + ":reviews", "kp:" + requestId + ":close",
+  ]);
+});
+
+test("engine submenu exposes a return-to-main-panel action", async () => {
+  const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  env.CORE_API_FETCH = async () => Response.json({ telegram_user_id: 12345, enabled: false, execution_ready: false });
+  const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-engine-back", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":engine",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some(
+    (button) => button.callback_data === "kp:" + requestId + ":refresh",
+  ));
+});
+
+test("Core-unavailable engine submenu still provides a working return action", async () => {
+  const env = envWithDb();
+  env.CORE_API_URL = "https://core.example";
+  env.CORE_API_SECRET = "core-test-secret-0123456789abcdef";
+  env.CORE_API_FETCH = async () => { throw new Error("offline"); };
+  const accepted = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 987 }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), { status: "completed", panel_message_id: 444 });
+  const calls = [];
+  await handlePanelCallback({
+    id: "cb-engine-offline-back", from: { id: 12345 },
+    message: { chat: { id: -100123456, type: "supergroup" }, message_id: 444 },
+    data: "kp:" + requestId + ":engine",
+  }, env, async (_env, method, payload) => calls.push({ method, payload }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  assert.ok(edit.payload.reply_markup.inline_keyboard.flat().some(
+    (button) => button.callback_data === "kp:" + requestId + ":refresh",
+  ));
+});

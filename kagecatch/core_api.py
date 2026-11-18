@@ -48,20 +48,46 @@ class InMemoryNonceStore:
 
 
 
+def _resolve_session_store_mode(environ=None) -> str:
+    """Select local SQLite or fail-closed D1 mode for hosted/distributed runtimes."""
+    values = os.environ if environ is None else environ
+    session_store_url = str(values.get("KAGECATCH_SESSION_STORE_URL", "")).strip()
+    core_secret = str(values.get("KAGECATCH_CORE_SECRET", ""))
+    require_flag = str(values.get("KAGECATCH_REQUIRE_DISTRIBUTED_SESSION_LOCK", "")).strip().lower()
+    render_flag = str(values.get("RENDER", "")).strip().lower()
+    distributed_required = require_flag in {"1", "true", "yes", "on"} or render_flag in {"1", "true", "yes", "on"}
+
+    if session_store_url:
+        if not session_store_url.startswith("https://"):
+            raise RuntimeError("KAGECATCH_SESSION_STORE_URL must use HTTPS")
+        if len(core_secret.encode("utf-8")) < 32:
+            raise RuntimeError("KAGECATCH_CORE_SECRET must contain at least 32 bytes for D1 session storage")
+        return "d1"
+
+    if distributed_required:
+        raise RuntimeError(
+            "distributed session lock requires KAGECATCH_SESSION_STORE_URL and a 32-byte KAGECATCH_CORE_SECRET"
+        )
+    return "sqlite"
+
+
 def _configuration_presence(core_secret: str | None = None) -> dict[str, bool]:
     """Return safe configuration presence flags without exposing secret values."""
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
+    session_store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
     return {
         "core_auth_configured": bool(secret),
         "telegram_api_id_configured": bool(os.getenv("KAGECATCH_API_ID")),
         "telegram_api_hash_configured": bool(os.getenv("KAGECATCH_API_HASH")),
         "session_encryption_key_configured": bool(os.getenv("KAGECATCH_FERNET_KEY")),
-        "session_store_url_configured": bool(os.getenv("KAGECATCH_SESSION_STORE_URL")),
+        "session_store_url_configured": bool(session_store_url),
+        "distributed_session_lock_configured": bool(session_store_url.startswith("https://") and len(secret.encode("utf-8")) >= 32),
         "telethon_available": importlib.util.find_spec("telethon") is not None,
     }
 
 
 def _configured_runtime():
+    session_store_mode = _resolve_session_store_mode()
     api_id = os.getenv("KAGECATCH_API_ID")
     api_hash = os.getenv("KAGECATCH_API_HASH")
     fernet_key = os.getenv("KAGECATCH_FERNET_KEY")
@@ -70,12 +96,14 @@ def _configured_runtime():
 
     from .session_manager import SessionManager
     from .session_runtime import SessionRuntime, TelethonSessionClientFactory
-    if os.getenv("KAGECATCH_SESSION_STORE_URL"):
+    session_store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
+    core_secret = os.getenv("KAGECATCH_CORE_SECRET", "")
+    lease_factory = None
+    if session_store_mode == "d1":
         from .d1_session_store import D1SessionStore
-        store = D1SessionStore(
-            os.environ["KAGECATCH_SESSION_STORE_URL"],
-            os.getenv("KAGECATCH_CORE_SECRET", ""),
-        )
+        from .session_lock import D1SessionLease
+        store = D1SessionStore(session_store_url, core_secret)
+        lease_factory = lambda user_id: D1SessionLease(session_store_url, core_secret)
     else:
         from .sqlite_session_store import SQLiteSessionStore
         store = SQLiteSessionStore(os.getenv("KAGECATCH_DB_PATH", "./data/kagecatch-sessions.sqlite3"))
@@ -83,10 +111,10 @@ def _configured_runtime():
     factory = TelethonSessionClientFactory(api_id=int(api_id), api_hash=api_hash)
     from .telegram_selfbot import TelegramSelfbotController
     panel_requester = None
-    panel_queue_url = os.getenv("KAGECATCH_PANEL_QUEUE_URL") or os.getenv("KAGECATCH_SESSION_STORE_URL")
+    panel_queue_url = os.getenv("KAGECATCH_PANEL_QUEUE_URL") or session_store_url
     if panel_queue_url:
         from .panel_queue_client import PanelQueueClient
-        panel_queue = PanelQueueClient(panel_queue_url, os.getenv("KAGECATCH_CORE_SECRET", ""))
+        panel_queue = PanelQueueClient(panel_queue_url, core_secret)
         panel_requester = panel_queue.enqueue
     selfbot = TelegramSelfbotController(
         panel_image_url=os.getenv("KAGECATCH_PANEL_IMAGE_URL") or None,
@@ -96,6 +124,7 @@ def _configured_runtime():
         session_manager=manager,
         client_factory=factory,
         handler_registrar=selfbot.attach,
+        lease_factory=lease_factory,
     )
     runtime._selfbot_controller = selfbot
     runtime._panel_queue_client = panel_queue if panel_requester is not None else None
@@ -219,6 +248,14 @@ def create_app(
             set_handler(process_incoming)
 
     async def close_review_runtime() -> None:
+        runtime_close = getattr(runtime, "close", None) if runtime is not None else None
+        if runtime_close is not None:
+            try:
+                await runtime_close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Telegram session runtime shutdown failed"
+                )
         store = app.state.review_store
         close = getattr(store, "close", None) if store is not None else None
         if close is not None:
