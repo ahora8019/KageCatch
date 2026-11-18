@@ -2,16 +2,20 @@ import unittest
 import logging
 
 from kagecatch.session_runtime import SessionRuntime
+from kagecatch.telegram_safety_guard import GuardMode
 
 
 class FakeClient:
-    def __init__(self, authorized=True):
+    def __init__(self, authorized=True, connect_error=None):
         self.authorized = authorized
+        self.connect_error = connect_error
         self.connected = False
         self.disconnected = False
 
     async def connect(self):
         self.connected = True
+        if self.connect_error:
+            raise self.connect_error
 
     async def is_user_authorized(self):
         return self.authorized
@@ -49,6 +53,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.connected)
         self.assertIs(await runtime.get_client("user-a"), client)
         self.assertEqual(clients[0][0], "encrypted-session-a")
+        self.assertIs(runtime.safety_guard_for("user-a"), runtime.safety_guard_for("user-a"))
 
     async def test_registers_telegram_handlers_after_authorized_connection(self):
         registered = []
@@ -88,6 +93,19 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(clients[0].disconnected)
         self.assertIsNone(await runtime.get_client("user-a"))
+        self.assertEqual(runtime.safety_guard_for("user-a").mode, GuardMode.SESSION_LOCKED)
+
+    async def test_telegram_session_revocation_locks_outbound_for_that_owner(self):
+        manager = FakeSessionManager({"user-a": "session-a"})
+        error = type("SessionRevokedError", (Exception,), {})()
+        runtime = SessionRuntime(
+            session_manager=manager,
+            client_factory=lambda session: FakeClient(connect_error=error),
+        )
+        with self.assertRaises(type(error)):
+            await runtime.connect_user("user-a")
+        self.assertEqual(runtime.safety_guard_for("user-a").mode, GuardMode.SESSION_LOCKED)
+        self.assertTrue(runtime.safety_guard_for("user-b").check_send(chat_id=1).allowed)
 
     async def test_users_receive_isolated_clients(self):
         manager = FakeSessionManager({"user-a": "session-a", "user-b": "session-b"})
@@ -135,7 +153,6 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(first, second)
         self.assertEqual(calls, ["session-a"])
 
-
     async def test_reconnect_all_restores_saved_sessions_and_reports_counts(self):
         manager = FakeSessionManager({"user-a": "session-a", "user-b": "session-b"})
         async def list_user_ids():
@@ -152,6 +169,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 class SessionRuntimeTelemetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_authorized_reconnect_emits_structured_monitor_event_without_session_data(self):

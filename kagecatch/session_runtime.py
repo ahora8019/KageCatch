@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Callable, Protocol
 
 from .session_manager import SessionManager
 from .monitoring import emit_monitor_event
+from .telegram_safety_guard import GuardMode, TelegramSafetyGuard
 
 
 class RuntimeClient(Protocol):
@@ -29,10 +31,19 @@ class SessionLease(Protocol):
 
 ClientFactory = Callable[[str], RuntimeClient]
 LeaseFactory = Callable[[str], SessionLease]
+SafetyGuardFactory = Callable[[], TelegramSafetyGuard]
 
 
 class SessionAlreadyLockedError(RuntimeError):
     """Another Core instance currently owns this Telegram session."""
+
+
+class SessionAuthorizationLostError(PermissionError):
+    """Telegram no longer considers the stored owner session authorized."""
+
+
+class SessionSafetyLockedError(PermissionError):
+    """Safety lock requires explicit owner reauthorization or security review."""
 
 
 class SessionRuntime:
@@ -43,11 +54,18 @@ class SessionRuntime:
         client_factory: ClientFactory,
         handler_registrar=None,
         lease_factory: LeaseFactory | None = None,
+        safety_guard_factory: SafetyGuardFactory | None = None,
+        safety_state_store=None,
+        safety_wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self._session_manager = session_manager
         self._client_factory = client_factory
         self._handler_registrar = handler_registrar
         self._lease_factory = lease_factory
+        self._safety_guard_factory = safety_guard_factory
+        self._safety_state_store = safety_state_store
+        self._safety_wall_clock = safety_wall_clock
+        self._safety_guards: dict[str, TelegramSafetyGuard] = {}
         self._clients: dict[str, RuntimeClient] = {}
         self._leases: dict[str, SessionLease] = {}
         self._lease_watchers: dict[str, asyncio.Task] = {}
@@ -59,18 +77,34 @@ class SessionRuntime:
     def active_user_count(self) -> int:
         return len(self._clients)
 
+    def safety_guard_for(self, user_id: str) -> TelegramSafetyGuard:
+        """Return the stable per-owner guard to inject into outbound adapters."""
+        if not user_id or len(user_id) > 128:
+            raise ValueError("valid user_id is required")
+        guard = self._safety_guards.get(user_id)
+        if guard is None:
+            if self._safety_guard_factory is not None:
+                guard = self._safety_guard_factory()
+            else:
+                guard = TelegramSafetyGuard(
+                    clock=time.monotonic,
+                    wall_clock=self._safety_wall_clock,
+                    state_store=self._safety_state_store,
+                    owner_id=user_id if self._safety_state_store is not None else None,
+                )
+            self._safety_guards[user_id] = guard
+        return guard
+
     async def _user_lock(self, user_id: str) -> asyncio.Lock:
         if not user_id or len(user_id) > 128:
             raise ValueError("valid user_id is required")
         async with self._locks_guard:
             return self._locks.setdefault(user_id, asyncio.Lock())
 
-
     async def _await_with_lease(self, operation, lease: SessionLease | None):
         """Abort an in-flight startup operation as soon as lease ownership is lost."""
         if lease is None:
             return await operation
-
         operation_task = asyncio.create_task(operation)
         lost_task = asyncio.create_task(lease.wait_lost())
         try:
@@ -95,6 +129,18 @@ class SessionRuntime:
         async with lock:
             if self._closing:
                 raise RuntimeError("session runtime is shutting down")
+            guard = self.safety_guard_for(user_id)
+            if guard.mode in {
+                GuardMode.SESSION_LOCKED,
+                GuardMode.SECURITY_LOCKED,
+                GuardMode.MANUAL_LOCKED,
+            }:
+                existing_locked_client = self._clients.get(user_id)
+                if existing_locked_client is not None:
+                    await self._discard_owned_client(user_id, existing_locked_client)
+                raise SessionSafetyLockedError(
+                    "Telegram session is safety-locked; explicit reauthorization and review are required"
+                )
             existing = self._clients.get(user_id)
             if existing is not None:
                 lease = self._leases.get(user_id)
@@ -105,7 +151,6 @@ class SessionRuntime:
                     return existing
                 except Exception:
                     await self._discard_owned_client(user_id, existing)
-                    # The stale lease is released before a fresh acquisition.
 
             session_string = await self._session_manager.load_session(user_id)
             if not session_string:
@@ -121,15 +166,12 @@ class SessionRuntime:
                             "this Telegram session is already active on another Core instance"
                         )
                     await lease.assert_held()
-
-                # Never instantiate/connect Telethon until distributed ownership
-                # has been confirmed.
                 client = self._client_factory(session_string)
                 await self._await_with_lease(client.connect(), lease)
                 if lease is not None:
                     await lease.assert_held()
                 if not await self._await_with_lease(client.is_user_authorized(), lease):
-                    raise PermissionError("stored Telegram session is no longer authorized")
+                    raise SessionAuthorizationLostError("stored Telegram session is no longer authorized")
                 if self._handler_registrar is not None:
                     await self._await_with_lease(self._handler_registrar(client, user_id), lease)
                 if lease is not None:
@@ -138,8 +180,14 @@ class SessionRuntime:
                 if self._closing:
                     raise RuntimeError("session runtime is shutting down")
             except BaseException as exc:
-                if type(exc).__name__ == "FloodWaitError":
-                    emit_monitor_event("flood_wait", level=logging.WARNING)
+                if not isinstance(exc, asyncio.CancelledError):
+                    event = guard.observe_error(exc)
+                    if event.category == "session_revoked":
+                        emit_monitor_event("session_revoked", level=logging.ERROR)
+                    elif event.category == "security_lock":
+                        emit_monitor_event("telegram_security_lock", level=logging.CRITICAL)
+                    elif event.category == "rate_limit":
+                        emit_monitor_event("flood_wait", level=logging.WARNING)
                 if client is not None:
                     try:
                         await client.disconnect()
@@ -204,11 +252,7 @@ class SessionRuntime:
                 await lease.release()
 
     async def restore_saved_sessions(self) -> dict[str, int]:
-        """Reconnect every previously authorized session without interactive login.
-
-        A failure for one account is isolated and does not prevent other saved
-        accounts from being restored. The returned object contains counts only.
-        """
+        """Reconnect every previously authorized session without interactive login."""
         list_user_ids = getattr(self._session_manager, "list_user_ids", None)
         if list_user_ids is None:
             raise RuntimeError("session manager does not support session restoration")
@@ -230,6 +274,15 @@ class SessionRuntime:
     async def get_client(self, user_id: str) -> RuntimeClient | None:
         lock = await self._user_lock(user_id)
         async with lock:
+            if self.safety_guard_for(user_id).mode in {
+                GuardMode.SESSION_LOCKED,
+                GuardMode.SECURITY_LOCKED,
+                GuardMode.MANUAL_LOCKED,
+            }:
+                existing_locked_client = self._clients.get(user_id)
+                if existing_locked_client is not None:
+                    await self._discard_owned_client(user_id, existing_locked_client)
+                return None
             return self._clients.get(user_id)
 
     async def disconnect_user(self, user_id: str) -> None:
@@ -242,7 +295,6 @@ class SessionRuntime:
     async def close(self) -> None:
         """Stop new connections, await in-flight startups, and release all leases."""
         self._closing = True
-        # Include in-flight connection attempts, not just clients already published.
         for user_id in list(self._locks):
             try:
                 lock = await self._user_lock(user_id)
@@ -281,7 +333,6 @@ class TelethonSessionClientFactory:
             from telethon.sessions import StringSession
         except ImportError as exc:
             raise RuntimeError("install KageCatch with the telegram extra") from exc
-
         return TelegramClient(
             StringSession(session_string),
             self._api_id,
