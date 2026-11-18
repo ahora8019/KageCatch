@@ -149,7 +149,7 @@ class DistributedCatchDispatchTests(unittest.IsolatedAsyncioTestCase):
         safety.update_backoff = fail_update
         adapter = self.adapter(telegram, safety)
 
-        with self.assertRaisesRegex(RuntimeError, "refusing further catch dispatch"):
+        with self.assertRaisesRegex(RuntimeError, "catch dispatch is now blocked"):
             await adapter.send_catch(self.spawn(), "Sakura")
 
 
