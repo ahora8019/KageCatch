@@ -53,7 +53,7 @@ class TelethonCatchAdapter:
     }
     _SECURITY_FAILURES = {
         "authkeyduplicatederror",
-        "phonenumberbanned",
+        "phonenumberbannederror",
         "userdeactivatedbanerror",
     }
 
@@ -98,6 +98,7 @@ class TelethonCatchAdapter:
         self.minimum_interval_seconds = minimum_interval_seconds
         self._wall_clock = wall_clock
         self._sent: dict[str, Any] = {}
+        self._dispatch_blocked = False
 
     async def _reserve_send(self, chat_id: int | str) -> None:
         if self.distributed_safety_client is not None:
@@ -162,6 +163,8 @@ class TelethonCatchAdapter:
         return "rate_limit"
 
     async def send_catch(self, spawn: Spawn, character_name: str) -> CatchReceipt:
+        if self._dispatch_blocked:
+            raise RuntimeError("catch dispatch is blocked after a distributed safety state update failure")
         if not self.dispatch_enabled:
             raise RuntimeError("live catch dispatch is disabled")
         if spawn.source != self.source or spawn.media_kind != self.media_kind:
@@ -179,8 +182,11 @@ class TelethonCatchAdapter:
                 try:
                     distributed_category = await self._record_distributed_error(exc)
                 except Exception as safety_error:
+                    self._dispatch_blocked = True
+                    if type(exc).__name__.lower() in self._SESSION_FAILURES | self._SECURITY_FAILURES:
+                        await self._disconnect_after_session_loss()
                     raise RuntimeError(
-                        "distributed Telegram safety state update failed; refusing further catch dispatch"
+                        "distributed Telegram safety state update failed; catch dispatch is now blocked"
                     ) from safety_error
                 if distributed_category != "transient":
                     event_category = distributed_category
