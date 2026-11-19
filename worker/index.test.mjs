@@ -2229,3 +2229,46 @@ test("Owner panel member blocking requires explicit confirmation and cannot targ
   assert.equal((await member.json()).user.status, "blocked");
 });
 
+test("Owner bot requires a second explicit callback before blocking or unblocking a member", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret", OWNER_TELEGRAM_ID: "1001",
+    CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop();
+      const payload = JSON.parse(init.body);
+      calls.push({ method, payload });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 77 } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const callback = (updateId, data) => ({
+    update_id: updateId,
+    callback_query: { id: "callback-" + updateId, from: { id: 1001 }, message: { message_id: 9, chat: { id: 1001, type: "private" } }, data },
+  });
+  const webhook = (update) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+
+  assert.equal((await webhook(callback(8801, "owner:block:2002"))).status, 200);
+  const prompt = calls.find((call) => call.method === "editMessageText");
+  assert.match(prompt.payload.text, /تأیید مسدودسازی/);
+  assert.ok(prompt.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:confirm:block:2002"));
+  assert.equal((await (await post("/user", { telegramUserId: 2002 })).json()).user.status, "active");
+
+  assert.equal((await webhook(callback(8802, "owner:confirm:block:2002"))).status, 200);
+  assert.equal((await (await post("/user", { telegramUserId: 2002 })).json()).user.status, "blocked");
+});
+
