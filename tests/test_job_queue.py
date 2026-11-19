@@ -66,6 +66,15 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await self.queue.complete(job.job_id, "worker-a", lease_generation=claim.lease_generation)
 
+    async def test_non_finite_schedule_and_retry_delays_are_rejected(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ValueError):
+                await self.queue.enqueue("spawn.recognize", {"x": 1}, run_after=value)
+            job = await self.queue.enqueue("spawn.recognize", {"x": 1})
+            claimed = await self.queue.claim_next("worker")
+            with self.assertRaises(ValueError):
+                await self.queue.fail(job.job_id, "worker", lease_generation=claimed.lease_generation, retry_delay=value)
+
     async def test_failure_retries_then_moves_to_dead_letter(self):
         job = await self.queue.enqueue("spawn.recognize", {"spawn_id": 15}, max_attempts=2)
         first = await self.queue.claim_next("worker-a", lease_seconds=30)
