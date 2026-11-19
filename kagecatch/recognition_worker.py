@@ -83,6 +83,7 @@ class RecognitionWorker:
             review_item = await self.review_queue.enqueue(
                 user_id=user_id, spawn_id=origin["message_id"],
                 anime_name=anime_name.strip(), candidates=tuple(candidates),
+                idempotency_key="recognition:" + job.job_id,
             )
             await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
             return RecognitionWorkResult("review_queued", job.job_id, review_item)
