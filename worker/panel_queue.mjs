@@ -2,6 +2,14 @@ const QUEUE_PATH = "/internal/panel-requests";
 const MAX_QUEUE_BODY_BYTES = 4096;
 const PANEL_TTL_MINUTES = 10;
 
+function isTelegramSafetyStop(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  return error?.name === "TelegramSafetyGateError"
+    || error?.kind === "rate_limited"
+    || error?.kind === "invalid_credentials"
+    || /^telegram_(?:safety|chat_pacing|chat_id)_/.test(message);
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -132,7 +140,15 @@ export async function processPanelQueue(env, sendTelegram) {
         "UPDATE panel_requests SET status = 'completed', panel_message_id = ?, lease_token = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing' AND lease_token = ?"
       ).bind(messageId, row.request_id, leaseToken).run();
       if (completion.meta?.changes === 1) processed += 1;
-    } catch {
+    } catch (error) {
+      if (isTelegramSafetyStop(error)) {
+        const errorCode = typeof error?.kind === "string" ? error.kind.slice(0, 64) : "safety_gate";
+        await env.KAGECATCH_DB.prepare(
+          "UPDATE panel_requests SET status = 'pending', attempts = MAX(attempts - 1, 0), lease_token = NULL, lease_expires_at = NULL, last_error_code = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing' AND lease_token = ?"
+        ).bind(errorCode, row.request_id, leaseToken).run();
+        // A global pause or safety gate applies to the rest of this batch too.
+        break;
+      }
       const nextStatus = row.attempts >= 3 ? "failed" : "pending";
       await env.KAGECATCH_DB.prepare(
         "UPDATE panel_requests SET status = ?, lease_token = NULL, lease_expires_at = NULL, last_error_code = 'telegram_delivery_failed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing' AND lease_token = ?"
