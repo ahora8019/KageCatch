@@ -1462,7 +1462,7 @@ async function handleOwnerCallback(callback, env) {
     return { text: '🗑️ لینک دعوت لغو شد و دیگه قابل استفاده نیست.', keyboard: { inline_keyboard: [[{ text: '🎟️ مدیریت دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
   }
   if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
-  const reviewResolution = /^owner:br:r:([dy]):(\\d{1,4}):([0-9a-f-]{16,36})$/i.exec(data);
+  const reviewResolution = /^owner:br:r:([dy]):(\d{1,4}):([0-9a-f-]{16,36})$/i.exec(data);
   if (reviewResolution) {
     const [, choice, indexText, attemptId] = reviewResolution;
     const decision = choice === 'd' ? 'delivered' : 'retry';
