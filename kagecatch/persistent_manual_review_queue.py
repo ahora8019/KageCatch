@@ -117,8 +117,8 @@ class PersistentManualReviewQueue:
                 raise ValueError("stored timestamps must be timezone-aware")
             created_at = created_at.astimezone(timezone.utc)
             expires_at = expires_at.astimezone(timezone.utc)
-            if expires_at < created_at:
-                raise ValueError("stored expiry must not precede creation")
+            if expires_at <= created_at:
+                raise ValueError("stored expiry must follow creation")
             return ReviewItem(
                 review_id=record["review_id"],
                 user_id=record["user_id"],
