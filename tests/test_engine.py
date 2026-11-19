@@ -1,6 +1,7 @@
 import unittest
 
-from kagecatch.catch_admission import SQLiteCatchAdmissionStore\nfrom kagecatch.engine import (
+from kagecatch.catch_admission import SQLiteCatchAdmissionStore
+from kagecatch.engine import (
     Candidate,
     CatchEngine,
     CatchReceipt,
