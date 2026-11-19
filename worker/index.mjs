@@ -1,4 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
+import { TelegramApiError } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -210,7 +211,7 @@ async function telegramApi(env, method, payload = {}) {
     body: JSON.stringify(payload),
   });
   const result = await response.json();
-  if (!response.ok || !result.ok) throw new Error(`Telegram API ${method} failed`);
+  if (!response.ok || !result.ok) throw new TelegramApiError(result, response.status);
   return result.result;
 }
 
