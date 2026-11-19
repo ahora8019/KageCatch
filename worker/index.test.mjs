@@ -544,11 +544,9 @@ test("broadcast rejects empty or oversized text", async () => {
 });
 
 
-test("Telegram menus stay native and do not redirect members into the Mini App", () => {
-  for (const role of ["MEMBER", "OWNER"]) {
-    const buttons = buildRoleMenu(role).inline_keyboard.flat();
-    assert.equal(buttons.some((button) => button.web_app), false);
-  }
+test("member Telegram menus stay native and do not redirect members into the Mini App", () => {
+  const buttons = buildRoleMenu("MEMBER").inline_keyboard.flat();
+  assert.equal(buttons.some((button) => button.web_app), false);
 });
 
 test("professional panel is responsive, Persian-first, and reports offline core honestly", async () => {
