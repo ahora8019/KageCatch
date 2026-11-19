@@ -85,11 +85,9 @@ class RecognitionWorker:
     async def _heartbeat(self, job_id: str, generation: int, processing: asyncio.Task) -> None:
         interval = max(0.1, self.lease_seconds / 3)
         while not processing.done():
-            try:
-                await asyncio.wait_for(processing, timeout=interval)
+            done, _ = await asyncio.wait((processing,), timeout=interval)
+            if done:
                 return
-            except asyncio.TimeoutError:
-                pass
             try:
                 await self.queue.renew_lease(
                     job_id, self.worker_id, lease_generation=generation,
