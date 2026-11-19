@@ -14,7 +14,7 @@ Role-based multi-user Telegram character spawn recognition and catch orchestrati
 
 - **Control Plane:** Cloudflare Worker + Telegram Bot API for commands and user-facing control.
 - **Execution Plane:** Python core with encrypted per-user Telethon sessions.
-- **Recognition:** Planned spawn ingestion, image/video analysis, reference-catalog search, candidate ranking, and confidence gating.
+- **Recognition:** Opt-in video spawn metadata extraction and anime-title-to-cast candidate resolution now feed a human-review queue; full character-in-frame recognition, reference-catalog search, and character-level confidence gating remain planned.
 - **Catch Engine:** Quota check, duplicate suppression, adapter-specific command dispatch, and verification against the target bot response.
 
 ## Repository status
