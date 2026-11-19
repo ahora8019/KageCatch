@@ -67,6 +67,62 @@ class CoreApiReviewLifecycleTests(unittest.TestCase):
             self.assertTrue(store._client.is_closed)
 
 
+    def test_queue_worker_is_started_and_incoming_events_are_enqueued(self):
+        from types import SimpleNamespace
+        from kagecatch.models.spawn import CharacterMetadata, SpawnEvent
+
+        class Controller:
+            def set_incoming_handler(self, handler):
+                self.incoming_handler = handler
+
+        class Runtime:
+            def __init__(self):
+                self._selfbot_controller = Controller()
+
+        class Queue:
+            def __init__(self):
+                self.enqueued = []
+            async def enqueue(self, job_type, payload, **kwargs):
+                self.enqueued.append((job_type, payload, kwargs))
+                return SimpleNamespace(job_id="job-1")
+            async def claim_next(self, *args, **kwargs):
+                return None
+            async def recover_expired(self):
+                return 0
+
+        class Detector:
+            async def detect(self, event):
+                return SpawnEvent(
+                    message_id=77, character_name=None, confidence_score=0.0,
+                    metadata=CharacterMetadata(
+                        anime_name="KonoSuba", source="test", anime_confidence=0.9,
+                    ),
+                    target_name="SenpaiCatcherBot",
+                )
+
+        class Resolver:
+            async def resolve(self, metadata):
+                return None
+
+        runtime, queue = Runtime(), Queue()
+        app = create_app(
+            core_secret=SECRET, runtime=runtime, session_manager=object(),
+            review_queue=object(), spawn_detector=Detector(),
+            character_resolver=Resolver(), job_queue=queue,
+        )
+        with TestClient(app):
+            self.assertIsNotNone(app.state.recognition_worker)
+            self.assertIsNotNone(app.state.recognition_worker_task)
+            result = runtime._selfbot_controller.incoming_handler(
+                "12345", SimpleNamespace(chat_id=-1001),
+            )
+            import asyncio
+            asyncio.run(result)
+            self.assertEqual(len(queue.enqueued), 1)
+            self.assertEqual(queue.enqueued[0][0], "spawn.recognize")
+            self.assertEqual(queue.enqueued[0][2]["idempotency_key"], "spawn:12345:-1001:77")
+        self.assertTrue(app.state.recognition_worker_task.done())
+
     def test_review_resources_use_fastapi_lifespan_not_deprecated_event_hooks(self):
         app = create_app(
             core_secret=SECRET, runtime=object(),
