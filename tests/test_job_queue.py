@@ -141,6 +141,35 @@ if __name__ == "__main__":
         finally:
             await other.close()
 
+    async def test_live_lease_can_be_renewed_without_changing_fence(self):
+        job = await self.queue.enqueue("spawn.recognize", {"spawn_id": 25})
+        claim = await self.queue.claim_next("worker-a", lease_seconds=5)
+        old_generation = claim.lease_generation
+        renewed_until = await self.queue.renew_lease(
+            job.job_id, "worker-a",
+            lease_generation=old_generation,
+            lease_seconds=30,
+        )
+        self.assertEqual(renewed_until, self.now + 30)
+        self.assertEqual(
+            (await self.queue.claim_next("worker-b")),
+            None,
+        )
+        await self.queue.complete(
+            job.job_id, "worker-a", lease_generation=old_generation
+        )
+
+    async def test_expired_lease_cannot_be_renewed(self):
+        job = await self.queue.enqueue("spawn.recognize", {"spawn_id": 26})
+        claim = await self.queue.claim_next("worker-a", lease_seconds=5)
+        self.now += 6
+        with self.assertRaises(PermissionError):
+            await self.queue.renew_lease(
+                job.job_id, "worker-a",
+                lease_generation=claim.lease_generation,
+                lease_seconds=30,
+            )
+
     async def test_scheduled_job_is_not_claimed_before_run_after(self):
         job = await self.queue.enqueue("spawn.recognize", {"spawn_id": 23}, run_after=self.now + 30)
         self.assertIsNone(await self.queue.claim_next("worker"))
