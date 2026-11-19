@@ -74,7 +74,7 @@ The full alarm-driven queue remains a follow-up, but the current synchronous pat
 
 - A non-recipient-specific, non-Safety-Gate failure during a recipient send is treated as ambiguous. This includes a rejected network fetch and Telegram 5xx/unknown responses.
 - The Durable Object compare-and-set transition stores `status = review_required`, `reviewIndex`, and the exact `reviewRecipientId`; `nextIndex` and counters do not advance.
-- `claim` cannot reclaim this state, and `begin` cannot overwrite it. A repeated confirmation returns the locked Owner notice instead of sending again.
+- `claim` cannot reclaim this state, and a transactional `begin` guard cannot overwrite it or race a concurrent claim. A repeated confirmation returns the locked Owner notice instead of sending again.
 - A 400/403 recipient-specific rejection remains a definite failure and advances the cursor. A closed Safety Gate, 429, or 401 follows the existing pause/release path and does not advance the cursor.
 - The Owner can explicitly discard the draft. There is not yet a UI action to mark the uncertain attempt delivered or intentionally retry it; those resolution controls belong in the dedicated queue/review phase.
 
