@@ -1705,3 +1705,87 @@ test("broadcast resumes after a pause without resending recipients already confi
   await webhook(502, resumedEnv);
   assert.deepEqual(resumedCalls.filter((call) => call.method === "sendMessage").map((call) => call.payload.chat_id), [2002]);
 });
+
+
+test("ambiguous broadcast delivery is locked for Owner review and cannot be retried automatically", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret", OWNER_TELEGRAM_ID: "1001", CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop();
+      const payload = JSON.parse(init.body);
+      calls.push({ method, payload });
+      if (method === "sendMessage" && payload.chat_id === 2001 && payload.text === "ambiguous delivery") {
+        throw new TypeError("network connection lost");
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const webhook = (update) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+  const callback = (id, data, messageId) => ({
+    update_id: id,
+    callback_query: { id: "callback-" + id, from: { id: 1001 }, message: { message_id: messageId, chat: { id: 1001, type: "private" } }, data },
+  });
+
+  assert.equal((await webhook(callback(401, "owner:broadcast", 1))).status, 200);
+  assert.equal((await webhook({
+    update_id: 402,
+    message: { message_id: 2, from: { id: 1001 }, chat: { id: 1001, type: "private" }, text: "ambiguous delivery" },
+  })).status, 200);
+
+  calls.length = 0;
+  assert.equal((await webhook(callback(403, "owner:broadcast:confirm", 3))).status, 200);
+  const state = await post("/broadcast", { ownerTelegramId: 1001, action: "get" });
+  const draft = (await state.json()).draft;
+  assert.equal(draft.status, "review_required");
+  assert.equal(draft.nextIndex, 0);
+  assert.equal(draft.deliveredCount, 0);
+  assert.equal(draft.reviewIndex, 0);
+  assert.equal(draft.reviewRecipientId, 2001);
+  assert.deepEqual(calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id !== 1001).map((call) => call.payload.chat_id), [2001]);
+  const notice = calls.filter((call) => call.method === "editMessageText" && call.payload.chat_id === 1001).at(-1);
+  assert.match(notice.payload.text, /نامشخص|بررسی Owner/);
+  assert.equal(notice.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:broadcast:confirm"), false);
+
+  calls.length = 0;
+  assert.equal((await webhook(callback(404, "owner:broadcast:confirm", 3))).status, 200);
+  assert.equal(calls.some((call) => call.method === "sendMessage" && call.payload.chat_id === 2001 && call.payload.text === "ambiguous delivery"), false);
+  const lockedNotice = calls.find((call) => call.method === "editMessageText" && call.payload.chat_id === 1001);
+  assert.match(lockedNotice.payload.text, /بررسی Owner|بررسی دستی/);
+});
+
+test("broadcast review state cannot be reclaimed or overwritten by a new draft", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (payload) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  const ownerTelegramId = 1001;
+  assert.equal((await post({ ownerTelegramId, action: "begin" })).status, 200);
+  assert.equal((await post({ ownerTelegramId, action: "save", text: "test" })).status, 200);
+  assert.equal((await post({ ownerTelegramId, action: "claim" })).status, 200);
+  assert.equal((await post({ ownerTelegramId, action: "initialize", recipientIds: [2001] })).status, 200);
+  const reviewed = await post({ ownerTelegramId, action: "review", expectedIndex: 0 });
+  assert.equal(reviewed.status, 200);
+  assert.equal((await reviewed.json()).draft.status, "review_required");
+  assert.equal((await post({ ownerTelegramId, action: "claim" })).status, 409);
+  assert.equal((await post({ ownerTelegramId, action: "begin" })).status, 409);
+  const current = await post({ ownerTelegramId, action: "get" });
+  assert.equal((await current.json()).draft.status, "review_required");
+});
