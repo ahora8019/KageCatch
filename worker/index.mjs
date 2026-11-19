@@ -1974,8 +1974,36 @@ async function handleOwnerCallback(callback, env) {
   const manage = data.match(/^owner:(block|unblock):(\d+)$/);
   if (manage) {
     const telegramUserId = Number(manage[2]);
-    if (!Number.isSafeInteger(telegramUserId)) return { text: 'شناسه عضو معتبر نیست.', keyboard: BACK_MENU, alert: true };
-    const result = await registryRequest(env, '/manage-user', { telegramUserId, action: manage[1] });
+    if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return { text: 'شناسه عضو معتبر نیست.', keyboard: BACK_MENU, alert: true };
+    const { users = [] } = await registryRequest(env, '/users', {});
+    const target = users.find((user) => user.telegramUserId === telegramUserId);
+    if (!target) return { text: 'این عضو دیگر وجود ندارد.', keyboard: BACK_MENU, alert: true };
+    if (target.role === 'OWNER') return { text: 'حساب Owner قابل تغییر نیست.', keyboard: BACK_MENU, alert: true };
+    const action = manage[1];
+    if ((action === 'block' && target.status === 'blocked') || (action === 'unblock' && target.status !== 'blocked')) {
+      return { text: 'وضعیت این عضو قبلاً تغییر کرده است؛ فهرست را تازه‌سازی کن.', keyboard: BACK_MENU, alert: true };
+    }
+    const verb = action === 'block' ? 'مسدودسازی' : 'آزادسازی';
+    return {
+      text: '⚠️ تأیید ' + verb + '\n\nشناسه عضو: ' + telegramUserId + '\nوضعیت فعلی: ' + target.status + '\n\nاین تغییر دسترسی عضو را فوراً تغییر می‌دهد.',
+      keyboard: { inline_keyboard: [
+        [{ text: '✅ تأیید ' + verb, callback_data: 'owner:confirm:' + action + ':' + telegramUserId }],
+        [{ text: '↩️ انصراف', callback_data: 'owner:members' }],
+      ] },
+    };
+  }
+  const confirmedManage = data.match(/^owner:confirm:(block|unblock):(\d+)$/);
+  if (confirmedManage) {
+    const telegramUserId = Number(confirmedManage[2]);
+    if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0) return { text: 'شناسه عضو معتبر نیست.', keyboard: BACK_MENU, alert: true };
+    const { users = [] } = await registryRequest(env, '/users', {});
+    const target = users.find((user) => user.telegramUserId === telegramUserId);
+    if (!target || target.role === 'OWNER') return { text: 'عضو معتبر نیست یا دسترسی مدیریتی دارد.', keyboard: BACK_MENU, alert: true };
+    const action = confirmedManage[1];
+    if ((action === 'block' && target.status === 'blocked') || (action === 'unblock' && target.status !== 'blocked')) {
+      return { text: 'وضعیت عضو تغییر کرده است؛ عملیات انجام نشد.', keyboard: BACK_MENU, alert: true };
+    }
+    const result = await registryRequest(env, '/manage-user', { telegramUserId, action });
     return { text: 'وضعیت عضو ' + telegramUserId + ' به‌روزرسانی شد: ' + result.status, keyboard: BACK_MENU };
   }
   return { text: 'گزینه مدیریتی نامعتبر است.', keyboard: BACK_MENU, alert: true };
