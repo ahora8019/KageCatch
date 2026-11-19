@@ -1854,7 +1854,7 @@ test("broadcast alarm sends one recipient and durably advances before scheduling
     FETCH: async (url, init) => {
       assert.ok(state.alarmAt - Date.now() >= 50_000, "watchdog must be armed before Telegram I/O");
       calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) });
-      return new Response(JSON.stringify({ ok: true, result: { message_id: calls.length } }),
+      return new Response(JSON.stringify({ ok: true, result: { message_id: calls.length } }), {
         status: 200, headers: { "content-type": "application/json" },
       });
     },
