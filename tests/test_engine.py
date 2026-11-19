@@ -182,6 +182,16 @@ class FakeCatchAdmissionStore:
 
 
 class CatchEngineAdmissionTests(unittest.IsolatedAsyncioTestCase):
+
+    def test_enabled_engine_requires_atomic_admission_gate(self):
+        with self.assertRaises(ValueError):
+            CatchEngine(
+                confidence_threshold=0.92,
+                quota=FakeQuota(),
+                deduplicator=FakeDeduplicator(),
+                enabled=True,
+            )
+
     async def test_engine_uses_one_atomic_admission_result_for_quota_and_dedupe(self):
         admission = FakeCatchAdmissionStore("quota_blocked")
         engine = CatchEngine(
