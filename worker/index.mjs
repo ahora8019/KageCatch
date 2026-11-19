@@ -756,7 +756,7 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/broadcast') {
       const { ownerTelegramId, action, text } = body || {};
-      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','release','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
       const key = 'broadcast:' + ownerTelegramId;
       if (action === 'begin') {
         await this.state.storage.put(key, { status: 'awaiting_text', text: null, updatedAt: Date.now() });
@@ -771,7 +771,7 @@ export class ConnectionLinkStore {
         if (typeof text !== 'string' || !text.trim() || text.length > 4096) return json({ error: 'invalid_broadcast_text' }, 400);
         const current = await this.state.storage.get(key);
         if (!current || current.status !== 'awaiting_text') return json({ error: 'no_broadcast_draft' }, 409);
-        const draft = { status: 'awaiting_confirmation', text, updatedAt: Date.now() };
+        const draft = { status: 'awaiting_confirmation', text, recipientIds: null, nextIndex: 0, deliveredCount: 0, failedCount: 0, updatedAt: Date.now() };
         await this.state.storage.put(key, draft);
         return json(draft);
       }
@@ -783,6 +783,46 @@ export class ConnectionLinkStore {
           return current;
         });
         return draft ? json({ draft }) : json({ error: 'no_confirmable_broadcast' }, 409);
+      }
+      if (action === 'initialize') {
+        const { recipientIds } = body || {};
+        if (!Array.isArray(recipientIds) || recipientIds.length > 5000
+          || recipientIds.some((id) => !Number.isSafeInteger(id) || id <= 0)
+          || new Set(recipientIds).size !== recipientIds.length) {
+          return json({ error: 'invalid_broadcast_recipients' }, 400);
+        }
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending') return null;
+          if (Array.isArray(current.recipientIds) && Number.isSafeInteger(current.nextIndex)) return current;
+          const initialized = {
+            ...current, recipientIds, nextIndex: 0, deliveredCount: 0, failedCount: 0, updatedAt: Date.now(),
+          };
+          await txn.put(key, initialized);
+          return initialized;
+        });
+        return draft ? json({ draft }) : json({ error: 'broadcast_not_claimed' }, 409);
+      }
+      if (action === 'advance') {
+        const { expectedIndex, outcome } = body || {};
+        if (!Number.isSafeInteger(expectedIndex) || !['delivered','failed'].includes(outcome)) {
+          return json({ error: 'invalid_broadcast_progress' }, 400);
+        }
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending' || !Array.isArray(current.recipientIds)
+            || current.nextIndex !== expectedIndex || expectedIndex >= current.recipientIds.length) return null;
+          const advanced = {
+            ...current,
+            nextIndex: expectedIndex + 1,
+            deliveredCount: (current.deliveredCount || 0) + (outcome === 'delivered' ? 1 : 0),
+            failedCount: (current.failedCount || 0) + (outcome === 'failed' ? 1 : 0),
+            updatedAt: Date.now(),
+          };
+          await txn.put(key, advanced);
+          return advanced;
+        });
+        return draft ? json({ draft }) : json({ error: 'broadcast_progress_conflict' }, 409);
       }
       if (action === 'release') {
         const draft = await this.state.storage.transaction(async (txn) => {
@@ -958,18 +998,31 @@ async function handleOwnerCallback(callback, env) {
     const claimed = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'claim' });
     const messageText = claimed.draft?.text;
     if (typeof messageText !== 'string') return { text: 'پیش‌نویس معتبری برای ارسال وجود ندارد.', keyboard: BACK_MENU, alert: true };
-    const { users = [] } = await registryRequest(env, '/users', {});
-    const recipients = users.filter((user) => user.role === 'MEMBER' && user.status === 'active' && Number.isSafeInteger(user.telegramUserId));
-    let delivered = 0; let failed = 0;
-    for (const recipient of recipients) {
+    let draft = claimed.draft;
+    if (!Array.isArray(draft.recipientIds) || !Number.isSafeInteger(draft.nextIndex)) {
+      const { users = [] } = await registryRequest(env, '/users', {});
+      const recipientIds = users
+        .filter((user) => user.role === 'MEMBER' && user.status === 'active' && Number.isSafeInteger(user.telegramUserId))
+        .map((user) => user.telegramUserId)
+        .sort((a, b) => a - b);
+      const initialized = await registryRequest(env, '/broadcast', {
+        ownerTelegramId: callback.from.id, action: 'initialize', recipientIds,
+      });
+      draft = initialized.draft;
+    }
+    const recipients = draft.recipientIds;
+    let delivered = draft.deliveredCount || 0;
+    let failed = draft.failedCount || 0;
+    for (let index = draft.nextIndex; index < recipients.length; index += 1) {
+      const recipientId = recipients[index];
+      let outcome = "delivered";
       try {
-        await telegramApi(env, 'sendMessage', { chat_id: recipient.telegramUserId, text: messageText });
-        delivered += 1;
+        await telegramApi(env, 'sendMessage', { chat_id: recipientId, text: messageText });
       } catch (error) {
-        failed += 1;
         const recipientSpecificFailure = error?.kind === "access_denied" || error?.kind === "invalid_request";
         if (isTelegramSafetyStop(error) || !recipientSpecificFailure) {
-          await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'release' });
+          const released = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'release' });
+          const saved = released.draft || draft;
           const retryAfterSeconds = Number.isSafeInteger(error?.retryAfterSeconds)
             ? error.retryAfterSeconds
             : Number.isFinite(error?.retryAfterMs) && error.retryAfterMs > 0
@@ -981,17 +1034,24 @@ async function handleOwnerCallback(callback, env) {
               ? "حداقل " + retryAfterSeconds + " ثانیه مکث لازم است."
               : "پس از رفع خطای موقت دوباره تلاش کن.";
           return {
-            text: "⚠️ ارسال همگانی متوقف شد.\n\nموفق: " + delivered + "\nناموفق: " + failed
-              + "\nباقی‌مانده: " + Math.max(0, recipients.length - delivered - failed)
-              + "\n" + pauseText + "\nپیش‌نویس حفظ شد و می‌توانی بعداً دوباره تأیید کنی.",
-            keyboard: { inline_keyboard: [[{ text: "🔁 تلاش دوباره", callback_data: "owner:broadcast:confirm" }], ...BACK_MENU.inline_keyboard] },
+            text: "⚠️ ارسال همگانی متوقف شد.\n\nموفق: " + (saved.deliveredCount || 0)
+              + "\nناموفق: " + (saved.failedCount || 0)
+              + "\nباقی‌مانده: " + Math.max(0, recipients.length - saved.nextIndex)
+              + "\n" + pauseText + "\nپیش‌نویس و نقطهٔ ادامه حفظ شدند.",
+            keyboard: { inline_keyboard: [[{ text: "🔁 ادامهٔ ارسال", callback_data: "owner:broadcast:confirm" }], ...BACK_MENU.inline_keyboard] },
           };
         }
+        outcome = "failed";
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      const progress = await registryRequest(env, '/broadcast', {
+        ownerTelegramId: callback.from.id, action: 'advance', expectedIndex: index, outcome,
+      });
+      delivered = progress.draft.deliveredCount;
+      failed = progress.draft.failedCount;
+      if (index + 1 < recipients.length) await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
-    return { text: '📣 ارسال همگانی تمام شد.\n\nموفق: ' + delivered + '\nناموفق: ' + failed + '\nمخاطبان فعال: ' + recipients.length, keyboard: BACK_MENU };
+    return { text: '📣 ارسال همگانی تمام شد.\n\nموفق: ' + delivered + '\nناموفق: ' + failed + '\nمخاطبان: ' + recipients.length, keyboard: BACK_MENU };
   }
   if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\n\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
   if (data === 'owner:members') {
