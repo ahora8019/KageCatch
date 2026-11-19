@@ -105,8 +105,10 @@ class CatchEngine:
             raise ValueError("confidence_threshold must be between 0 and 1")
         if admission is not None and (quota is not None or deduplicator is not None):
             raise ValueError("admission cannot be combined with separate quota/deduplicator gates")
-        if admission is None and (quota is None or deduplicator is None):
-            raise ValueError("provide an atomic admission gate or both legacy gates")
+        if enabled and admission is None:
+            raise ValueError("enabled Catch Engine requires an atomic admission gate")
+        if admission is None and ((quota is None) != (deduplicator is None)):
+            raise ValueError("legacy quota and deduplicator must be supplied together")
 
         self.confidence_threshold = threshold
         self.admission = admission

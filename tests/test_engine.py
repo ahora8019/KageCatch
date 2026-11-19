@@ -60,20 +60,17 @@ def sample_spawn(confidence=0.99):
 class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.adapter = FakeAdapter()
-        self.quota = FakeQuota()
-        self.deduplicator = FakeDeduplicator()
+        self.admission = FakeCatchAdmissionStore()
         self.engine = CatchEngine(
             confidence_threshold=0.92,
-            quota=self.quota,
-            deduplicator=self.deduplicator,
+            admission=self.admission,
             enabled=True,
         )
 
     async def test_engine_is_safe_by_default_and_does_not_send(self):
         engine = CatchEngine(
             confidence_threshold=0.92,
-            quota=self.quota,
-            deduplicator=self.deduplicator,
+            admission=self.admission,
         )
         result = await engine.handle_spawn("user-1", sample_spawn(), self.adapter)
         self.assertEqual(result.status, "disabled")
@@ -90,7 +87,7 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.adapter.sent, [])
 
     async def test_quota_block_prevents_catch(self):
-        self.quota.allowed = False
+        self.admission.decision = "quota_blocked"
         result = await self.engine.handle_spawn("user-1", sample_spawn(), self.adapter)
         self.assertEqual(result.status, "quota_blocked")
         self.assertEqual(self.adapter.sent, [])
@@ -175,10 +172,16 @@ class FakeCatchAdmissionStore:
     def __init__(self, decision="admitted"):
         self.decision = decision
         self.keys = []
+        self.seen = set()
 
     async def reserve(self, *, user_id, source, dedupe_key):
         self.keys.append((user_id, source, dedupe_key))
-        return self.decision
+        if self.decision != "admitted":
+            return self.decision
+        if dedupe_key in self.seen:
+            return "duplicate"
+        self.seen.add(dedupe_key)
+        return "admitted"
 
 
 class CatchEngineAdmissionTests(unittest.IsolatedAsyncioTestCase):
