@@ -278,7 +278,172 @@ async function miniAppOwnerSafety(request, env, operation) {
   return json({ error: "invalid_action" }, 400);
 }
 
-// Export the central Bot API boundary so integration tests exercise the same safety gate used by webhook handlers.
+async function miniAppOwnerControl(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) {
+    return json({ error: "unsupported_media_type" }, 415);
+  }
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
+  if (!env.TELEGRAM_BOT_TOKEN || !/^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ""))) {
+    return json({ error: "owner_auth_not_configured" }, 503);
+  }
+  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
+  if (!verified) return json({ error: "unauthorized" }, 401);
+  let actor;
+  try { actor = await getTelegramUser(env, verified.user.id); }
+  catch { return json({ error: "identity_service_unavailable" }, 503); }
+  if (resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status) !== "OWNER") {
+    return json({ error: "forbidden" }, 403);
+  }
+
+  const ownerTelegramId = verified.user.id;
+  const memberView = (user) => ({
+    telegram_user_id: user.telegramUserId,
+    first_name: typeof user.firstName === "string" ? user.firstName.slice(0, 64) : null,
+    username: typeof user.username === "string" ? user.username.slice(0, 32) : null,
+    role: user.role === "OWNER" ? "OWNER" : "MEMBER",
+    status: user.status === "blocked" ? "blocked" : "active",
+    created_at: Number.isSafeInteger(user.createdAt) ? user.createdAt : null,
+    last_seen_at: Number.isSafeInteger(user.lastSeenAt) ? user.lastSeenAt : null,
+    last_action: typeof user.lastAction === "string" ? user.lastAction.slice(0, 80) : null,
+  });
+  const broadcastView = (draft) => {
+    if (!draft || typeof draft !== "object") return null;
+    return {
+      status: typeof draft.status === "string" ? draft.status : "unknown",
+      recipient_count: Array.isArray(draft.recipientIds) ? draft.recipientIds.length : 0,
+      next_index: Number.isSafeInteger(draft.nextIndex) ? draft.nextIndex : 0,
+      delivered_count: Number.isSafeInteger(draft.deliveredCount) ? draft.deliveredCount : 0,
+      failed_count: Number.isSafeInteger(draft.failedCount) ? draft.failedCount : 0,
+      pause_reason: typeof draft.pauseReason === "string" ? draft.pauseReason.slice(0, 64) : null,
+      review_index: Number.isSafeInteger(draft.reviewIndex) ? draft.reviewIndex : null,
+      review_recipient_id: Number.isSafeInteger(draft.reviewRecipientId) ? draft.reviewRecipientId : null,
+      review_reason: typeof draft.reviewReason === "string" ? draft.reviewReason.slice(0, 64) : null,
+      review_attempt_id: typeof draft.reviewAttemptId === "string" ? draft.reviewAttemptId : null,
+      updated_at: Number.isSafeInteger(draft.updatedAt) ? draft.updatedAt : null,
+    };
+  };
+
+  try {
+    if (body.action === "dashboard") {
+      const [userResult, inviteResult, broadcastResult] = await Promise.all([
+        registryRequest(env, "/users", {}),
+        registryRequest(env, "/invite/list", {}),
+        registryRequest(env, "/broadcast", { ownerTelegramId, action: "get" }),
+      ]);
+      const allUsers = Array.isArray(userResult.users) ? userResult.users : [];
+      const members = allUsers.filter((user) => user?.role !== "OWNER");
+      members.sort((a, b) =>
+        (Number(b.lastSeenAt || b.createdAt || 0) - Number(a.lastSeenAt || a.createdAt || 0))
+      );
+      const invites = Array.isArray(inviteResult.invites) ? inviteResult.invites : [];
+      const now = Date.now();
+      const safeInvites = invites.slice(0, 30).map((invite) => ({
+        id: typeof invite.id === "string" ? invite.id : "",
+        max_uses: Number.isSafeInteger(invite.maxUses) ? invite.maxUses : 0,
+        uses: Number.isSafeInteger(invite.uses) ? invite.uses : 0,
+        created_at: Number.isSafeInteger(invite.createdAt) ? invite.createdAt : null,
+        expires_at: Number.isSafeInteger(invite.expiresAt) ? invite.expiresAt : null,
+        revoked: Boolean(invite.revokedAt),
+        usable: !invite.revokedAt && Number(invite.expiresAt) > now
+          && Number(invite.uses) < Number(invite.maxUses),
+      }));
+      return json({
+        counts: {
+          members: members.length,
+          active_members: members.filter((user) => user.status !== "blocked").length,
+          blocked_members: members.filter((user) => user.status === "blocked").length,
+          usable_invites: safeInvites.filter((invite) => invite.usable).length,
+        },
+        members: members.slice(0, 30).map(memberView),
+        members_truncated: members.length > 30,
+        invites: safeInvites,
+        broadcast: broadcastView(broadcastResult.draft),
+      });
+    }
+
+    if (body.action === "member_status") {
+      const telegramUserId = body.telegramUserId;
+      const action = body.memberAction;
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0
+        || !["block", "unblock"].includes(action)) return json({ error: "invalid_member_action" }, 400);
+      const expectedConfirmation = action === "block" ? "BLOCK_MEMBER" : "UNBLOCK_MEMBER";
+      if (body.confirmation !== expectedConfirmation) return json({ error: "explicit_confirmation_required" }, 400);
+      const { users = [] } = await registryRequest(env, "/users", {});
+      const target = users.find((user) => user.telegramUserId === telegramUserId);
+      if (!target) return json({ error: "member_not_found" }, 404);
+      if (target.role === "OWNER") return json({ error: "owner_protected" }, 403);
+      const updated = await registryRequest(env, "/manage-user", { telegramUserId, action });
+      return json({ member: memberView(updated) });
+    }
+
+    if (body.action === "invite_create") {
+      const maxUses = body.maxUses;
+      const ttlSeconds = body.ttlSeconds;
+      const allowed = (maxUses === 1 && ttlSeconds === 86400)
+        || (maxUses === 10 && ttlSeconds === 604800);
+      if (!allowed) return json({ error: "invalid_invite_options" }, 400);
+      const invite = await registryRequest(env, "/invite/create", { maxUses, ttlSeconds });
+      return json({
+        invite: {
+          id: invite.id,
+          max_uses: invite.maxUses,
+          uses: invite.uses,
+          expires_at: invite.expiresAt,
+        },
+        link: "https://t.me/KageCatchBot?start=inv_" + encodeURIComponent(invite.token),
+      }, 201);
+    }
+
+    if (body.action === "invite_revoke") {
+      const id = body.inviteId;
+      if (typeof id !== "string" || !/^[a-f0-9]{18}$/.test(id)) return json({ error: "invalid_invite_id" }, 400);
+      if (body.confirmation !== "REVOKE_INVITE") return json({ error: "explicit_confirmation_required" }, 400);
+      await registryRequest(env, "/invite/revoke", { id });
+      return json({ status: "revoked", invite_id: id });
+    }
+
+    if (body.action === "broadcast_cancel") {
+      if (body.confirmation !== "CANCEL_BROADCAST") return json({ error: "explicit_confirmation_required" }, 400);
+      const { draft } = await registryRequest(env, "/broadcast", { ownerTelegramId, action: "get" });
+      if (draft?.status === "sending") return json({ error: "broadcast_delivery_in_flight" }, 409);
+      const result = await registryRequest(env, "/broadcast", { ownerTelegramId, action: "clear" });
+      return json(result);
+    }
+
+    if (body.action === "broadcast_resolve") {
+      const expectedIndex = body.expectedIndex;
+      const expectedAttemptId = body.expectedAttemptId;
+      const decision = body.decision;
+      if (!Number.isSafeInteger(expectedIndex) || expectedIndex < 0
+        || typeof expectedAttemptId !== "string" || !/^[0-9a-f-]{36}$/i.test(expectedAttemptId)
+        || !["delivered", "retry"].includes(decision)) {
+        return json({ error: "invalid_broadcast_resolution" }, 400);
+      }
+      const expectedConfirmation = decision === "delivered" ? "MARK_DELIVERED" : "INTENTIONAL_RETRY";
+      if (body.confirmation !== expectedConfirmation) return json({ error: "explicit_confirmation_required" }, 400);
+      const { draft } = await registryRequest(env, "/broadcast", { ownerTelegramId, action: "get" });
+      if (!draft || draft.status !== "review_required"
+        || draft.reviewIndex !== expectedIndex || draft.reviewAttemptId !== expectedAttemptId) {
+        return json({ error: "broadcast_review_conflict" }, 409);
+      }
+      const resolved = await registryRequest(env, "/broadcast", {
+        ownerTelegramId, action: "resolve", expectedIndex, expectedAttemptId, decision,
+      });
+      return json({ draft: broadcastView(resolved.draft) });
+    }
+
+    return json({ error: "invalid_action" }, 400);
+  } catch (error) {
+    if ([403, 404, 409, 410].includes(error?.status)) {
+      return json({ error: "owner_control_conflict" }, error.status);
+    }
+    return json({ error: "owner_control_unavailable" }, 503);
+  }
+}
+
+// // Export the central Bot API boundary so integration tests exercise the same safety gate used by webhook handlers.
 
 export async function telegramApi(env, method, payload = {}) {
   if (!isValidTelegramMethod(method)) throw new Error("invalid_telegram_method");
@@ -565,19 +730,42 @@ body{background:radial-gradient(ellipse at 78% -8%,#71365f55 0,transparent 42%),
 <section class="view" id="view-activity"><div class="card"><h3>تاریخچه عملیات</h3><div class="empty">◷<b>هنوز رویدادی ثبت نشده است</b>پس از راه‌اندازی Core، نتیجه تأییدشده هر عملیات اینجا نمایش داده می‌شود.</div></div></section>
 <section class="view" id="view-security"><div class="card"><h3>امنیت و نشست‌ها</h3><div class="service"><div><b>رمزنگاری Session</b><small>Fernet encryption at rest</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>مدیریت نشست‌ها</b><small>قطع و لغو دسترسی</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>گزارش دسترسی</b><small>Audit trail</small></div><span class="tag wait">نیازمند Core</span></div><div class="notice">کد ورود، رمز دومرحله‌ای و StringSession از طریق چت بات دریافت نمی‌شوند.</div></div></section>
 <section class="view" id="view-settings"><div class="card"><h3>تنظیمات عمومی</h3><div class="empty">⚙<b>تنظیمات هنوز فعال نیستند</b>زبان، اعلان‌ها و ترجیحات Catch پس از احراز هویت Mini App فعال می‌شوند.</div></div></section>
-<section class="view" id="view-admin"><div class="card">
+<section class="view" id="view-admin">
+<div class="card">
+<div class="actions"><h3>👑 مدیریت KageCatch</h3><button class="secondary" id="owner-refresh" type="button">بروزرسانی</button></div>
+<div class="empty" id="owner-status" role="status" aria-live="polite">برای مشاهده اطلاعات، پنل را با حساب Owner باز کن.</div>
+<div class="stats" id="owner-summary">
+<div class="stat"><label>کل اعضا</label><strong>—</strong><small>از Registry</small></div>
+<div class="stat"><label>اعضای فعال</label><strong>—</strong><small>قابل ورود</small></div>
+<div class="stat"><label>مسدود</label><strong>—</strong><small>دسترسی غیرفعال</small></div>
+<div class="stat"><label>دعوت معتبر</label><strong>—</strong><small>دارای ظرفیت و اعتبار</small></div>
+</div>
+</div>
+<div class="columns">
+<section class="card"><div class="actions"><h3>👥 مدیریت اعضا</h3><small id="owner-members-count">—</small></div><div id="owner-members" aria-live="polite"></div></section>
+<section class="card"><div class="actions"><h3>🎟️ مدیریت دعوت‌ها</h3></div>
+<div class="actions"><button class="secondary" id="owner-invite-one" type="button">دعوت ۱ نفره · ۲۴ ساعت</button><button class="secondary" id="owner-invite-ten" type="button">دعوت ۱۰ نفره · ۷ روز</button></div>
+<div id="owner-invites" aria-live="polite"></div>
+</section>
+</div>
+<section class="card"><div class="actions"><h3>📣 وضعیت پیام همگانی</h3><span id="owner-broadcast-state" class="tag wait">در حال بررسی</span></div>
+<div id="owner-broadcast" aria-live="polite"></div>
+<div class="notice">برای ادامهٔ صف متوقف‌شده، ابتدا Safety Monitor را بررسی و در صورت نیاز مکث سراسری را بازیابی کن؛ سپس از منوی خصوصی بات، صف را ادامه بده.</div>
+</section>
+<section class="card">
 <div class="actions"><h3>🛡️ Safety Monitor — Control Bot</h3><button class="secondary" id="safety-refresh" type="button">بروزرسانی وضعیت</button></div>
 <div class="empty" id="safety-status" aria-live="polite">برای مشاهده وضعیت ایمنی، پنل را با حساب Owner باز کن.</div>
 <h3>وضعیت چت‌ها و Circuit Breaker</h3><div id="safety-chats"></div>
 <div class="notice">خطای 401 ارسال‌های خروجی را تا اقدام صریح Owner متوقف می‌کند. بازیابی فقط پس از بررسی علت و تأیید دستی انجام می‌شود؛ بستن circuit یک چت، global pause یا circuitهای دیگر را تغییر نمی‌دهد.</div>
-</div></section>
+</section>
+</section>
 <dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title"><form id="login-form"><div class="dialog-mark">✿</div><div class="eyebrow">SECURE TELEGRAM AUTH</div><h2 id="login-title">اتصال حساب تلگرام</h2><p id="login-description">شماره تلفن را همراه کد کشور وارد کن.</p><label class="login-label" id="login-label" for="login-value">شماره تلفن</label><input id="login-value" name="login-value" type="tel" inputmode="tel" autocomplete="tel" placeholder="+98912…" required maxlength="20"><p id="login-feedback" class="login-feedback" role="status" aria-live="polite"></p><div class="dialog-actions"><button type="button" class="secondary" id="login-cancel">انصراف</button><button type="submit" class="primary" id="login-submit">ارسال کد</button></div><p class="security-caption">🔒 ارتباط رمزنگاری‌شده · اطلاعات ورود در پیام‌های بات دریافت نمی‌شود.</p></form></dialog><footer><span>KageCatch · Control Center</span><span>Worker v0.9.0 · Sakura Control Center</span></footer></main></div>
 <nav class="mobile" aria-label="ناوبری موبایل"><button class="active" data-view="overview" aria-current="page">⌂<span>خانه</span></button><button data-view="accounts">♙<span>حساب‌ها</span></button><button data-view="catcher">✧<span>Catch</span></button><button data-view="activity">◷<span>رویدادها</span></button><button data-view="security">⬡<span>امنیت</span></button><button data-view="settings">⚙<span>تنظیمات</span></button><button data-view="admin" id="admin-mobile" hidden>♛<span>مدیریت</span></button></nav>
 <script nonce="${nonce}">
 const tg=window.Telegram?.WebApp;if(tg){tg.setHeaderColor("#100e17");tg.setBackgroundColor("#100e17");tg.ready();tg.expand();}
 let session=null;let authPromise=null;
 const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
-function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;if(name==="admin"&&session?.role==="OWNER")refreshSafetyMonitor();window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
+function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;if(name==="admin"&&session?.role==="OWNER"){refreshOwnerPanel();refreshSafetyMonitor();}window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
 let authFailureMessage="فعلاً نتونستیم وارد پنل بشیم؛ چند لحظه دیگه دوباره تلاش کن.";
 async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role"),state=document.querySelector("#account-state");if(!tg?.initData){authFailureMessage="پنل رو از دکمهٔ داخل بات باز کن تا بتونیم حسابت رو بشناسیم.";name.textContent="خوش اومدی!";role.textContent="برای اتصال حساب، پنل رو از داخل بات باز کن.";state.textContent=authFailureMessage;return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok){const failure=await response.json().catch(()=>({}));throw Object.assign(new Error(failure.error||"auth"),{status:response.status,code:failure.error});}session=await response.json();authFailureMessage="";name.textContent=session.user.first_name||"دوست KageCatch";role.textContent=session.role==="OWNER"?"مدیر KageCatch":"عضو KageCatch";if(session.role==="OWNER"){document.querySelector("#admin-nav").hidden=false;document.querySelector("#admin-mobile").hidden=false;}refreshAccountStatus();}catch(error){authFailureMessage=error.status===401?"اطلاعات ورود تلگرام تأیید نشد؛ پنل رو کامل ببند و دوباره از بات باز کن.":error.status===403?"این حساب اجازهٔ ورود به پنل رو نداره؛ با مدیر KageCatch تماس بگیر.":error.status===503?"ارتباط پنل با سرویس حساب‌ها برقرار نیست؛ کمی بعد دوباره امتحان کن.":"فعلاً نتونستیم وارد پنل بشیم؛ چند لحظه دیگه دوباره تلاش کن.";name.textContent="یه مشکلی پیش اومد";role.textContent="ورود به پنل کامل نشد.";state.textContent=authFailureMessage;}}
@@ -602,6 +790,206 @@ function safetyNode(tag,className,text){
   if(text!==undefined)node.textContent=String(text);
   return node;
 }
+function ownerFormatTime(value){
+  if(value===null||value===undefined||value==="")return "—";
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return "—";
+  return new Intl.DateTimeFormat("fa-IR",{timeZone:"Asia/Tehran",dateStyle:"short",timeStyle:"short"}).format(date);
+}
+function renderOwnerPanel(data){
+  const summary=document.querySelector("#owner-summary");
+  const membersRoot=document.querySelector("#owner-members");
+  const membersCount=document.querySelector("#owner-members-count");
+  const invitesRoot=document.querySelector("#owner-invites");
+  const broadcastRoot=document.querySelector("#owner-broadcast");
+  const broadcastState=document.querySelector("#owner-broadcast-state");
+  if(!summary||!membersRoot||!invitesRoot||!broadcastRoot||!broadcastState)return;
+  summary.replaceChildren();
+  const counts=data.counts||{};
+  const metrics=[
+    ["کل اعضا",counts.members??0,"از Registry"],
+    ["اعضای فعال",counts.active_members??0,"قابل ورود"],
+    ["مسدود",counts.blocked_members??0,"دسترسی غیرفعال"],
+    ["دعوت معتبر",counts.usable_invites??0,"دارای ظرفیت و اعتبار"],
+  ];
+  for(const [label,value,detail] of metrics){
+    const card=safetyNode("div","stat");
+    card.append(safetyNode("label","",label),safetyNode("strong","",value),safetyNode("small","",detail));
+    summary.append(card);
+  }
+
+  membersRoot.replaceChildren();
+  const members=Array.isArray(data.members)?data.members:[];
+  membersCount.textContent=String(members.length)+(data.members_truncated?" از "+counts.members:"");
+  if(!members.length)membersRoot.append(safetyNode("div","empty","هنوز عضوی ثبت نشده است."));
+  for(const member of members){
+    const row=safetyNode("div","service");
+    const info=safetyNode("div","");
+    const label=member.first_name||(member.username?"@"+member.username:"کاربر "+member.telegram_user_id);
+    info.append(safetyNode("b","",label));
+    info.append(safetyNode("small","",
+      "شناسه: "+member.telegram_user_id+" · "+(member.username?"@"+member.username+" · ":"")
+      +(member.status==="blocked"?"مسدود":"فعال")
+      +" · آخرین فعالیت: "+ownerFormatTime(member.last_seen_at)));
+    row.append(info);
+    row.append(safetyNode("span","tag "+(member.status==="blocked"?"off":"ok"),member.status==="blocked"?"BLOCKED":"ACTIVE"));
+    const action=member.status==="blocked"?"unblock":"block";
+    const control=safetyNode("button","secondary",action==="block"?"مسدودسازی":"رفع مسدودی");
+    control.type="button";
+    control.addEventListener("click",()=>updateOwnerMember(member,action));
+    row.append(control);
+    membersRoot.append(row);
+  }
+  if(data.members_truncated)membersRoot.append(safetyNode("div","notice","برای کوتاه‌ماندن پاسخ، فقط ۳۰ عضو اخیر نمایش داده شده‌اند."));
+
+  invitesRoot.replaceChildren();
+  const invites=Array.isArray(data.invites)?data.invites:[];
+  const usable=invites.filter((invite)=>invite.usable);
+  if(!invites.length)invitesRoot.append(safetyNode("div","empty","هنوز دعوتی ساخته نشده است."));
+  for(const invite of invites){
+    const row=safetyNode("div","service");
+    const info=safetyNode("div","");
+    info.append(safetyNode("b","","دعوت "+String(invite.id||"").slice(0,8)));
+    info.append(safetyNode("small","","استفاده: "+invite.uses+"/"+invite.max_uses+" · انقضا: "+ownerFormatTime(invite.expires_at)));
+    row.append(info);
+    row.append(safetyNode("span","tag "+(invite.usable?"ok":"wait"),invite.usable?"ACTIVE":invite.revoked?"REVOKED":"EXPIRED"));
+    if(invite.usable){
+      const revoke=safetyNode("button","secondary","لغو دعوت");
+      revoke.type="button";
+      revoke.addEventListener("click",()=>revokeOwnerInvite(invite));
+      row.append(revoke);
+    }
+    invitesRoot.append(row);
+  }
+
+  broadcastRoot.replaceChildren();
+  const draft=data.broadcast;
+  const labels={
+    awaiting_text:"در انتظار متن",
+    awaiting_confirmation:"در انتظار تأیید Owner",
+    queued:"در صف ارسال",
+    sending:"در حال ارسال",
+    paused:"متوقف به‌علت Safety Gate",
+    review_required:"نیازمند بررسی Owner",
+    completed:"تکمیل‌شده",
+  };
+  broadcastState.textContent=draft?labels[draft.status]||draft.status:"بدون صف فعال";
+  broadcastState.className="tag "+(draft?.status==="paused"||draft?.status==="review_required"?"wait":draft?.status==="completed"?"ok":draft?"wait":"off");
+  if(!draft){broadcastRoot.append(safetyNode("div","empty","هیچ پیش‌نویس یا صف فعالی وجود ندارد."));return;}
+  const detail="وضعیت: "+(labels[draft.status]||draft.status)
+    +" · مخاطبان: "+draft.recipient_count
+    +" · پیشرفت: "+draft.next_index+"/"+draft.recipient_count
+    +" · تحویل‌شده: "+draft.delivered_count
+    +" · ناموفق: "+draft.failed_count
+    +(draft.pause_reason?" · علت توقف: "+draft.pause_reason:"")
+    +" · آخرین تغییر: "+ownerFormatTime(draft.updated_at);
+  broadcastRoot.append(safetyNode("div","service",detail));
+  if(draft.status==="review_required"&&Number.isSafeInteger(draft.review_index)
+    &&typeof draft.review_attempt_id==="string"){
+    broadcastRoot.append(safetyNode("div","notice",
+      "مخاطب نامطمئن: "+draft.review_recipient_id+" · علت: "+(draft.review_reason||"نامشخص")
+      +". هیچ تلاش خودکاری انجام نمی‌شود."));
+    const actions=safetyNode("div","actions");
+    const delivered=safetyNode("button","secondary","ثبت به‌عنوان تحویل‌شده");
+    delivered.type="button";
+    delivered.addEventListener("click",()=>resolveOwnerBroadcast(draft,"delivered"));
+    const retry=safetyNode("button","secondary","تلاش مجدد (احتمال تکرار)");
+    retry.type="button";
+    retry.addEventListener("click",()=>resolveOwnerBroadcast(draft,"retry"));
+    actions.append(delivered,retry);
+    broadcastRoot.append(actions);
+  }
+  if(draft.status!=="sending"){
+    const cancel=safetyNode("button","secondary","لغو صف / پیش‌نویس");
+    cancel.type="button";
+    cancel.addEventListener("click",cancelOwnerBroadcast);
+    broadcastRoot.append(cancel);
+  }
+}
+async function refreshOwnerPanel(){
+  const root=document.querySelector("#owner-status");
+  if(!root)return;
+  if(session?.role!=="OWNER"){
+    root.textContent="این بخش فقط برای Owner در دسترس است.";
+    return;
+  }
+  root.textContent="در حال دریافت اعضا، دعوت‌ها و وضعیت صف…";
+  try{
+    const data=await accountApi("/api/owner/control",{action:"dashboard"});
+    renderOwnerPanel(data);
+    root.textContent="اطلاعات مدیریت به‌روزرسانی شد · "+ownerFormatTime(Date.now());
+  }catch(error){
+    root.textContent=error.status===401?"احراز هویت منقضی شده؛ پنل را دوباره از بات باز کن."
+      :error.status===403?"دسترسی Owner تأیید نشد."
+      :error.status===503?"سرویس مدیریت در دسترس نیست؛ هیچ تغییری انجام نشد."
+      :"دریافت اطلاعات مدیریت ناموفق بود.";
+  }
+}
+async function updateOwnerMember(member,action){
+  const name=member.first_name||("کاربر "+member.telegram_user_id);
+  const message=action==="block"?"دسترسی "+name+" مسدود شود؟":"دسترسی "+name+" دوباره فعال شود؟";
+  if(!window.confirm(message))return;
+  try{
+    await accountApi("/api/owner/control",{
+      action:"member_status",telegramUserId:member.telegram_user_id,
+      memberAction:action,confirmation:action==="block"?"BLOCK_MEMBER":"UNBLOCK_MEMBER"
+    });
+    await refreshOwnerPanel();
+  }catch(error){
+    document.querySelector("#owner-status").textContent=error.status===403?"مسدودسازی Owner مجاز نیست."
+      :error.status===409?"وضعیت عضو تغییر کرده؛ دوباره بروزرسانی کن."
+      :"تغییر وضعیت عضو انجام نشد.";
+  }
+}
+async function createOwnerInvite(maxUses,ttlSeconds){
+  try{
+    const result=await accountApi("/api/owner/control",{action:"invite_create",maxUses,ttlSeconds});
+    await refreshOwnerPanel();
+    const root=document.querySelector("#owner-status");
+    root.replaceChildren(safetyNode("span","","لینک دعوت ساخته شد: "));
+    const link=safetyNode("a","","باز کردن لینک دعوت");
+    if(typeof result.link==="string"&&result.link.startsWith("https://t.me/KageCatchBot?start=inv_")){
+      link.href=result.link;link.target="_blank";link.rel="noopener noreferrer";root.append(link);
+    }else root.append(safetyNode("span","","لینک از پاسخ سرویس معتبر نبود."));
+  }catch(error){
+    document.querySelector("#owner-status").textContent="ساخت دعوت انجام نشد؛ تنظیمات ظرفیت و اعتبار را بررسی کن.";
+  }
+}
+async function revokeOwnerInvite(invite){
+  if(!window.confirm("لینک دعوت "+String(invite.id).slice(0,8)+" لغو شود؟"))return;
+  try{
+    await accountApi("/api/owner/control",{action:"invite_revoke",inviteId:invite.id,confirmation:"REVOKE_INVITE"});
+    await refreshOwnerPanel();
+  }catch(error){
+    document.querySelector("#owner-status").textContent=error.status===404?"دعوت پیدا نشد یا قبلاً لغو شده است.":"لغو دعوت انجام نشد.";
+  }
+}
+async function cancelOwnerBroadcast(){
+  if(!window.confirm("صف یا پیش‌نویس پیام همگانی لغو شود؟ ارسال در حال انجام قابل لغو نیست."))return;
+  try{
+    await accountApi("/api/owner/control",{action:"broadcast_cancel",confirmation:"CANCEL_BROADCAST"});
+    await refreshOwnerPanel();
+  }catch(error){
+    document.querySelector("#owner-status").textContent=error.status===409?"یک پیام در حال ارسال است؛ پس از تعیین تکلیف دوباره تلاش کن.":"لغو صف انجام نشد.";
+  }
+}
+async function resolveOwnerBroadcast(draft,decision){
+  const message=decision==="delivered"
+    ?"این مخاطب به‌عنوان تحویل‌شده ثبت شود و صف جلو برود؟"
+    :"تلاش مجدد برای همین مخاطب انجام شود؟ اگر تلگرام پیام قبلی را پذیرفته باشد، پیام تکراری ارسال می‌شود.";
+  if(!window.confirm(message))return;
+  try{
+    await accountApi("/api/owner/control",{
+      action:"broadcast_resolve",expectedIndex:draft.review_index,
+      expectedAttemptId:draft.review_attempt_id,decision,
+      confirmation:decision==="delivered"?"MARK_DELIVERED":"INTENTIONAL_RETRY"
+    });
+    await refreshOwnerPanel();
+  }catch(error){
+    document.querySelector("#owner-status").textContent=error.status===409?"وضعیت تلاش تغییر کرده؛ ابتدا بروزرسانی کن.":"تعیین تکلیف صف انجام نشد.";
+  }
+}
+
 function renderSafetyMonitor(data){
   const root=document.querySelector("#safety-status");
   const chatsRoot=document.querySelector("#safety-chats");
@@ -690,6 +1078,9 @@ async function recoverChatSafetyCircuit(chat){
     document.querySelector("#safety-status").textContent=error.status===409?"Circuit تغییر کرده؛ ابتدا بروزرسانی کن.":"بازیابی انجام نشد؛ circuit همچنان fail-closed است.";
   }
 }
+document.querySelector("#owner-refresh").addEventListener("click",refreshOwnerPanel);
+document.querySelector("#owner-invite-one").addEventListener("click",()=>createOwnerInvite(1,86400));
+document.querySelector("#owner-invite-ten").addEventListener("click",()=>createOwnerInvite(10,604800));
 document.querySelector("#safety-refresh").addEventListener("click",refreshSafetyMonitor);
 
 async function refreshAccountStatus(){
@@ -1021,12 +1412,15 @@ export class ConnectionLinkStore {
       }
       if (action === 'get') return json({ draft: await this.state.storage.get(key) || null });
       if (action === 'clear') {
-        const current = await this.state.storage.get(key);
-        if (current?.status === 'sending' && current.inFlightAttemptId) {
-          return json({ error: 'broadcast_delivery_in_flight' }, 409);
-        }
-        await this.state.storage.delete(key);
-        return json({ status: 'cleared' });
+        const result = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (current?.status === 'sending') return 'in_flight';
+          await txn.delete(key);
+          return 'cleared';
+        });
+        return result === 'in_flight'
+          ? json({ error: 'broadcast_delivery_in_flight' }, 409)
+          : json({ status: 'cleared' });
       }
       if (action === 'save') {
         if (typeof text !== 'string' || !text.trim() || text.length > 4096) return json({ error: 'invalid_broadcast_text' }, 400);
@@ -2175,6 +2569,7 @@ export default {
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
     if (url.pathname === "/connect/api") return standaloneConnectApi(request, env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
+    if (url.pathname === "/api/owner/control") return miniAppOwnerControl(request, env);
     if (url.pathname === "/api/owner/safety/status") return miniAppOwnerSafety(request, env, "status");
     if (url.pathname === "/api/owner/safety/recover") return miniAppOwnerSafety(request, env, "recover");
     if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
