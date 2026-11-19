@@ -330,9 +330,12 @@ test("standalone connection page reports persistence_pending truthfully and poll
   const html = await response.text();
   assert.match(html, /persistence_pending/);
   assert.match(html, /api\("auth-status"\)/);
-  assert.match(html, /connect-status|connect\/status/);
+  assert.match(html, /auth-status/);
   assert.doesNotMatch(html, /ورود تأیید و نشست ذخیره شد/);
   assert.match(html, /ذخیره نشست هنوز تکمیل نشده/);
+  const script = html.match(/<script>([\\s\\S]*?)<\\/script>/)?.[1];
+  assert.ok(script, "standalone login script must be present");
+  assert.doesNotThrow(() => new Function(script), "standalone login script must parse");
 });
 
 test("standalone connect API proxies persistence status without resubmitting credentials", async () => {
