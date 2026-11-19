@@ -91,6 +91,7 @@ class CatchPipelineTests(unittest.IsolatedAsyncioTestCase):
             detector=self.detector,
             catch_engine=self.engine,
             adapter_factory=adapter_factory,
+            catch_is_enabled=lambda user_id: True,
             review_pipeline=self.review,
         )
 
@@ -146,6 +147,7 @@ class CatchPipelineTests(unittest.IsolatedAsyncioTestCase):
             detector=self.detector,
             catch_engine=disabled_engine,
             adapter_factory=lambda *args: self.factory_calls.append(args),
+            catch_is_enabled=lambda user_id: True,
             review_pipeline=self.review,
         )
 
@@ -166,6 +168,7 @@ class CatchPipelineTests(unittest.IsolatedAsyncioTestCase):
             detector=self.detector,
             catch_engine=self.engine,
             adapter_factory=broken_factory,
+            catch_is_enabled=lambda user_id: True,
             review_pipeline=self.review,
         )
 
