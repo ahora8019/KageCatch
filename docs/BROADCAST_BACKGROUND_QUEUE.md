@@ -76,7 +76,8 @@ Before the alarm queue was introduced, the synchronous path gained a narrow dupl
 - The Durable Object compare-and-set transition stores `status = review_required`, `reviewIndex`, and the exact `reviewRecipientId`; `nextIndex` and counters do not advance.
 - `claim` cannot reclaim this state, and a transactional `begin` guard cannot overwrite it or race a concurrent claim. A repeated confirmation returns the locked Owner notice instead of sending again.
 - A 400/403 recipient-specific rejection remains a definite failure and advances the cursor. A closed Safety Gate, 429, or 401 follows the existing pause/release path and does not advance the cursor.
-- The Owner can explicitly discard the draft. There is not yet a UI action to mark the uncertain attempt delivered or intentionally retry it; those resolution controls belong in the dedicated queue/review phase.
+- The Owner can explicitly discard the draft, mark the uncertain recipient as delivered, or intentionally retry that same recipient. The two resolution buttons carry the expected cursor index and attempt UUID; the Durable Object compares both values transactionally so stale Owner screens cannot resolve a later attempt.
+- Marking delivered advances the cursor and delivered counter. Explicit retry preserves the cursor and can duplicate a message if Telegram accepted the earlier attempt; the UI warns about this before the Owner chooses it.
 
 The alarm-driven implementation supersedes the synchronous recipient loop described in this historical section. The guard's key invariant remains: an ambiguous recipient is never automatically resent.
 
@@ -91,4 +92,6 @@ The webhook confirmation path now snapshots active recipients, persists the queu
 - Safety Gate / 401 / 429 outcomes move the queue to `paused` without advancing the cursor. Owner confirmation may resume it; the Safety Gate still decides whether a send is permitted.
 - Network exceptions, 5xx/unknown Telegram outcomes, and stale in-flight recovery lock the exact recipient/index for Owner review and do not schedule a retry.
 - Completion is persisted as `completed`; no exactly-once guarantee is made. The system avoids automatic replay of uncertain deliveries.
+- Owner review resolution is compare-and-set against both `reviewIndex` and `reviewAttemptId`. A stale callback returns 409 and cannot mutate a newer attempt.
+- Before a review resolution changes the state back to `queued`, the Durable Object alarm is armed. Initial enqueue and pause-resume transitions also arm the alarm before committing the queued state, reducing the crash window that could otherwise leave queued work without a scheduler.
 - This implementation has not been deployed and has not sent any live Telegram messages.
