@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyTelegramApiFailure } from "./telegram_safety.mjs";
+import { classifyTelegramApiFailure, isTelegramMutatingMethod } from "./telegram_safety.mjs";
 
 test("Telegram 429 preserves retry_after as a bounded rate-limit instruction", () => {
   assert.deepEqual(
@@ -170,4 +170,13 @@ test("private chats do not consume the group pacing budget", async () => {
   const db = safetyDb();
   assert.deepEqual(await acquireTelegramChatPermit(db, 123456, 1000, 3100), { allowed: true, retryAfterMs: 0 });
   assert.equal(db.state.chats.size, 0);
+});
+
+
+test("unknown Telegram Bot API methods fail closed as mutating unless explicitly read-only", () => {
+  assert.equal(isTelegramMutatingMethod("getMe"), false);
+  assert.equal(isTelegramMutatingMethod("getWebhookInfo"), false);
+  assert.equal(isTelegramMutatingMethod("sendMessage"), true);
+  assert.equal(isTelegramMutatingMethod("futureTelegramMutation"), true);
+  assert.equal(isTelegramMutatingMethod("setChatPermissions"), true);
 });
