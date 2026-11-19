@@ -1,15 +1,12 @@
-"""Framework-independent orchestration for KageCatch.
-
-This module deliberately does not create Telegram user sessions or send messages
-itself. A source-specific adapter performs those operations after explicit
-session authorization is implemented in the execution layer.
-"""
+"""Framework-independent and fail-safe Catch orchestration."""
 from __future__ import annotations
 
 import asyncio
 import math
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,8 +55,14 @@ class Deduplicator(Protocol):
     async def claim(self, key: str) -> bool: ...
 
 
+class CatchAdmission(Protocol):
+    async def reserve(
+        self, *, user_id: str, source: str, dedupe_key: str
+    ) -> str: ...
+
+
 class InMemoryDeduplicator:
-    """Development-only dedupe; replace with an atomic persistent store."""
+    """Development-only dedupe; production should use CatchAdmission."""
 
     def __init__(self) -> None:
         self._seen: set[str] = set()
@@ -73,18 +76,36 @@ class InMemoryDeduplicator:
             return True
 
 
+_USER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_SOURCE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_ALLOWED_MEDIA = {"image", "video"}
+_MAX_CANDIDATES = 30
+
+
 class CatchEngine:
     def __init__(
         self,
         *,
         confidence_threshold: float,
-        quota: QuotaGate,
-        deduplicator: Deduplicator,
+        admission: CatchAdmission | None = None,
+        quota: QuotaGate | None = None,
+        deduplicator: Deduplicator | None = None,
         enabled: bool = False,
     ) -> None:
-        if not math.isfinite(confidence_threshold) or not 0.0 <= confidence_threshold <= 1.0:
+        if (
+            isinstance(confidence_threshold, bool)
+            or not isinstance(confidence_threshold, (int, float))
+            or not math.isfinite(float(confidence_threshold))
+            or not 0.0 <= float(confidence_threshold) <= 1.0
+        ):
             raise ValueError("confidence_threshold must be between 0 and 1")
-        self.confidence_threshold = confidence_threshold
+        if admission is not None and (quota is not None or deduplicator is not None):
+            raise ValueError("admission cannot be combined with separate quota/deduplicator gates")
+        if admission is None and (quota is None or deduplicator is None):
+            raise ValueError("provide an atomic admission gate or both legacy gates")
+
+        self.confidence_threshold = float(confidence_threshold)
+        self.admission = admission
         self.quota = quota
         self.deduplicator = deduplicator
         self.enabled = bool(enabled)
@@ -95,18 +116,19 @@ class CatchEngine:
         spawn: Spawn,
         adapter: CatchAdapter,
     ) -> CatchResult:
-        if not user_id:
-            raise ValueError("user_id is required")
+        self._validate_user_id(user_id)
         if not self.enabled:
             return CatchResult(status="disabled")
-        if adapter.source != spawn.source:
+        self._validate_spawn(spawn)
+
+        if getattr(adapter, "source", None) != spawn.source:
             return CatchResult(status="adapter_mismatch")
-        if adapter.media_kind != spawn.media_kind:
+        if getattr(adapter, "media_kind", None) != spawn.media_kind:
             return CatchResult(status="media_mismatch")
         if not spawn.candidates:
             return CatchResult(status="no_match")
 
-        valid = []
+        valid: list[Candidate] = []
         for candidate in spawn.candidates:
             name = getattr(candidate, "name", None)
             confidence = getattr(candidate, "confidence", None)
@@ -116,14 +138,19 @@ class CatchEngine:
             if (
                 not normalized_name
                 or len(normalized_name) > 100
-                or any(ord(char) < 32 for char in normalized_name)
+                or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in normalized_name)
                 or isinstance(confidence, bool)
                 or not isinstance(confidence, (int, float))
-                or not math.isfinite(confidence)
-                or not 0.0 <= confidence <= 1.0
             ):
                 continue
-            valid.append(Candidate(name=normalized_name, confidence=float(confidence)))
+            try:
+                confidence_value = float(confidence)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(confidence_value) or not 0.0 <= confidence_value <= 1.0:
+                continue
+            valid.append(Candidate(name=normalized_name, confidence=confidence_value))
+
         if not valid:
             return CatchResult(status="no_match")
 
@@ -135,17 +162,11 @@ class CatchEngine:
                 confidence=best.confidence,
             )
 
-        if not await self.quota.allow(user_id, spawn.source):
-            return CatchResult(
-                status="quota_blocked",
-                character_name=best.name,
-                confidence=best.confidence,
-            )
-
         dedupe_key = f"{user_id}:{spawn.source}:{spawn.chat_id}:{spawn.message_id}"
-        if not await self.deduplicator.claim(dedupe_key):
+        admission_status = await self._reserve_admission(user_id, spawn.source, dedupe_key)
+        if admission_status != "admitted":
             return CatchResult(
-                status="duplicate",
+                status=admission_status,
                 character_name=best.name,
                 confidence=best.confidence,
             )
@@ -153,8 +174,17 @@ class CatchEngine:
         try:
             receipt = await adapter.send_catch(spawn, best.name)
         except Exception:
+            # Keep the admission reservation. A network failure may have happened
+            # after Telegram accepted the command; an automatic retry is unsafe.
             return CatchResult(
                 status="send_failed",
+                character_name=best.name,
+                confidence=best.confidence,
+            )
+
+        if not self._valid_receipt(receipt, best.name):
+            return CatchResult(
+                status="invalid_receipt",
                 character_name=best.name,
                 confidence=best.confidence,
             )
@@ -170,3 +200,64 @@ class CatchEngine:
             confidence=best.confidence,
             receipt_reference=receipt.reference,
         )
+
+    async def _reserve_admission(
+        self, user_id: str, source: str, dedupe_key: str
+    ) -> str:
+        try:
+            if self.admission is not None:
+                decision = await self.admission.reserve(
+                    user_id=user_id, source=source, dedupe_key=dedupe_key
+                )
+                if decision in {"admitted", "duplicate", "quota_blocked"}:
+                    return decision
+                return "admission_unavailable"
+
+            # Backward-compatible development path. It is not atomic; persistent
+            # enabled deployments must inject SQLiteCatchAdmissionStore.
+            if not await self.quota.allow(user_id, source):
+                return "quota_blocked"
+            if not await self.deduplicator.claim(dedupe_key):
+                return "duplicate"
+            return "admitted"
+        except Exception:
+            return "admission_unavailable"
+
+    @staticmethod
+    def _validate_user_id(user_id: str) -> None:
+        if not isinstance(user_id, str) or not _USER_ID_RE.fullmatch(user_id):
+            raise ValueError("user_id must be a canonical identifier")
+
+    @staticmethod
+    def _validate_spawn(spawn: Spawn) -> None:
+        if not isinstance(spawn, Spawn):
+            raise ValueError("spawn must be a Spawn instance")
+        if not isinstance(spawn.source, str) or not _SOURCE_RE.fullmatch(spawn.source):
+            raise ValueError("spawn source must be a canonical identifier")
+        if isinstance(spawn.chat_id, bool) or not isinstance(spawn.chat_id, int) or spawn.chat_id == 0:
+            raise ValueError("spawn chat_id must be a non-zero integer")
+        if isinstance(spawn.message_id, bool) or not isinstance(spawn.message_id, int) or spawn.message_id <= 0:
+            raise ValueError("spawn message_id must be a positive integer")
+        if spawn.media_kind not in _ALLOWED_MEDIA:
+            raise ValueError("spawn media_kind must be image or video")
+        if (
+            not isinstance(spawn.candidates, Sequence)
+            or isinstance(spawn.candidates, (str, bytes, bytearray))
+            or len(spawn.candidates) > _MAX_CANDIDATES
+        ):
+            raise ValueError("spawn candidates must be a bounded sequence")
+
+    @staticmethod
+    def _valid_receipt(receipt: object, expected_name: str) -> bool:
+        if not isinstance(receipt, CatchReceipt):
+            return False
+        reference = receipt.reference
+        character_name = receipt.character_name
+        if (
+            not isinstance(reference, str)
+            or not reference
+            or len(reference) > 256
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in reference)
+        ):
+            return False
+        return isinstance(character_name, str) and character_name == expected_name
