@@ -1,5 +1,5 @@
--- Durable per-group pacing for Control Bot outbound operations.
--- Telegram group rate limits are chat-scoped; this state is separate from the bot-wide gate.
+-- Durable per-chat pacing for Control Bot outbound operations.
+-- Private chats and groups use different intervals; this state is separate from the bot-wide gate.
 CREATE TABLE IF NOT EXISTS telegram_bot_chat_pacing (
     chat_id TEXT PRIMARY KEY NOT NULL,
     next_allowed_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (next_allowed_at_ms >= 0),
