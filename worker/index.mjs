@@ -949,12 +949,17 @@ export class ConnectionLinkStore {
       if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','review','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
       const key = 'broadcast:' + ownerTelegramId;
       if (action === 'begin') {
-        const current = await this.state.storage.get(key);
-        if (current && ['awaiting_confirmation', 'sending', 'review_required'].includes(current.status)) {
-          return json({ error: 'broadcast_already_active', status: current.status }, 409);
-        }
-        await this.state.storage.put(key, { status: 'awaiting_text', text: null, updatedAt: Date.now() });
-        return json({ status: 'awaiting_text' });
+        const result = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (current && ['awaiting_confirmation', 'sending', 'review_required'].includes(current.status)) {
+            return { blocked: current.status };
+          }
+          await txn.put(key, { status: 'awaiting_text', text: null, updatedAt: Date.now() });
+          return { started: true };
+        });
+        return result.blocked
+          ? json({ error: 'broadcast_already_active', status: result.blocked }, 409)
+          : json({ status: 'awaiting_text' });
       }
       if (action === 'get') return json({ draft: await this.state.storage.get(key) || null });
       if (action === 'clear') {
