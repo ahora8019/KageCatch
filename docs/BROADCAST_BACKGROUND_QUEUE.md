@@ -66,3 +66,16 @@ Durable Object alarms are preferable to using `ctx.waitUntil()` as the queue its
 - Queue transitions and cursor changes must be transactional and compare-and-set.
 - Delivery is at-least-once at best when an Owner chooses to retry an ambiguous attempt; it is never advertised as exactly-once.
 - Production D1 migrations, bindings, secrets, webhook configuration, live Telegram tests, merge, and deploy remain outside this PR's scope.
+
+
+## 7. Incremental safeguard now present on PR #44
+
+The full alarm-driven queue remains a follow-up, but the current synchronous path now has a narrow duplicate-prevention guard:
+
+- A non-recipient-specific, non-Safety-Gate failure during a recipient send is treated as ambiguous. This includes a rejected network fetch and Telegram 5xx/unknown responses.
+- The Durable Object compare-and-set transition stores `status = review_required`, `reviewIndex`, and the exact `reviewRecipientId`; `nextIndex` and counters do not advance.
+- `claim` cannot reclaim this state, and `begin` cannot overwrite it. A repeated confirmation returns the locked Owner notice instead of sending again.
+- A 400/403 recipient-specific rejection remains a definite failure and advances the cursor. A closed Safety Gate, 429, or 401 follows the existing pause/release path and does not advance the cursor.
+- The Owner can explicitly discard the draft. There is not yet a UI action to mark the uncertain attempt delivered or intentionally retry it; those resolution controls belong in the dedicated queue/review phase.
+
+This guard reduces duplicate risk but does not make the current webhook loop asynchronous or recover an invocation that is terminated before it can persist the review transition.
