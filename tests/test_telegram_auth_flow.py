@@ -202,5 +202,43 @@ class TelegramAuthorizationFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tg-1", manager.pending)
 
 
+
+class AuthorizationPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_authorized_session_survives_a_temporary_final_store_failure(self):
+        class FailOnceManager(FakeManager):
+            def __init__(self):
+                super().__init__()
+                self.save_failures = 1
+
+            async def save_authorized_session(self, user_id, session_string):
+                if self.save_failures:
+                    self.save_failures -= 1
+                    raise OSError("session store temporarily unavailable")
+                await super().save_authorized_session(user_id, session_string)
+
+        manager = FailOnceManager()
+        client = FakeClient()
+        flow = TelegramAuthorizationFlow(
+            client_factory=lambda: client,
+            session_manager=manager,
+        )
+
+        await flow.start(user_id="tg-1", phone="+10000000000")
+        first_result = await flow.submit_code(user_id="tg-1", code="12345")
+
+        self.assertEqual(first_result, "persistence_pending")
+        self.assertTrue(client.connected)
+        self.assertIn("tg-1", manager.pending)
+        self.assertTrue(manager.pending["tg-1"]["session_authorized"])
+        self.assertEqual(manager.saved, [])
+
+        status = await flow.get_status(user_id="tg-1")
+
+        self.assertEqual(status["status"], "connected")
+        self.assertEqual(manager.saved, [("tg-1", "partial-telethon-session")])
+        self.assertNotIn("tg-1", manager.pending)
+        self.assertFalse(client.connected)
+
+
 if __name__ == "__main__":
     unittest.main()
