@@ -1588,3 +1588,44 @@ test("manual webhook setup derives the webhook host from the incoming Worker ori
   assert.equal(response.status, 200);
   assert.equal(webhookUrl, "https://custom-worker.example/webhook");
 });
+
+
+test("broadcast keeps its draft claim when Telegram pauses outbound delivery", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  await post("/broadcast", { ownerTelegramId: 1001, action: "begin" });
+  await post("/broadcast", { ownerTelegramId: 1001, action: "save", text: "پیام آزمایشی همگانی" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret", OWNER_TELEGRAM_ID: "1001", CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop();
+      const payload = JSON.parse(init.body);
+      calls.push({ method, payload });
+      if (method === "sendMessage" && payload.chat_id === 2001) {
+        return new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 30 } }), { status: 429, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify({ update_id: 401, callback_query: {
+      id: "callback-401", from: { id: 1001 }, message: { message_id: 9, chat: { id: 1001, type: "private" } }, data: "owner:broadcast:confirm",
+    } }),
+  }), env);
+  assert.ok([200, 500, 502].includes(response.status));
+  const state = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(state.draft?.status, "awaiting_confirmation");
+  assert.equal(state.draft?.text, "پیام آزمایشی همگانی");
+  assert.equal(calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 2001).length, 1);
+});
