@@ -1270,7 +1270,7 @@ function createFakeManualReviewDatabase() {
               throw new Error("unexpected D1 run: " + sql);
             },
             async first() {
-              if (sql.startsWith("SELECT review_id, user_id, spawn_id, anime_name, candidates_json")) {
+              if (sql.endsWith("WHERE review_id = ?")) {
                 const row = rows.get(values[0]);
                 return row ? { ...row } : null;
               }
