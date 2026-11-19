@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import worker from "./index.mjs";
+import worker, { buildRoleMenu } from "./index.mjs";
 
 const BOT_TOKEN = "owner-safety-test-bot-token";
 const OWNER_ID = 7135051954;
@@ -357,4 +357,14 @@ test("Owner dashboard exposes the Safety Monitor and requires a deliberate recov
   assert.match(html, /RESET_CHAT_CIRCUIT/);
   assert.match(html, /data-view="admin"/);
   assert.match(html, /\\d\{4\}/, "the rendered panel must preserve the date-format regex backslash");
+});
+
+test("Owner Telegram menu opens the authenticated Safety Monitor Mini App", () => {
+  const menu = buildRoleMenu("OWNER");
+  const buttons = menu.inline_keyboard.flat();
+  const monitor = buttons.find((button) => button.text === "🛡️ Safety Monitor");
+  assert.deepEqual(monitor, {
+    text: "🛡️ Safety Monitor",
+    web_app: { url: "https://kagecatch-control.ahora-project.workers.dev/panel" },
+  });
 });
