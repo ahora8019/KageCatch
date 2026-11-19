@@ -78,6 +78,48 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
             [("control-bot",)],
         )
 
+    def test_existing_ledger_with_manual_review_already_applied_can_apply_safety_chain(self) -> None:
+        db = sqlite3.connect(":memory:")
+        try:
+            db.execute(
+                "CREATE TABLE d1_migrations ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name TEXT UNIQUE, "
+                "applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL)"
+            )
+            already_applied = {
+                "0001_telegram_sessions.sql",
+                "0002_telegram_auth_challenges.sql",
+                "0003_manual_review_items.sql",
+                "0004_panel_requests.sql",
+                "0006_manual_review_spawn_context.sql",
+            }
+            for path in migration_paths():
+                if path.name not in already_applied:
+                    continue
+                db.executescript(path.read_text(encoding="utf-8"))
+                db.execute("INSERT INTO d1_migrations (name) VALUES (?)", (path.name,))
+
+            pending = apply_pending_migrations(db)
+            self.assertEqual(
+                pending,
+                [
+                    "0005_telegram_bot_safety.sql",
+                    "0006_telegram_bot_chat_pacing.sql",
+                    "0007_telegram_bot_chat_circuit_breaker.sql",
+                ],
+            )
+            review_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(manual_review_items)").fetchall()
+            }
+            self.assertIn("spawn_context_json", review_columns)
+            self.assertEqual(
+                db.execute("SELECT singleton_id FROM telegram_bot_safety").fetchall(),
+                [("control-bot",)],
+            )
+        finally:
+            db.close()
+
     def test_applied_ledger_prevents_replaying_non_idempotent_migration(self) -> None:
         before = self.db.execute("SELECT name FROM d1_migrations ORDER BY id").fetchall()
         self.assertEqual(apply_pending_migrations(self.db), [])
