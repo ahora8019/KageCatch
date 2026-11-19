@@ -1276,9 +1276,9 @@ async function handleOwnerCallback(callback, env) {
               : "پس از بازشدن Safety Gate می‌توان با تأیید Owner ادامه داد.";
           return {
             text: "⚠️ ارسال همگانی متوقف شد.\n\nموفق: " + (saved.deliveredCount || 0)
-              + "\\nناموفق: " + (saved.failedCount || 0)
-              + "\\nباقی‌مانده: " + Math.max(0, recipients.length - saved.nextIndex)
-              + "\\n" + pauseText + "\\nپیش‌نویس و نقطهٔ ادامه حفظ شدند.",
+              + "\nناموفق: " + (saved.failedCount || 0)
+              + "\nباقی‌مانده: " + Math.max(0, recipients.length - saved.nextIndex)
+              + "\n" + pauseText + "\nپیش‌نویس و نقطهٔ ادامه حفظ شدند.",
             keyboard: { inline_keyboard: [[{ text: "🔁 ادامهٔ ارسال", callback_data: "owner:broadcast:confirm" }], ...BACK_MENU.inline_keyboard] },
           };
         }
