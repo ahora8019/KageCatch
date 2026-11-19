@@ -1039,12 +1039,16 @@ test("internal session store rejects unsigned requests and replays", async () =>
 
 
 test("internal session store retains a hard 16 KiB request body ceiling", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const nonceStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
   const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: createFakeD1SessionDatabase() };
   const ciphertext = "A".repeat(17000);
   const request = await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret);
   const requestBody = await request.clone().arrayBuffer();
   assert.ok(requestBody.byteLength > 16 * 1024);
-  const response = await worker.fetch(request, { CORE_API_SECRET: secret });
+  const response = await worker.fetch(request, env);
   assert.equal(response.status, 413);
 });
 
