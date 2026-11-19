@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 
 _USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_PHONE_PATTERN = re.compile(r"^\\+[1-9]\\d{7,14}$")
+_PHONE_PATTERN = re.compile(r"^\+[1-9]\d{7,14}$")
 _PENDING_REQUIRED_FIELDS = {"version", "phone", "phone_code_hash", "session_string", "expires_at"}
 _PENDING_ALLOWED_FIELDS = _PENDING_REQUIRED_FIELDS | {"attempts", "session_authorized"}
 _MAX_SESSION_STRING_LENGTH = 8192
