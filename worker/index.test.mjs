@@ -5,13 +5,28 @@ import assert from "node:assert/strict";
 import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 function createTelegramSafetyDb() {
-  const state = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null, chats: new Map() };
+  const state = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null, chats: new Map(), circuits: new Map() };
   return {
     prepare(sql) {
       let values = [];
       return {
         bind(...args) { values = args; return this; },
         async first() {
+          if (sql.includes("INSERT INTO telegram_bot_chat_circuit_breaker")) {
+            const [chatId, errorCode, now] = values;
+            const current = state.circuits.get(chatId) ?? {
+              consecutive_failures: 0, is_open: 0, last_error_code: null, updated_at_ms: now,
+            };
+            current.consecutive_failures = Math.min(3, current.consecutive_failures + 1);
+            current.is_open = current.consecutive_failures >= 3 ? 1 : current.is_open;
+            current.last_error_code = errorCode;
+            current.updated_at_ms = now;
+            state.circuits.set(chatId, current);
+            return { consecutive_failures: current.consecutive_failures, is_open: current.is_open };
+          }
+          if (sql.includes("SELECT consecutive_failures")) {
+            return state.circuits.get(values[0]) ?? null;
+          }
           if (sql.includes("UPDATE telegram_bot_chat_pacing")) {
             const [now, intervalMs, chatId, checkNow] = values;
             const current = state.chats.get(chatId) ?? 0;
@@ -32,7 +47,11 @@ function createTelegramSafetyDb() {
           return null;
         },
         async run() {
-          if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
+          if (sql.includes("UPDATE telegram_bot_chat_circuit_breaker") && sql.includes("consecutive_failures = 0")) {
+            const [now, chatId] = values;
+            const current = state.circuits.get(chatId);
+            if (current) state.circuits.set(chatId, { ...current, consecutive_failures: 0, last_error_code: null, updated_at_ms: now });
+          } else if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
             if (!state.chats.has(values[0])) state.chats.set(values[0], 0);
           } else if (sql.includes("paused_until_ms = MAX")) {
             state.paused_until_ms = Math.max(state.paused_until_ms, values[0]);
