@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyTelegramApiFailure, isTelegramMutatingMethod } from "./telegram_safety.mjs";
+import { classifyTelegramApiFailure, isTelegramMutatingMethod, isValidTelegramMethod, isTelegramSafetyStop } from "./telegram_safety.mjs";
 
 test("Telegram 429 preserves retry_after as a bounded rate-limit instruction", () => {
   assert.deepEqual(
@@ -166,10 +166,14 @@ test("group sends use a durable per-chat cooldown while different groups remain 
   assert.ok(db.state.chats.get("-100123456") >= started + 80);
 });
 
-test("private chats do not consume the group pacing budget", async () => {
+test("private chats use a durable one-second pacing budget", async () => {
   const db = safetyDb();
-  assert.deepEqual(await acquireTelegramChatPermit(db, 123456, 1000, 3100), { allowed: true, retryAfterMs: 0 });
-  assert.equal(db.state.chats.size, 0);
+  assert.deepEqual(await acquireTelegramChatPermit(db, 123456, 1000, 1000), { allowed: true, retryAfterMs: 0 });
+  await assert.rejects(
+    () => acquireTelegramChatPermit(db, 123456, 1500, 1000),
+    (error) => error instanceof TelegramSafetyGateError && error.kind === "chat_cooldown" && error.retryAfterMs === 500,
+  );
+  assert.equal(db.state.chats.size, 1);
 });
 
 
@@ -179,15 +183,15 @@ test("unknown Telegram Bot API methods fail closed as mutating unless explicitly
   assert.equal(isTelegramMutatingMethod("sendMessage"), true);
   assert.equal(isTelegramMutatingMethod("futureTelegramMutation"), true);
   assert.equal(isTelegramMutatingMethod("setChatPermissions"), true);
+  assert.equal(isValidTelegramMethod("sendMessage"), true);
+  assert.equal(isValidTelegramMethod("getWebhookInfo"), true);
+  assert.equal(isValidTelegramMethod("sendMessage/../getMe"), false);
+  assert.equal(isValidTelegramMethod("send-message"), false);
 });
 
-
-test("private chat sends reserve a durable one-second per-chat slot", async () => {
-  const db = safetyDb();
-  assert.deepEqual(await acquireTelegramChatPermit(db, 123456, 1000, 1000), { allowed: true, retryAfterMs: 0 });
-  await assert.rejects(
-    () => acquireTelegramChatPermit(db, 123456, 1500, 1000),
-    (error) => error instanceof TelegramSafetyGateError && error.kind === "chat_cooldown" && error.retryAfterMs === 500,
-  );
-  assert.equal(db.state.chats.size, 1);
+test("safety-stop classifier recognizes closed gates and missing durable state", () => {
+  assert.equal(isTelegramSafetyStop(new TelegramSafetyGateError("cooldown", 100)), true);
+  assert.equal(isTelegramSafetyStop(new Error("telegram_safety_store_unavailable")), true);
+  assert.equal(isTelegramSafetyStop({ kind: "rate_limited" }), true);
+  assert.equal(isTelegramSafetyStop({ kind: "access_denied" }), false);
 });
