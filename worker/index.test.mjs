@@ -2162,3 +2162,70 @@ test("broadcast Owner review retry keeps the cursor and requires the exact attem
   assert.equal(draft.lastReviewResolution, "retry");
   assert.ok(state.alarmAt > Date.now());
 });
+
+test("Owner panel dashboard requires a verified Owner and returns bounded member and broadcast state", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 9001, ownerTelegramId: "9001" });
+  await post("/register", { telegramUserId: 9002, ownerTelegramId: "9001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const initData = makeWebAppInitData("owner-panel-token", { id: 9001, first_name: "Owner" });
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/owner/control", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, action: "dashboard" }),
+  }), {
+    TELEGRAM_BOT_TOKEN: "owner-panel-token", OWNER_TELEGRAM_ID: "9001", CONNECT_LINKS: binding,
+  });
+  assert.equal(response.status, 200);
+  const dashboard = await response.json();
+  assert.equal(dashboard.counts.members, 1);
+  assert.equal(dashboard.counts.active_members, 1);
+  assert.equal(dashboard.members.length, 1);
+  assert.equal(dashboard.members[0].telegram_user_id, 9002);
+  assert.equal(dashboard.broadcast, null);
+});
+
+test("Owner panel control rejects a validly signed MEMBER before reading administrative data", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  await store.fetch(new Request("https://do.internal/register", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 9002, ownerTelegramId: "9001" }),
+  }));
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const initData = makeWebAppInitData("owner-panel-token", { id: 9002, first_name: "Member" });
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/owner/control", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, action: "dashboard" }),
+  }), {
+    TELEGRAM_BOT_TOKEN: "owner-panel-token", OWNER_TELEGRAM_ID: "9001", CONNECT_LINKS: binding,
+  });
+  assert.equal(response.status, 403);
+});
+
+test("Owner panel member blocking requires explicit confirmation and cannot target the Owner", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 9001, ownerTelegramId: "9001" });
+  await post("/register", { telegramUserId: 9002, ownerTelegramId: "9001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const initData = makeWebAppInitData("owner-panel-token", { id: 9001, first_name: "Owner" });
+  const request = (telegramUserId, confirmation) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/owner/control", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ initData, action: "member_status", telegramUserId, memberAction: "block", ...(confirmation ? { confirmation } : {}) }),
+  }), {
+    TELEGRAM_BOT_TOKEN: "owner-panel-token", OWNER_TELEGRAM_ID: "9001", CONNECT_LINKS: binding,
+  });
+  assert.equal((await request(9002)).status, 400);
+  assert.equal((await request(9001, "BLOCK_MEMBER")).status, 403);
+  assert.equal((await request(9002, "BLOCK_MEMBER")).status, 200);
+  const member = await post("/user", { telegramUserId: 9002 });
+  assert.equal((await member.json()).user.status, "blocked");
+});
+
