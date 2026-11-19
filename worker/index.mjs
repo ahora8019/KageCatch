@@ -1,5 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
-import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, isTelegramMutatingMethod, isValidTelegramMethod, isTelegramSafetyStop } from "./telegram_safety.mjs";
+import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, getTelegramSafetySnapshot, recoverTelegramGlobalPause, recoverTelegramChatCircuit, isTelegramMutatingMethod, isValidTelegramMethod, isTelegramSafetyStop } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -200,6 +200,73 @@ async function miniAppSession(request, env) {
     core_status: "not_connected",
     account_status: "not_connected",
   });
+}
+
+
+async function miniAppOwnerSafety(request, env, operation) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) {
+    return json({ error: "unsupported_media_type" }, 415);
+  }
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
+  if (!env.TELEGRAM_BOT_TOKEN || !/^\d+$/.test(String(env.OWNER_TELEGRAM_ID || ""))) {
+    return json({ error: "owner_auth_not_configured" }, 503);
+  }
+  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
+  if (!verified) return json({ error: "unauthorized" }, 401);
+  let actor;
+  try { actor = await getTelegramUser(env, verified.user.id); }
+  catch { return json({ error: "identity_service_unavailable" }, 503); }
+  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+  if (role !== "OWNER") return json({ error: "forbidden" }, 403);
+  if (!env.KAGECATCH_DB) return json({ error: "safety_store_unavailable" }, 503);
+
+  if (operation === "status") {
+    try {
+      return json(await getTelegramSafetySnapshot(env.KAGECATCH_DB, Date.now()));
+    } catch {
+      return json({ error: "safety_state_unavailable" }, 503);
+    }
+  }
+  if (operation !== "recover") return json({ error: "invalid_action" }, 400);
+
+  if (body.action === "global_pause") {
+    if (body.confirmation !== "RESET_GLOBAL_PAUSE") return json({ error: "explicit_confirmation_required" }, 400);
+    const expectedUntil = typeof body.expected_paused_until_ms === "string"
+      ? body.expected_paused_until_ms
+      : "";
+    const expectedReason = body.expected_pause_reason;
+    if (!/^\d{1,20}$/.test(expectedUntil)
+      || !["telegram_429", "invalid_credentials"].includes(expectedReason)) {
+      return json({ error: "invalid_global_recovery_snapshot" }, 400);
+    }
+    try {
+      const result = await recoverTelegramGlobalPause(env.KAGECATCH_DB, expectedUntil, expectedReason, Date.now());
+      if (!result.recovered) return json({ error: "safety_state_changed_refresh_required" }, 409);
+      return json({ status: "recovered", scope: "global_pause", cleared_reason: result.clearedReason });
+    } catch {
+      return json({ error: "safety_recovery_unavailable" }, 503);
+    }
+  }
+
+  if (body.action === "chat_circuit") {
+    if (body.confirmation !== "RESET_CHAT_CIRCUIT") return json({ error: "explicit_confirmation_required" }, 400);
+    const chatIdValid = (typeof body.chat_id === "string"
+      && (/^-?\d{1,20}$/.test(body.chat_id.trim()) || /^@[A-Za-z0-9_]{5,32}$/.test(body.chat_id.trim())))
+      || (Number.isSafeInteger(body.chat_id) && body.chat_id !== 0);
+    if (!chatIdValid || !Number.isSafeInteger(body.expected_updated_at_ms) || body.expected_updated_at_ms < 0) {
+      return json({ error: "invalid_chat_recovery_snapshot" }, 400);
+    }
+    try {
+      const result = await recoverTelegramChatCircuit(env.KAGECATCH_DB, body.chat_id, body.expected_updated_at_ms, Date.now());
+      if (!result.recovered) return json({ error: "circuit_state_changed_refresh_required" }, 409);
+      return json({ status: "recovered", scope: "chat_circuit", chat_id: result.chatId });
+    } catch {
+      return json({ error: "safety_recovery_unavailable" }, 503);
+    }
+  }
+  return json({ error: "invalid_action" }, 400);
 }
 
 async function telegramApi(env, method, payload = {}) {
@@ -486,18 +553,133 @@ body{background:radial-gradient(ellipse at 78% -8%,#71365f55 0,transparent 42%),
 <section class="view" id="view-activity"><div class="card"><h3>تاریخچه عملیات</h3><div class="empty">◷<b>هنوز رویدادی ثبت نشده است</b>پس از راه‌اندازی Core، نتیجه تأییدشده هر عملیات اینجا نمایش داده می‌شود.</div></div></section>
 <section class="view" id="view-security"><div class="card"><h3>امنیت و نشست‌ها</h3><div class="service"><div><b>رمزنگاری Session</b><small>Fernet encryption at rest</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>مدیریت نشست‌ها</b><small>قطع و لغو دسترسی</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>گزارش دسترسی</b><small>Audit trail</small></div><span class="tag wait">نیازمند Core</span></div><div class="notice">کد ورود، رمز دومرحله‌ای و StringSession از طریق چت بات دریافت نمی‌شوند.</div></div></section>
 <section class="view" id="view-settings"><div class="card"><h3>تنظیمات عمومی</h3><div class="empty">⚙<b>تنظیمات هنوز فعال نیستند</b>زبان، اعلان‌ها و ترجیحات Catch پس از احراز هویت Mini App فعال می‌شوند.</div></div></section>
-<section class="view" id="view-admin"><div class="card"><h3>مدیریت سامانه</h3><div class="empty">♛<b>بخش مدیریت سامانه</b>هویت مالک از داده امضاشده Telegram و نقش ثبت‌شده در سمت سرور تأیید می‌شود. ابزارهای مدیریت عملیاتی هنوز در حال توسعه‌اند.</div></div></section>
+<section class="view" id="view-admin"><div class="card">
+<div class="actions"><h3>🛡️ Safety Monitor — Control Bot</h3><button class="secondary" id="safety-refresh" type="button">بروزرسانی وضعیت</button></div>
+<div class="empty" id="safety-status" aria-live="polite">برای مشاهده وضعیت ایمنی، پنل را با حساب Owner باز کن.</div>
+<h3>وضعیت چت‌ها و Circuit Breaker</h3><div id="safety-chats"></div>
+<div class="notice">خطای 401 ارسال‌های خروجی را تا اقدام صریح Owner متوقف می‌کند. بازیابی فقط پس از بررسی علت و تأیید دستی انجام می‌شود؛ بستن circuit یک چت، global pause یا circuitهای دیگر را تغییر نمی‌دهد.</div>
+</div></section>
 <dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title"><form id="login-form"><div class="dialog-mark">✿</div><div class="eyebrow">SECURE TELEGRAM AUTH</div><h2 id="login-title">اتصال حساب تلگرام</h2><p id="login-description">شماره تلفن را همراه کد کشور وارد کن.</p><label class="login-label" id="login-label" for="login-value">شماره تلفن</label><input id="login-value" name="login-value" type="tel" inputmode="tel" autocomplete="tel" placeholder="+98912…" required maxlength="20"><p id="login-feedback" class="login-feedback" role="status" aria-live="polite"></p><div class="dialog-actions"><button type="button" class="secondary" id="login-cancel">انصراف</button><button type="submit" class="primary" id="login-submit">ارسال کد</button></div><p class="security-caption">🔒 ارتباط رمزنگاری‌شده · اطلاعات ورود در پیام‌های بات دریافت نمی‌شود.</p></form></dialog><footer><span>KageCatch · Control Center</span><span>Worker v0.9.0 · Sakura Control Center</span></footer></main></div>
 <nav class="mobile" aria-label="ناوبری موبایل"><button class="active" data-view="overview" aria-current="page">⌂<span>خانه</span></button><button data-view="accounts">♙<span>حساب‌ها</span></button><button data-view="catcher">✧<span>Catch</span></button><button data-view="activity">◷<span>رویدادها</span></button><button data-view="security">⬡<span>امنیت</span></button><button data-view="settings">⚙<span>تنظیمات</span></button><button data-view="admin" id="admin-mobile" hidden>♛<span>مدیریت</span></button></nav>
 <script nonce="${nonce}">
 const tg=window.Telegram?.WebApp;if(tg){tg.setHeaderColor("#100e17");tg.setBackgroundColor("#100e17");tg.ready();tg.expand();}
 let session=null;let authPromise=null;
 const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
-function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
+function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;if(name==="admin"&&session?.role==="OWNER")refreshSafetyMonitor();window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
 document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
 let authFailureMessage="فعلاً نتونستیم وارد پنل بشیم؛ چند لحظه دیگه دوباره تلاش کن.";
 async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role"),state=document.querySelector("#account-state");if(!tg?.initData){authFailureMessage="پنل رو از دکمهٔ داخل بات باز کن تا بتونیم حسابت رو بشناسیم.";name.textContent="خوش اومدی!";role.textContent="برای اتصال حساب، پنل رو از داخل بات باز کن.";state.textContent=authFailureMessage;return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok){const failure=await response.json().catch(()=>({}));throw Object.assign(new Error(failure.error||"auth"),{status:response.status,code:failure.error});}session=await response.json();authFailureMessage="";name.textContent=session.user.first_name||"دوست KageCatch";role.textContent=session.role==="OWNER"?"مدیر KageCatch":"عضو KageCatch";if(session.role==="OWNER"){document.querySelector("#admin-nav").hidden=false;document.querySelector("#admin-mobile").hidden=false;}refreshAccountStatus();}catch(error){authFailureMessage=error.status===401?"اطلاعات ورود تلگرام تأیید نشد؛ پنل رو کامل ببند و دوباره از بات باز کن.":error.status===403?"این حساب اجازهٔ ورود به پنل رو نداره؛ با مدیر KageCatch تماس بگیر.":error.status===503?"ارتباط پنل با سرویس حساب‌ها برقرار نیست؛ کمی بعد دوباره امتحان کن.":"فعلاً نتونستیم وارد پنل بشیم؛ چند لحظه دیگه دوباره تلاش کن.";name.textContent="یه مشکلی پیش اومد";role.textContent="ورود به پنل کامل نشد.";state.textContent=authFailureMessage;}}
 async function accountApi(path,payload={}){if(!tg?.initData||!session)throw Object.assign(new Error("telegram_auth_required"),{status:401});const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData,...payload}),cache:"no-store"});const data=await response.json().catch(()=>({error:"invalid_response"}));if(!response.ok)throw Object.assign(new Error(data.error||"core_error"),{status:response.status,data});return data;}
+
+function safetyFormatTime(value){
+  if(value===null||value===undefined||value==="")return "—";
+  let date;
+  if(typeof value==="number")date=new Date(value);
+  else if(typeof value==="string"&&/^\d{4}-\d\d-\d\d \d\d/.test(value))date=new Date(value.replace(" ","T")+"Z");
+  else date=new Date(value);
+  if(Number.isNaN(date.getTime()))return String(value);
+  return new Intl.DateTimeFormat("fa-IR",{timeZone:"Asia/Tehran",dateStyle:"short",timeStyle:"medium"}).format(date);
+}
+function safetyCauseLabel(value){
+  const labels={operator_action_required:"توقف 401 — نیازمند اقدام Owner",telegram_429:"مکث سراسری پس از 429",global_cooldown:"فاصلهٔ زمانی سراسری",chat_circuit_open:"Circuit این چت باز است",chat_cooldown:"Cooldown این چت"};
+  return labels[value]||"بدون توقف فعال";
+}
+function safetyNode(tag,className,text){
+  const node=document.createElement(tag);
+  if(className)node.className=className;
+  if(text!==undefined)node.textContent=String(text);
+  return node;
+}
+function renderSafetyMonitor(data){
+  const root=document.querySelector("#safety-status");
+  const chatsRoot=document.querySelector("#safety-chats");
+  root.replaceChildren();
+  chatsRoot.replaceChildren();
+  const global=data.global||{};
+  const globalRow=safetyNode("div","service");
+  const globalInfo=safetyNode("div","");
+  globalInfo.append(safetyNode("b","","وضعیت سراسری Bot API"));
+  const retry=global.operator_action_required?"فقط با اقدام Owner":global.retry_after_seconds===null?"—":global.retry_after_seconds+" ثانیه";
+  const globalDetails="وضعیت: "+(global.paused?"متوقف":"فعال")+" · علت: "+safetyCauseLabel(global.cause_of_stop)+" · retry_after: "+retry+" · آخرین خطا: "+(global.last_error_code===null?"—":"HTTP "+global.last_error_code)+" · آخرین تغییر: "+safetyFormatTime(global.updated_at);
+  globalInfo.append(safetyNode("small","",globalDetails));
+  globalRow.append(globalInfo);
+  globalRow.append(safetyNode("span","tag "+(global.paused?"off":"ok"),global.paused?"PAUSED":"ACTIVE"));
+  if(global.paused){
+    const recover=safetyNode("button","secondary","بازیابی global pause");
+    recover.type="button";
+    recover.addEventListener("click",()=>recoverGlobalSafetyPause(global));
+    globalRow.append(recover);
+  }
+  root.append(globalRow);
+
+  const chats=Array.isArray(data.chats)?data.chats:[];
+  if(!chats.length)chatsRoot.append(safetyNode("div","empty","هنوز رکوردی برای cooldown یا circuit چت‌ها ثبت نشده است."));
+  for(const chat of chats){
+    const row=safetyNode("div","service");
+    const info=safetyNode("div","");
+    info.append(safetyNode("b","","Chat ID: "+chat.chat_id));
+    const cooldown=chat.cooldown_remaining_ms>0?Math.ceil(chat.cooldown_remaining_ms/1000)+" ثانیه":"آزاد";
+    const detail="Cooldown: "+cooldown+" · Circuit: "+(chat.is_open?"OPEN":"CLOSED")+" · Failures: "+(chat.consecutive_failures||0)+" · آخرین خطا: "+(chat.last_error_code===null?"—":"HTTP "+chat.last_error_code)+" · علت توقف: "+safetyCauseLabel(chat.cause_of_stop)+" · آخرین تغییر: "+safetyFormatTime(chat.updated_at||chat.circuit_updated_at_ms||chat.pacing_updated_at);
+    info.append(safetyNode("small","",detail));
+    row.append(info);
+    row.append(safetyNode("span","tag "+(chat.is_open?"off":chat.cooldown_remaining_ms>0?"wait":"ok"),chat.is_open?"OPEN":chat.cooldown_remaining_ms>0?"COOLDOWN":"READY"));
+    if(chat.is_open){
+      const recover=safetyNode("button","secondary","بستن circuit همین چت");
+      recover.type="button";
+      recover.addEventListener("click",()=>recoverChatSafetyCircuit(chat));
+      row.append(recover);
+    }
+    chatsRoot.append(row);
+  }
+  if(data.chats_truncated)chatsRoot.append(safetyNode("div","notice","برای جلوگیری از پاسخ بزرگ، فقط ۱۰۰ رکورد اخیر هر جدول نمایش داده شده است."));
+}
+async function refreshSafetyMonitor(){
+  const root=document.querySelector("#safety-status");
+  const chatsRoot=document.querySelector("#safety-chats");
+  if(!root||!chatsRoot)return;
+  if(session?.role!=="OWNER"){root.textContent="این بخش فقط برای Owner در دسترس است.";chatsRoot.replaceChildren();return;}
+  root.textContent="در حال دریافت وضعیت Safety Gate و Circuit Breaker…";
+  chatsRoot.replaceChildren();
+  try{
+    const data=await accountApi("/api/owner/safety/status");
+    renderSafetyMonitor(data);
+  }catch(error){
+    root.textContent=error.status===503?"ذخیره‌ساز ایمنی در دسترس نیست؛ هیچ recovery مجاز نیست.":error.status===401?"احراز هویت منقضی شده؛ پنل را دوباره از بات باز کن.":error.status===403?"دسترسی Owner تأیید نشد.":"خواندن وضعیت ایمنی ناموفق بود.";
+  }
+}
+async function recoverGlobalSafetyPause(state){
+  const message=state.operator_action_required
+    ?"خطای 401 یعنی اعتبار توکن/پیکربندی باید بررسی شود. فقط پس از بررسی علت، global pause پاک شود؟"
+    :"مکث سراسری ثبت‌شده پاک شود؟ Cooldown سراسری و circuitهای چت دست‌نخورده می‌مانند.";
+  if(!window.confirm(message))return;
+  try{
+    await accountApi("/api/owner/safety/recover",{
+      action:"global_pause",
+      confirmation:"RESET_GLOBAL_PAUSE",
+      expected_paused_until_ms:state.paused_until_ms,
+      expected_pause_reason:state.stored_pause_reason||state.pause_reason
+    });
+    await refreshSafetyMonitor();
+  }catch(error){
+    document.querySelector("#safety-status").textContent=error.status===409?"وضعیت تغییر کرده؛ ابتدا بروزرسانی کن.":"بازیابی انجام نشد؛ وضعیت همچنان fail-closed است.";
+  }
+}
+async function recoverChatSafetyCircuit(chat){
+  if(!window.confirm("فقط circuit چت "+chat.chat_id+" بسته شود؟ Global pause، cooldown و circuitهای دیگر تغییر نمی‌کنند."))return;
+  try{
+    await accountApi("/api/owner/safety/recover",{
+      action:"chat_circuit",
+      chat_id:chat.chat_id,
+      confirmation:"RESET_CHAT_CIRCUIT",
+      expected_updated_at_ms:chat.circuit_updated_at_ms
+    });
+    await refreshSafetyMonitor();
+  }catch(error){
+    document.querySelector("#safety-status").textContent=error.status===409?"Circuit تغییر کرده؛ ابتدا بروزرسانی کن.":"بازیابی انجام نشد؛ circuit همچنان fail-closed است.";
+  }
+}
+document.querySelector("#safety-refresh").addEventListener("click",refreshSafetyMonitor);
+
 async function refreshAccountStatus(){
   const state=document.querySelector("#account-state");
   const disconnect=document.querySelector("#account-disconnect");
@@ -1610,6 +1792,8 @@ export default {
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
     if (url.pathname === "/connect/api") return standaloneConnectApi(request, env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
+    if (url.pathname === "/api/owner/safety/status") return miniAppOwnerSafety(request, env, "status");
+    if (url.pathname === "/api/owner/safety/recover") return miniAppOwnerSafety(request, env, "recover");
     if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
     if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
     if (url.pathname === "/api/account/connect/code") return miniAppCoreProxy(request, env, "connect-code");
