@@ -636,6 +636,15 @@ export class ConnectionLinkStore {
         || typeof claimToken !== 'string' || !/^[a-f0-9]{32}$/.test(claimToken)) return json({ error: 'invalid_request' }, 400);
       const now = Date.now();
       const result = await this.state.storage.transaction(async (txn) => {
+        const expired = await txn.list({ prefix: 'telegram-update:', limit: 1000 });
+        let cleaned = 0;
+        for (const [storedKey, record] of expired) {
+          if (record?.expiresAt <= now) {
+            await txn.delete(storedKey);
+            cleaned += 1;
+            if (cleaned >= 50) break;
+          }
+        }
         const key = 'telegram-update:' + updateId;
         const existing = await txn.get(key);
         if (existing?.status === 'completed' && existing.expiresAt > now) return 'completed';
