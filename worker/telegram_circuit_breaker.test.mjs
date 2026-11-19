@@ -16,8 +16,20 @@ function circuitDb() {
       return {
         bind(...args) { values = args; return this; },
         async first() {
-          const [chatId] = values;
-          if (sql.includes("SELECT")) return chats.get(chatId) ?? null;
+          const [chatId, errorCode, now] = values;
+          if (sql.includes("INSERT INTO telegram_bot_chat_circuit_breaker")) {
+            const current = chats.get(chatId) ?? {
+              chat_id: chatId, consecutive_failures: 0, is_open: 0,
+              last_error_code: null, updated_at_ms: now,
+            };
+            current.consecutive_failures = Math.min(3, current.consecutive_failures + 1);
+            current.is_open = current.consecutive_failures >= 3 ? 1 : current.is_open;
+            current.last_error_code = errorCode;
+            current.updated_at_ms = now;
+            chats.set(chatId, current);
+            return { consecutive_failures: current.consecutive_failures, is_open: current.is_open };
+          }
+          if (sql.includes("SELECT")) return chats.get(values[0]) ?? null;
           return null;
         },
         async run() {
@@ -93,4 +105,13 @@ test("an open chat circuit stays fail-closed until operator recovery", async () 
 
 test("circuit storage failure blocks the operation rather than allowing a send", async () => {
   await assert.rejects(() => assertTelegramChatCircuitClosed(null, 111), /safety_store_unavailable/);
+});
+
+test("concurrent permanent failures increment atomically and open at the threshold", async () => {
+  const db = circuitDb();
+  await Promise.all([1, 2, 3].map((now) =>
+    recordTelegramChatApiFailure(db, 333, { kind: "access_denied", errorCode: 403 }, now)
+  ));
+  assert.equal(db.chats.get("333").consecutive_failures, 3);
+  assert.equal(db.chats.get("333").is_open, 1);
 });
