@@ -128,10 +128,10 @@ export async function processPanelQueue(env, sendTelegram) {
       });
       const messageId = sent?.message_id;
       if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("invalid_telegram_message");
-      await env.KAGECATCH_DB.prepare(
+      const completion = await env.KAGECATCH_DB.prepare(
         "UPDATE panel_requests SET status = 'completed', panel_message_id = ?, lease_token = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing' AND lease_token = ?"
       ).bind(messageId, row.request_id, leaseToken).run();
-      processed += 1;
+      if (completion.meta?.changes === 1) processed += 1;
     } catch {
       const nextStatus = row.attempts >= 3 ? "failed" : "pending";
       await env.KAGECATCH_DB.prepare(
