@@ -115,14 +115,18 @@ class PersistentManualReviewQueue:
                 or expires_at.utcoffset() is None
             ):
                 raise ValueError("stored timestamps must be timezone-aware")
+            created_at = created_at.astimezone(timezone.utc)
+            expires_at = expires_at.astimezone(timezone.utc)
+            if expires_at < created_at:
+                raise ValueError("stored expiry must not precede creation")
             return ReviewItem(
                 review_id=record["review_id"],
                 user_id=record["user_id"],
                 spawn_id=int(record["spawn_id"]),
                 anime_name=record["anime_name"],
                 candidates=tuple(record["candidates"]),
-                created_at=created_at.astimezone(timezone.utc),
-                expires_at=expires_at.astimezone(timezone.utc),
+                created_at=created_at,
+                expires_at=expires_at,
                 status=ReviewStatus(record["status"]),
                 selected_character=record.get("selected_character"),
             )
