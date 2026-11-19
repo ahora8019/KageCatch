@@ -1374,7 +1374,13 @@ async function handleOwnerCallback(callback, env) {
         text: reviewRequired
           ? '⚠️ یک نتیجهٔ ارسال نامشخص برای بررسی Owner قفل شده است. هیچ ارسال مجددی انجام نمی‌شود؛ پیش‌نویس را بررسی یا صریحاً لغو کن.'
           : '⚠️ یک پیش‌نویس یا ارسال قبلی هنوز تعیین‌تکلیف نشده است. ابتدا همان مورد را ادامه بده یا لغو کن.',
-        keyboard: { inline_keyboard: [[{ text: '🗑️ لغو پیش‌نویس', callback_data: 'owner:broadcast:cancel' }], ...BACK_MENU.inline_keyboard] },
+        keyboard: { inline_keyboard: [
+          ...(current.status === 'paused'
+            ? [[{ text: '▶️ ادامهٔ صف پس از بررسی Safety Gate', callback_data: 'owner:broadcast:confirm' }]]
+            : []),
+          [{ text: '🗑️ لغو پیش‌نویس', callback_data: 'owner:broadcast:cancel' }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
         alert: true,
       };
     }

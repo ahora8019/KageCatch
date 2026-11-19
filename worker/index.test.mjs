@@ -407,7 +407,8 @@ test("owner menu includes global monitoring and member administration", () => {
 
 test("user registry creates MEMBER records and reserves OWNER for the configured ID", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
+  const storeState = createDurableObjectState();
+  const store = new ConnectionLinkStore(storeState);
   const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
   }));
@@ -513,10 +514,15 @@ test("owner broadcast collects a draft, previews it, and sends only to active me
 
   calls.length = 0;
   assert.equal((await webhook(callback(303, "owner:broadcast:confirm", 3))).status, 200);
+  const beforeAlarm = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(beforeAlarm.draft.status, "queued");
+  assert.deepEqual(calls.filter((c) => c.method === "sendMessage" && c.payload.chat_id !== 1001), []);
+  await store.alarm({}, env);
   const deliveries = calls.filter((c) => c.method === "sendMessage" && c.payload.chat_id !== 1001);
   assert.deepEqual(deliveries.map((c) => c.payload.chat_id), [2001]);
   assert.equal(deliveries[0].payload.text, "سلام اعضای KageCatch");
-  assert.ok(calls.some((c) => c.method === "editMessageText" && c.payload.chat_id === 1001 && /ارسال همگانی تمام شد/.test(c.payload.text)));
+  const completed = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(completed.draft.status, "completed");
 });
 
 test("broadcast draft is available only to the owner and supports cancellation", async () => {
@@ -1656,9 +1662,12 @@ test("broadcast keeps its draft claim when Telegram pauses outbound delivery", a
       id: "callback-401", from: { id: 1001 }, message: { message_id: 9, chat: { id: 1001, type: "private" } }, data: "owner:broadcast:confirm",
     } }),
   }), env);
-  assert.ok([200, 500, 502].includes(response.status));
+  assert.equal(response.status, 200);
+  const queued = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(queued.draft?.status, "queued");
+  await store.alarm({}, env);
   const state = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
-  assert.equal(state.draft?.status, "awaiting_confirmation");
+  assert.equal(state.draft?.status, "paused");
   assert.equal(state.draft?.text, "پیام آزمایشی همگانی");
   assert.deepEqual(state.draft?.recipientIds, [2001, 2002]);
   assert.equal(state.draft?.nextIndex, 0);
@@ -1699,8 +1708,10 @@ test("broadcast resumes after a pause without resending recipients already confi
     },
   };
   await webhook(501, firstEnv);
+  await store.alarm({}, firstEnv);
+  await store.alarm({}, firstEnv);
   const paused = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
-  assert.equal(paused.draft?.status, "awaiting_confirmation");
+  assert.equal(paused.draft?.status, "paused");
   assert.deepEqual(paused.draft?.recipientIds, [2001, 2002]);
   assert.equal(paused.draft?.nextIndex, 1);
   assert.equal(paused.draft?.deliveredCount, 1);
@@ -1715,6 +1726,7 @@ test("broadcast resumes after a pause without resending recipients already confi
     },
   };
   await webhook(502, resumedEnv);
+  await store.alarm({}, resumedEnv);
   assert.deepEqual(resumedCalls.filter((call) => call.method === "sendMessage").map((call) => call.payload.chat_id), [2002]);
 });
 
@@ -1763,6 +1775,9 @@ test("ambiguous broadcast delivery is locked for Owner review and cannot be retr
 
   calls.length = 0;
   assert.equal((await webhook(callback(403, "owner:broadcast:confirm", 3))).status, 200);
+  const queued = await post("/broadcast", { ownerTelegramId: 1001, action: "get" });
+  assert.equal((await queued.json()).draft.status, "queued");
+  await store.alarm({}, env);
   const state = await post("/broadcast", { ownerTelegramId: 1001, action: "get" });
   const draft = (await state.json()).draft;
   assert.equal(draft.status, "review_required");
