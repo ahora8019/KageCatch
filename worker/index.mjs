@@ -1126,13 +1126,99 @@ const CONNECTION_LOGIN_HTML = `<!doctype html>
 <form id="login"><div class="field" id="phone-field"><label for="phone">شماره تلفن</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+989..." required></div>
 <div class="field hidden" id="code-field"><label for="code">کد ورود تلگرام</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"></div>
 <div class="field hidden" id="password-field"><label for="password">رمز دومرحله‌ای</label><input id="password" name="password" type="password" autocomplete="off" maxlength="256"></div>
-<button id="submit" type="submit">ارسال کد</button></form><div id="status" class="status" role="status" aria-live="polite"></div><p class="hint">این صفحه فقط برای اتصال حساب KageCatch است. کد و رمزت ذخیره یا در چت بات فرستاده نمی‌شوند.</p></main>
+<button id="submit" type="submit">ارسال کد</button></form><div id="status" class="status" role="status" aria-live="polite"></div><button id="retry-status" type="button" hidden>بررسی دوبارهٔ وضعیت ذخیره نشست</button><p class="hint">این صفحه فقط برای اتصال حساب KageCatch است. کد و رمزت ذخیره یا در چت بات فرستاده نمی‌شوند.</p></main>
 <script>
 (()=>{const form=document.querySelector("#login"),status=document.querySelector("#status"),intro=document.querySelector("#intro"),submit=document.querySelector("#submit"),phoneField=document.querySelector("#phone-field"),codeField=document.querySelector("#code-field"),passwordField=document.querySelector("#password-field");let stage="phone",sessionToken="",busy=false;submit.disabled=true;
 const show=(next,message)=>{stage=next;phoneField.classList.toggle("hidden",next!=="phone");codeField.classList.toggle("hidden",next!=="code");passwordField.classList.toggle("hidden",next!=="password");document.querySelector("#phone").required=next==="phone";document.querySelector("#code").required=next==="code";document.querySelector("#password").required=next==="password";submit.textContent=next==="phone"?"ارسال کد":next==="code"?"تأیید کد":"تأیید و اتصال";intro.textContent=next==="phone"?"شماره‌ات رو وارد کن تا کد ورود تلگرام برات ارسال بشه.":next==="code"?"کدی که تلگرام فرستاده رو همین‌جا وارد کن.": "رمز دومرحله‌ای تلگرامت رو وارد کن.";status.textContent=message||"";};
+const retryStatus=document.querySelector("#retry-status");
 const api=async(action,data={})=>{const r=await fetch("/connect/api",{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+sessionToken},body:JSON.stringify({action,...data}),cache:"no-store"});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||"request_failed");return body;};
+const finishAuthorization=result=>{
+ if(result?.status==="connected"){form.classList.add("hidden");retryStatus.hidden=true;status.textContent="حساب تلگرامت با موفقیت تأیید و متصل شد! 🎉";return true;}
+ if(result?.status==="authorized"){form.classList.add("hidden");retryStatus.hidden=true;status.textContent="ورود تأیید شده و نشست به‌صورت امن ذخیره شده؛ اتصال کلاینت هنوز کامل نیست. از پنل وضعیت را بررسی کن.";return true;}
+ return false;
+};
+const pollPersistence=async()=>{
+ if(busy||!sessionToken)return;
+ busy=true;submit.disabled=true;retryStatus.hidden=true;retryStatus.disabled=true;form.classList.add("hidden");
+ status.textContent="تلگرام ورود را تأیید کرده؛ ذخیرهٔ امن نشست در حال تکمیل است. این صفحه را باز نگه دار.";
+ try{
+  for(let attempt=0;attempt<10;attempt++){
+   if(attempt>0)await new Promise(resolve=>setTimeout(resolve,2000));
+   let result;
+   try{result=await api("auth-status");}
+   catch{status.textContent="ارتباط با سرویس موقتاً برقرار نشد؛ بررسی وضعیت ادامه دارد.";continue;}
+   if(finishAuthorization(result))return;
+   if(result.status==="persistence_pending"||result.status==="pending"){
+    status.textContent="ذخیره نشست هنوز تکمیل نشده؛ بدون ارسال دوبارهٔ کد یا رمز، وضعیت را بررسی می‌کنیم.";
+    continue;
+   }
+   if(result.status==="expired"){
+    status.textContent="مهلت ورود تمام شده است. از بات یک لینک اتصال تازه بگیر.";
+    return;
+   }
+   if(result.status==="not_pending"||result.status==="not_connected"){
+    status.textContent="وضعیت نشست برای بازیابی پیدا نشد. از بات یک لینک اتصال تازه بگیر.";
+    return;
+   }
+   status.textContent="سرویس هنوز نتیجهٔ نهایی را اعلام نکرده؛ بررسی ادامه دارد.";
+  }
+  retryStatus.hidden=false;
+  status.textContent="ذخیره نشست هنوز تکمیل نشده. می‌توانی دوباره وضعیت را بررسی کنی؛ کد ورود یا رمز دومرحله‌ای را دوباره نفرست.";
+ }finally{
+  busy=false;retryStatus.disabled=false;submit.disabled=!sessionToken||form.classList.contains("hidden");
+ }
+};
+retryStatus.addEventListener("click",pollPersistence);
 (async()=>{const linkToken=location.pathname.split("/").pop();if(!/^[A-Za-z0-9_-]{40,}$/.test(linkToken)){show("phone","لینک اتصال معتبر نیست.");submit.disabled=true;return;}try{const r=await fetch("/connect/exchange",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:linkToken}),cache:"no-store"});const body=await r.json();if(!r.ok)throw new Error(body.error||"link_expired");sessionToken=body.sessionToken;history.replaceState(null,"","/connect");submit.disabled=false;status.textContent="لینک امن تأیید شد؛ می‌تونیم شروع کنیم."; }catch{show("phone","این لینک منقضی شده یا قبلاً استفاده شده. از داخل بات یه لینک تازه بگیر.");submit.disabled=true;}})();
-form.addEventListener("submit",async event=>{event.preventDefault();if(busy||!sessionToken)return;busy=true;submit.disabled=true;const submittedStage=stage;try{let result;if(stage==="phone"){const phone=document.querySelector("#phone").value.trim();if(!/^\\+[1-9]\\d{7,14}$/.test(phone))throw new Error("invalid_phone");result=await api("start",{phone});if(result.status==="already_authorized"){await api("reconnect");show("phone","حسابت از قبل مجاز بود؛ اتصال دوباره برقرار شد. 🎉");form.classList.add("hidden");return;}show("code","کد ورود ارسال شد. فقط همین‌جا واردش کن.");}else if(stage==="code"){result=await api("code",{code:document.querySelector("#code").value.trim()});if(result.status==="password_required"){show("password","حساب تلگرامت رمز دومرحله‌ای داره.");return;}show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}else{result=await api("password",{password:document.querySelector("#password").value});show("phone",result.status==="connected"?"حساب تلگرامت با موفقیت وصل شد! 🎉":"ورود تأیید و نشست ذخیره شد؛ اتصال سرویس هنوز کامل نشده.");form.classList.add("hidden");}}catch(error){const messages={invalid_phone:"شماره رو با کد کشور وارد کن.",telegram_code_request_failed:"تلگرام فعلاً نتونست کد بفرسته؛ کمی بعد دوباره امتحان کن.",invalid_telegram_code:"کد ورود درست نیست؛ دوباره بررسیش کن.",authorization_expired:"مهلت ورود تموم شد. از بات لینک تازه بگیر.",invalid_2fa_password:"رمز دومرحله‌ای درست نیست.",core_unavailable:"ارتباط با سرویس برقرار نشد؛ دوباره تلاش کن."};status.textContent=messages[error.message]||"اتصال انجام نشد. دوباره تلاش کن."; }finally{if(submittedStage==="code")document.querySelector("#code").value="";if(submittedStage==="password")document.querySelector("#password").value="";if(submittedStage==="phone"&&form.classList.contains("hidden"))document.querySelector("#phone").value="";busy=false;submit.disabled=!sessionToken||form.classList.contains("hidden");}});
+form.addEventListener("submit",async event=>{
+ event.preventDefault();
+ if(busy||!sessionToken)return;
+ busy=true;submit.disabled=true;
+ const submittedStage=stage;
+ let pollAfterSubmit=false;
+ try{
+  let result;
+  if(stage==="phone"){
+   const phone=document.querySelector("#phone").value.trim();
+   if(!/^\\+[1-9]\\d{7,14}$/.test(phone))throw new Error("invalid_phone");
+   result=await api("start",{phone});
+   if(result.status==="already_authorized"){
+    result=await api("reconnect");
+    if(finishAuthorization(result))return;
+    if(result.status==="persistence_pending"){pollAfterSubmit=true;form.classList.add("hidden");status.textContent="نشست قبلی تأیید شده؛ ذخیرهٔ امن آن در حال بازیابی است.";}
+    else throw new Error("authorization_incomplete");
+   }else if(result.status==="code_sent"){
+    show("code","کد ورود ارسال شد. فقط همین‌جا واردش کن.");
+   }else if(result.status==="persistence_pending"){
+    pollAfterSubmit=true;form.classList.add("hidden");status.textContent="نشست قبلی تأیید شده؛ ذخیرهٔ امن آن در حال بازیابی است.";
+   }else if(!finishAuthorization(result)){
+    throw new Error("authorization_incomplete");
+   }
+  }else if(stage==="code"){
+   result=await api("code",{code:document.querySelector("#code").value.trim()});
+   if(result.status==="password_required"){show("password","کد تأیید شد؛ رمز دومرحله‌ای لازم است.");return;}
+   if(finishAuthorization(result))return;
+   if(result.status==="persistence_pending"){
+    pollAfterSubmit=true;form.classList.add("hidden");status.textContent="تلگرام ورود را تأیید کرده؛ ذخیرهٔ امن نشست هنوز در حال تکمیل است.";
+   }else throw new Error("authorization_incomplete");
+  }else{
+   result=await api("password",{password:document.querySelector("#password").value});
+   if(finishAuthorization(result))return;
+   if(result.status==="persistence_pending"){
+    pollAfterSubmit=true;form.classList.add("hidden");status.textContent="تلگرام ورود را تأیید کرده؛ ذخیرهٔ امن نشست هنوز در حال تکمیل است.";
+   }else throw new Error("authorization_incomplete");
+  }
+ }catch(error){
+  const messages={invalid_phone:"شماره رو با کد کشور وارد کن.",telegram_code_request_failed:"تلگرام فعلاً نتونست کد بفرسته؛ کمی بعد دوباره امتحان کن.",invalid_telegram_code:"کد ورود درست نیست؛ دوباره بررسیش کن.",authorization_expired:"مهلت ورود تموم شد. از بات لینک تازه بگیر.",invalid_2fa_password:"رمز دومرحله‌ای درست نیست.",core_unavailable:"ارتباط با سرویس برقرار نشد؛ دوباره تلاش کن.",authorization_incomplete:"وضعیت نهایی اتصال هنوز مشخص نیست؛ وضعیت را دوباره بررسی کن."};
+  status.textContent=messages[error.message]||"اتصال انجام نشد. دوباره تلاش کن.";
+ }finally{
+  if(submittedStage==="code")document.querySelector("#code").value="";
+  if(submittedStage==="password")document.querySelector("#password").value="";
+  if(submittedStage==="phone"&&form.classList.contains("hidden"))document.querySelector("#phone").value="";
+  busy=false;submit.disabled=!sessionToken||form.classList.contains("hidden");
+ }
+ if(pollAfterSubmit)await pollPersistence();
+});
 })();
 </script></body></html>`;
 function securePageHeaders(extra={}){return { "content-type":"text/html; charset=utf-8","cache-control":"no-store, max-age=0","referrer-policy":"no-referrer","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'","permissions-policy":"camera=(), microphone=(), geolocation=()","x-robots-tag":"noindex, nofollow, noarchive",...extra};}
@@ -1164,6 +1250,7 @@ async function standaloneConnectApi(request,env){
   const path="/v1/accounts/"+telegramUserId;
   const action=body?.action;
   const spec=action==="status"?{method:"GET",path}
+    :action==="auth-status"?{method:"GET",path:path+"/connect/status"}
     :action==="start"?{method:"POST",path:path+"/connect",payload:{phone:body.phone}}
     :action==="code"?{method:"POST",path:path+"/connect/code",payload:{code:body.code}}
     :action==="password"?{method:"POST",path:path+"/connect/password",payload:{password:body.password}}
