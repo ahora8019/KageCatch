@@ -16,6 +16,7 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
         self.db = sqlite3.connect(":memory:")
         apply_migration(self.db, "0005_telegram_bot_safety.sql")
         apply_migration(self.db, "0006_telegram_bot_chat_pacing.sql")
+        apply_migration(self.db, "0007_telegram_bot_chat_circuit_breaker.sql")
 
     def tearDown(self) -> None:
         self.db.close()
@@ -44,6 +45,32 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
             ).fetchall(),
             [("-100123", 1000), ("-100456", 2000)],
         )
+
+    def test_chat_circuit_state_isolated_and_rejects_invalid_values(self) -> None:
+        self.db.executemany(
+            "INSERT INTO telegram_bot_chat_circuit_breaker "
+            "(chat_id, consecutive_failures, is_open, last_error_code, updated_at_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [("111", 3, 1, 403, 1000), ("222", 1, 0, 400, 2000)],
+        )
+        self.assertEqual(
+            self.db.execute(
+                "SELECT chat_id, consecutive_failures, is_open FROM telegram_bot_chat_circuit_breaker ORDER BY chat_id"
+            ).fetchall(),
+            [("111", 3, 1), ("222", 1, 0)],
+        )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "INSERT INTO telegram_bot_chat_circuit_breaker "
+                "(chat_id, consecutive_failures, is_open, last_error_code, updated_at_ms) "
+                "VALUES ('333', -1, 0, 400, 0)"
+            )
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(
+                "INSERT INTO telegram_bot_chat_circuit_breaker "
+                "(chat_id, consecutive_failures, is_open, last_error_code, updated_at_ms) "
+                "VALUES ('444', 1, 2, 403, 0)"
+            )
 
     def test_safety_state_rejects_unknown_singleton_and_negative_timestamps(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):
