@@ -7,18 +7,27 @@ const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.de
 const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
 
 const RENDER_CORE_HEALTH_URL = "https://kagecatch-core-preview.onrender.com/healthz";
+const RENDER_KEEPALIVE_TIMEOUT_MS = 75_000;
 
 async function keepRenderCoreWarm(env, controller) {
   const requestFetch = env.FETCH || fetch;
+  const startedAt = Date.now();
   try {
     const response = await requestFetch(RENDER_CORE_HEALTH_URL, {
       method: "GET",
       headers: {
         accept: "application/json",
+        "cache-control": "no-cache",
         "user-agent": "KageCatch-KeepAlive/1.0",
       },
+      // Render may need around a minute to cold-start after an unusually long idle period.
+      signal: AbortSignal.timeout(RENDER_KEEPALIVE_TIMEOUT_MS),
     });
-    const result = { status: response.status, ok: response.ok };
+    const result = {
+      status: response.status,
+      ok: response.ok,
+      duration_ms: Date.now() - startedAt,
+    };
     const log = JSON.stringify({
       event: "render_keepalive",
       target: "kagecatch-core-preview",
@@ -27,7 +36,7 @@ async function keepRenderCoreWarm(env, controller) {
     });
     if (response.ok) console.log(log);
     else console.warn(log);
-    return result;
+    return { status: result.status, ok: result.ok };
   } catch (error) {
     console.error(JSON.stringify({
       event: "render_keepalive",
@@ -35,7 +44,8 @@ async function keepRenderCoreWarm(env, controller) {
       cron: controller?.cron ?? null,
       status: 0,
       ok: false,
-      error: String(error?.message || error),
+      duration_ms: Date.now() - startedAt,
+      error_name: typeof error?.name === "string" ? error.name.slice(0, 64) : "Error",
     }));
     return { status: 0, ok: false };
   }
