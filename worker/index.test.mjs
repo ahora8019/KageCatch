@@ -2120,12 +2120,12 @@ test("broadcast Owner review can mark an ambiguous recipient delivered with fenc
   await state.storage.put("broadcast:1001", {
     status: "review_required", text: "notice", recipientIds: [2001, 2002], nextIndex: 0,
     deliveredCount: 0, failedCount: 0, reviewIndex: 0, reviewRecipientId: 2001,
-    reviewAttemptId: "attempt-1234567890", reviewReason: "ambiguous_delivery",
+    reviewAttemptId: "123e4567-e89b-12d3-a456-426614174000", reviewReason: "ambiguous_delivery",
   });
   const post = (extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ ownerTelegramId: 1001, action: "resolve", expectedIndex: 0,
-      expectedAttemptId: "attempt-1234567890", decision: "delivered", ...extra }),
+      expectedAttemptId: "123e4567-e89b-12d3-a456-426614174000", decision: "delivered", ...extra }),
   }));
   const response = await post();
   assert.equal(response.status, 200);
@@ -2145,15 +2145,15 @@ test("broadcast Owner review retry keeps the cursor and requires the exact attem
   await state.storage.put("broadcast:1001", {
     status: "review_required", text: "notice", recipientIds: [2001, 2002], nextIndex: 0,
     deliveredCount: 0, failedCount: 0, reviewIndex: 0, reviewRecipientId: 2001,
-    reviewAttemptId: "attempt-abcdefghijkl", reviewReason: "worker_crash_during_delivery",
+    reviewAttemptId: "123e4567-e89b-12d3-a456-426614174001", reviewReason: "worker_crash_during_delivery",
   });
   const post = (expectedAttemptId) => store.fetch(new Request("https://do.internal/broadcast", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ ownerTelegramId: 1001, action: "resolve", expectedIndex: 0,
       expectedAttemptId, decision: "retry" }),
   }));
-  assert.equal((await post("attempt-stale-000000")).status, 409);
-  const response = await post("attempt-abcdefghijkl");
+  assert.equal((await post("223e4567-e89b-12d3-a456-426614174000")).status, 409);
+  const response = await post("123e4567-e89b-12d3-a456-426614174001");
   assert.equal(response.status, 200);
   const draft = (await response.json()).draft;
   assert.equal(draft.status, "queued");
