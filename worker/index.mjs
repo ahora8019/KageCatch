@@ -1106,6 +1106,8 @@ export class ConnectionLinkStore {
         return draft ? json({ draft }) : json({ error: 'broadcast_progress_conflict' }, 409);
       }
       if (action === 'enqueue') {
+        // Arm the durable scheduler before committing the queued state.
+        await this.state.storage.setAlarm(Date.now() + 1000);
         const draft = await this.state.storage.transaction(async (txn) => {
           const current = await txn.get(key);
           if (!current || current.status !== 'sending' || !Array.isArray(current.recipientIds)
@@ -1118,10 +1120,11 @@ export class ConnectionLinkStore {
           return queued;
         });
         if (!draft) return json({ error: 'broadcast_not_ready_for_queue' }, 409);
-        await this.state.storage.setAlarm(Date.now() + 1000);
         return json({ draft });
       }
       if (action === 'resume') {
+        // Arm the durable scheduler before committing the resumed queue state.
+        await this.state.storage.setAlarm(Date.now() + 1000);
         const draft = await this.state.storage.transaction(async (txn) => {
           const current = await txn.get(key);
           if (!current || current.status !== 'paused') return null;
@@ -1130,7 +1133,6 @@ export class ConnectionLinkStore {
           return queued;
         });
         if (!draft) return json({ error: 'broadcast_not_paused' }, 409);
-        await this.state.storage.setAlarm(Date.now() + 1000);
         return json({ draft });
       }
       if (action === 'release') {
