@@ -1450,6 +1450,7 @@ test("webhook processing failures emit structured diagnostics without exposing e
       } }),
     }), env);
     assert.equal(retry.status, 502, "failed processing must release the update claim so Telegram can retry");
+    assert.equal(await store.state.storage.get("telegram-update:7654321"), undefined);
     assert.equal(logs.length, 2);
     const event = JSON.parse(logs[0]);
     assert.equal(event.event, "telegram_webhook_processing_failed");
@@ -1493,7 +1494,7 @@ test("Telegram webhook updates are deduplicated by the durable replay guard", as
   assert.equal((await worker.fetch(makeRequest(), env)).status, 200);
   assert.equal((await worker.fetch(makeRequest(), env)).status, 200);
   assert.equal(sends, 1);
-  assert.ok(await state.storage.get("internal-nonce:telegram-update-87654321"));
+  assert.equal((await state.storage.get("telegram-update:87654321"))?.status, "completed");
 });
 
 test("scheduled keepalive sends a lightweight GET to the Render Core liveness endpoint", async () => {
