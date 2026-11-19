@@ -10,7 +10,6 @@ from typing import Any, Protocol
 from .models.spawn import CharacterMetadata
 
 logger = logging.getLogger(__name__)
-
 RECOGNITION_JOB_TYPES = ("spawn.recognize",)
 
 
@@ -19,7 +18,12 @@ class Queue(Protocol):
     async def complete(self, job_id: str, worker_id: str, *, lease_generation: int) -> None: ...
     async def dead_letter(self, job_id: str, worker_id: str, *, lease_generation: int) -> None: ...
     async def fail(self, job_id: str, worker_id: str, *, lease_generation: int, retry_delay: float = 0) -> str: ...
+    async def renew_lease(self, job_id: str, worker_id: str, *, lease_generation: int, lease_seconds: float = 60) -> float: ...
     async def recover_expired(self) -> int: ...
+
+
+class _LeaseLost(Exception):
+    """The worker can no longer prove ownership of its claimed job."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +38,7 @@ class RecognitionWorker:
                  lease_seconds: float = 60, retry_delay: float = 5) -> None:
         if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 128:
             raise ValueError("worker_id must contain 1 to 128 characters")
-        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float)) or not 1 <= lease_seconds <= 3600:
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float)) or not math.isfinite(float(lease_seconds)) or not 1 <= lease_seconds <= 3600:
             raise ValueError("lease_seconds must be between 1 and 3600")
         if (isinstance(retry_delay, bool) or not isinstance(retry_delay, (int, float))
                 or not math.isfinite(float(retry_delay)) or retry_delay < 0):
@@ -50,6 +54,55 @@ class RecognitionWorker:
         if job is None:
             return RecognitionWorkResult("idle")
         generation = job.lease_generation
+        processing = asyncio.create_task(self._process(job, generation))
+        renew = getattr(self.queue, "renew_lease", None)
+        heartbeat = None
+        if callable(renew):
+            heartbeat = asyncio.create_task(self._heartbeat(job.job_id, generation, processing))
+        try:
+            if heartbeat is None:
+                return await processing
+            done, _ = await asyncio.wait(
+                (processing, heartbeat), return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat in done:
+                try:
+                    await heartbeat
+                except _LeaseLost:
+                    processing.cancel()
+                    await asyncio.gather(processing, return_exceptions=True)
+                    return RecognitionWorkResult("lease_lost", job.job_id)
+            return await processing
+        except asyncio.CancelledError:
+            processing.cancel()
+            await asyncio.gather(processing, return_exceptions=True)
+            raise
+        finally:
+            if heartbeat is not None and not heartbeat.done():
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+
+    async def _heartbeat(self, job_id: str, generation: int, processing: asyncio.Task) -> None:
+        interval = max(0.1, self.lease_seconds / 3)
+        while not processing.done():
+            try:
+                await asyncio.wait_for(processing, timeout=interval)
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await self.queue.renew_lease(
+                    job_id, self.worker_id, lease_generation=generation,
+                    lease_seconds=self.lease_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Once renewal is uncertain, stop work rather than risk acting
+                # after another worker has reclaimed the lease.
+                raise _LeaseLost() from exc
+
+    async def _process(self, job, generation: int) -> RecognitionWorkResult:
         try:
             payload = job.payload
             if not isinstance(payload, dict) or payload.get("schema_version") != 1:
@@ -91,11 +144,16 @@ class RecognitionWorker:
             )
             await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
             return RecognitionWorkResult("review_queued", job.job_id, review_item)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            await self.queue.fail(
-                job.job_id, self.worker_id, lease_generation=generation,
-                retry_delay=self.retry_delay,
-            )
+            try:
+                await self.queue.fail(
+                    job.job_id, self.worker_id, lease_generation=generation,
+                    retry_delay=self.retry_delay,
+                )
+            except PermissionError:
+                return RecognitionWorkResult("lease_lost", job.job_id)
             return RecognitionWorkResult("retry_scheduled", job.job_id)
 
     async def run_forever(self, *, stop_event: asyncio.Event, idle_sleep: float = 1.0) -> int:
@@ -117,8 +175,6 @@ class RecognitionWorker:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # A transient SQLite/storage error must not silently kill the
-                # application-owned worker task. Keep logs free of job payloads.
                 logger.exception("Recognition worker iteration failed")
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=float(idle_sleep))
