@@ -344,4 +344,5 @@ test("Owner dashboard exposes the Safety Monitor and requires a deliberate recov
   assert.match(html, /RESET_GLOBAL_PAUSE/);
   assert.match(html, /RESET_CHAT_CIRCUIT/);
   assert.match(html, /data-view="admin"/);
+  assert.match(html, /\\d\{4\}/, "the rendered panel must preserve the date-format regex backslash");
 });
