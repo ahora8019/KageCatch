@@ -68,6 +68,8 @@ function createTelegramSafetyDb() {
 }
 
 
+function createTelegramSafetyTestDb() { return createTelegramSafetyDb(); }
+
 function createDurableObjectState() {
   const values = new Map();
   let tail = Promise.resolve();
