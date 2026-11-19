@@ -1,6 +1,14 @@
 const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60;
 const OPERATOR_PAUSE_UNTIL = 9_007_199_254_740_991;
 
+// Bot API methods are POSTed by this client. Only known read operations bypass
+// the outbound safety gate; new or unknown methods are treated as mutations.
+const TELEGRAM_READ_ONLY_METHODS = new Set(["getMe", "getWebhookInfo"]);
+
+export function isTelegramMutatingMethod(method) {
+  return typeof method !== "string" || !TELEGRAM_READ_ONLY_METHODS.has(method);
+}
+
 export function classifyTelegramApiFailure(payload, httpStatus = 0) {
   const body = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   const candidateCode = Number.isSafeInteger(body.error_code) ? body.error_code : httpStatus;
