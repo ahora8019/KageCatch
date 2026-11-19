@@ -65,6 +65,20 @@ export async function acquireTelegramSendPermit(db, now = Date.now(), intervalMs
   throw new TelegramSafetyGateError("cooldown", state.next_allowed_at_ms - now);
 }
 
+export async function waitForTelegramSendPermit(db, intervalMs = 100, maxWaitMs = 1500) {
+  const deadline = Date.now() + maxWaitMs;
+  while (true) {
+    try {
+      return await acquireTelegramSendPermit(db, Date.now(), intervalMs);
+    } catch (error) {
+      if (!(error instanceof TelegramSafetyGateError) || error.kind !== "cooldown") throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0 || error.retryAfterMs > remaining) throw error;
+      await new Promise((resolve) => setTimeout(resolve, error.retryAfterMs));
+    }
+  }
+}
+
 export async function recordTelegramApiFailure(db, policy, now = Date.now()) {
   if (!db) throw new Error("telegram_safety_store_unavailable");
   if (policy?.kind === "rate_limited") {
