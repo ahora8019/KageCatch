@@ -275,14 +275,19 @@ test("Telegram safety stops release the current lease without consuming retries 
   });
   assert.deepEqual(result, { processed: 0 });
   assert.equal(sends, 1);
-  for (const id of ids) {
-    const row = env.db.rows.get(id);
-    assert.equal(row.status, "pending");
-    assert.equal(row.attempts, 0);
-    assert.equal(row.lease_token, null);
-    assert.equal(row.lease_expires_at, null);
-    assert.equal(row.last_error_code, "rate_limited");
-  }
+  const stopped = env.db.rows.get(ids[0]);
+  assert.equal(stopped.status, "pending");
+  assert.equal(stopped.attempts, 0);
+  assert.equal(stopped.lease_token, null);
+  assert.equal(stopped.lease_expires_at, null);
+  assert.equal(stopped.last_error_code, "rate_limited");
+
+  const untouched = env.db.rows.get(ids[1]);
+  assert.equal(untouched.status, "pending");
+  assert.equal(untouched.attempts, 0);
+  assert.equal(untouched.lease_token, null);
+  assert.equal(untouched.lease_expires_at, null);
+  assert.equal(untouched.last_error_code, undefined);
 });
 
 test("stale panel sender cannot complete a request after its lease token is replaced", async () => {
