@@ -17,6 +17,20 @@ This branch introduces the first professional Mini App UI and its initial identi
 - The session endpoint resolves MEMBER/OWNER from the server-side registry; it never trusts a role supplied by the browser.
 - The UI reports Python Core as disconnected. Account and Catch operations remain disabled until the execution API is deployed.
 
+## Implementation status on `work/stages-5-9`
+
+The following is repository/test status, not a deployment claim:
+
+| Roadmap area | Implemented in this branch | Remaining gate |
+|---|---|---|
+| Stage 5 — Queue Engine | SQLite durable job queue, idempotency keys, priority/run-after scheduling, bounded retries/dead-letter handling, lease-generation fencing and renewal; recognition worker heartbeat and deterministic review handoff | SQLite queue is single-host only; production needs a shared durable backend and persistent Core host |
+| Stage 6 — Telegram Control Bot | Role-aware member/Owner menus, invitation-gated registration, signed webhook replay guard, durable group-panel request queue, durable broadcast queue using Durable Object alarms, Telegram API pacing/rate-limit/circuit safety | No production Worker deployment or live Telegram broadcast; external `sendMessage` is not exactly-once |
+| Stage 7 — Owner Panel | Owner-only responsive Persian RTL panel with member block/unblock, invite creation/revocation, broadcast progress/review, and Safety Monitor recovery controls; every Owner API rechecks signed Mini App identity and server-side role | Member list is intentionally capped to the 30 most recently active records in the current dashboard response; broader pagination/search remains future work |
+| Stage 8 — Integration/security tests | Worker webhook, Owner authorization, broadcast crash recovery/review, panel queue leases, Telegram safety gates, Python queue/worker/session tests | Unit/integration tests do not replace controlled end-to-end testing with a real Telegram account and deployed preview |
+| Stage 9 — Production preparation | Deployment and hosting constraints documented; migrations and environment bindings identified | Persistent Core hosting, secret rotation, deployment review, live controlled verification, monitoring and rollback plan are still required |
+
+Latest verified CI for this branch: Worker tests and Python tests both passed on the current PR head. This is CI evidence only; it does not mean the branch is merged, deployed, or production-ready.
+
 ## Security rules
 
 - Never collect Telegram OTPs, 2FA passwords, API hashes, Fernet keys, or StringSessions in bot messages or browser forms.
