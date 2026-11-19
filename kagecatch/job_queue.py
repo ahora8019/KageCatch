@@ -236,6 +236,36 @@ class SQLiteJobQueue:
             "AND worker_id=? AND lease_generation=? AND lease_until>?",
         )
 
+    async def renew_lease(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        lease_generation: int,
+        lease_seconds: float = 60,
+    ) -> float:
+        """Extend a live lease without changing its fencing generation."""
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, (int, float))
+            or not math.isfinite(float(lease_seconds))
+            or not 1 <= lease_seconds <= 3600
+        ):
+            raise ValueError("lease_seconds must be between 1 and 3600")
+        now = float(self._clock())
+        lease_until = now + float(lease_seconds)
+        async with self._lock:
+            with closing(self._connect()) as db:
+                changed = db.execute(
+                    "UPDATE catch_jobs SET lease_until=?, updated_at=? "
+                    "WHERE job_id=? AND status='running' AND worker_id=? "
+                    "AND lease_generation=? AND lease_until>?",
+                    (lease_until, now, job_id, worker_id, lease_generation, now),
+                )
+                if changed.rowcount != 1:
+                    raise PermissionError("job is not leased by this worker")
+        return lease_until
+
     async def fail(
         self,
         job_id: str,
