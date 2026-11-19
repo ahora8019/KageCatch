@@ -172,5 +172,71 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.load_calls, 0)
 
 
+
+    async def test_disconnect_failure_keeps_client_tracked_for_safe_retry(self):
+        class FailOnceClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.failures = 1
+
+            async def disconnect(self):
+                if self.failures:
+                    self.failures -= 1
+                    raise OSError("telegram disconnect failed")
+                await super().disconnect()
+
+        client = FailOnceClient()
+        runtime = SessionRuntime(
+            session_manager=FakeSessionManager({"user-a": "session-a"}),
+            client_factory=lambda session: client,
+        )
+        await runtime.connect_user("user-a")
+
+        with self.assertRaises(OSError):
+            await runtime.disconnect_user("user-a")
+
+        self.assertIs(await runtime.get_client("user-a"), client)
+        self.assertEqual(runtime.active_user_count, 1)
+
+        await runtime.disconnect_user("user-a")
+
+        self.assertIsNone(await runtime.get_client("user-a"))
+        self.assertEqual(runtime.active_user_count, 0)
+
+    async def test_revoke_does_not_delete_session_when_disconnect_fails(self):
+        class FailOnceClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.failures = 1
+
+            async def disconnect(self):
+                if self.failures:
+                    self.failures -= 1
+                    raise OSError("telegram disconnect failed")
+                await super().disconnect()
+
+        manager = FakeSessionManager({"user-a": "session-a"})
+        client = FailOnceClient()
+        runtime = SessionRuntime(
+            session_manager=manager,
+            client_factory=lambda session: client,
+        )
+        await runtime.connect_user("user-a")
+
+        with self.assertRaises(OSError):
+            await runtime.revoke_user("user-a")
+
+        self.assertIn("user-a", manager.sessions)
+        self.assertEqual(manager.revoked, [])
+        self.assertIs(await runtime.get_client("user-a"), client)
+        self.assertEqual(runtime.active_user_count, 1)
+
+        await runtime.revoke_user("user-a")
+
+        self.assertNotIn("user-a", manager.sessions)
+        self.assertEqual(manager.revoked, ["user-a"])
+        self.assertIsNone(await runtime.get_client("user-a"))
+        self.assertEqual(runtime.active_user_count, 0)
+
 if __name__ == "__main__":
     unittest.main()
