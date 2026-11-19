@@ -166,7 +166,7 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         class SlowResolver(FakeResolver):
             async def resolve(self, metadata):
                 started.set()
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(0.4)
                 return SimpleNamespace(candidates=())
         worker = RecognitionWorker(
             queue=queue, resolver=SlowResolver(), review_queue=FakeReviewQueue(),
