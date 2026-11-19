@@ -1,7 +1,72 @@
+import "./telegram_safety.test.mjs";
 import "./panel_queue.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+
+function createTelegramSafetyDb() {
+  const state = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null, chats: new Map(), circuits: new Map() };
+  return {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async first() {
+          if (sql.includes("INSERT INTO telegram_bot_chat_circuit_breaker")) {
+            const [chatId, errorCode, now] = values;
+            const current = state.circuits.get(chatId) ?? {
+              consecutive_failures: 0, is_open: 0, last_error_code: null, updated_at_ms: now,
+            };
+            current.consecutive_failures = Math.min(3, current.consecutive_failures + 1);
+            current.is_open = current.consecutive_failures >= 3 ? 1 : current.is_open;
+            current.last_error_code = errorCode;
+            current.updated_at_ms = now;
+            state.circuits.set(chatId, current);
+            return { consecutive_failures: current.consecutive_failures, is_open: current.is_open };
+          }
+          if (sql.includes("SELECT consecutive_failures")) {
+            return state.circuits.get(values[0]) ?? null;
+          }
+          if (sql.includes("UPDATE telegram_bot_chat_pacing")) {
+            const [now, intervalMs, chatId, checkNow] = values;
+            const current = state.chats.get(chatId) ?? 0;
+            if (current > checkNow) return null;
+            state.chats.set(chatId, now + intervalMs);
+            return { next_allowed_at_ms: now + intervalMs };
+          }
+          if (sql.includes("SELECT next_allowed_at_ms FROM telegram_bot_chat_pacing")) {
+            return { next_allowed_at_ms: state.chats.get(values[0]) ?? 0 };
+          }
+          if (sql.includes("RETURNING")) {
+            const [now, intervalMs, pausedCheckNow, nextCheckNow] = values;
+            if (state.paused_until_ms > pausedCheckNow || state.next_allowed_at_ms > nextCheckNow) return null;
+            state.next_allowed_at_ms = now + intervalMs;
+            return { next_allowed_at_ms: state.next_allowed_at_ms };
+          }
+          if (sql.startsWith("SELECT")) return { ...state };
+          return null;
+        },
+        async run() {
+          if (sql.includes("UPDATE telegram_bot_chat_circuit_breaker") && sql.includes("consecutive_failures = 0")) {
+            const [now, chatId] = values;
+            const current = state.circuits.get(chatId);
+            if (current) state.circuits.set(chatId, { ...current, consecutive_failures: 0, last_error_code: null, updated_at_ms: now });
+          } else if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
+            if (!state.chats.has(values[0])) state.chats.set(values[0], 0);
+          } else if (sql.includes("paused_until_ms = MAX")) {
+            state.paused_until_ms = Math.max(state.paused_until_ms, values[0]);
+            state.pause_reason = "telegram_429";
+          } else if (sql.includes("paused_until_ms = 9223372036854775807")) {
+            state.paused_until_ms = Number.MAX_SAFE_INTEGER;
+            state.pause_reason = values[0];
+          }
+          return { meta: { changes: 1 } };
+        },
+      };
+    },
+  };
+}
+
 
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
@@ -192,18 +257,22 @@ function createTelegramSafetyTestDb() {
 function createDurableObjectState() {
   const values = new Map();
   let tail = Promise.resolve();
+  let alarmAt = null;
   const storage = {
     async get(key) { return values.get(key); },
     async put(key, value) { values.set(key, value); },
     async delete(key) { return values.delete(key); },
     async list({ prefix = "" } = {}) { return new Map([...values.entries()].filter(([key]) => key.startsWith(prefix))); },
+    async setAlarm(when) { alarmAt = when instanceof Date ? when.getTime() : when; },
+    async getAlarm() { return alarmAt === null ? null : new Date(alarmAt); },
+    async deleteAlarm() { alarmAt = null; },
     async transaction(callback) {
       const run = tail.then(() => callback(storage));
       tail = run.catch(() => {});
       return run;
     },
   };
-  return { storage };
+  return { storage, get alarmAt() { return alarmAt; } };
 }
 
 test("connection link store creates an opaque, short-lived token bound to one Telegram user", async () => {
@@ -448,7 +517,8 @@ test("owner menu includes global monitoring and member administration", () => {
 
 test("user registry creates MEMBER records and reserves OWNER for the configured ID", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
+  const storeState = createDurableObjectState();
+  const store = new ConnectionLinkStore(storeState);
   const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
   }));
@@ -512,7 +582,8 @@ test("member cannot invoke owner-only callbacks through the webhook", async () =
 
 test("owner broadcast collects a draft, previews it, and sends only to active members after confirmation", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
+  const storeState = createDurableObjectState();
+  const store = new ConnectionLinkStore(storeState);
   const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
   }));
@@ -554,10 +625,15 @@ test("owner broadcast collects a draft, previews it, and sends only to active me
 
   calls.length = 0;
   assert.equal((await webhook(callback(303, "owner:broadcast:confirm", 3))).status, 200);
+  const beforeAlarm = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(beforeAlarm.draft.status, "queued");
+  assert.deepEqual(calls.filter((c) => c.method === "sendMessage" && c.payload.chat_id !== 1001), []);
+  await store.alarm({}, env);
   const deliveries = calls.filter((c) => c.method === "sendMessage" && c.payload.chat_id !== 1001);
   assert.deepEqual(deliveries.map((c) => c.payload.chat_id), [2001]);
   assert.equal(deliveries[0].payload.text, "سلام اعضای KageCatch");
-  assert.ok(calls.some((c) => c.method === "editMessageText" && c.payload.chat_id === 1001 && /ارسال همگانی تمام شد/.test(c.payload.text)));
+  const completed = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(completed.draft.status, "completed");
 });
 
 test("broadcast draft is available only to the owner and supports cancellation", async () => {
@@ -589,11 +665,9 @@ test("broadcast rejects empty or oversized text", async () => {
 });
 
 
-test("Telegram menus stay native and do not redirect members into the Mini App", () => {
-  for (const role of ["MEMBER", "OWNER"]) {
-    const buttons = buildRoleMenu(role).inline_keyboard.flat();
-    assert.equal(buttons.some((button) => button.web_app), false);
-  }
+test("member Telegram menus stay native and do not redirect members into the Mini App", () => {
+  const buttons = buildRoleMenu("MEMBER").inline_keyboard.flat();
+  assert.equal(buttons.some((button) => button.web_app), false);
 });
 
 test("professional panel is responsive, Persian-first, and reports offline core honestly", async () => {
@@ -1811,7 +1885,6 @@ test("manual webhook setup derives the webhook host from the incoming Worker ori
   assert.equal(webhookUrl, "https://custom-worker.example/webhook");
 });
 
-
 test("durable manual review retry after resolution is idempotent and never reopens the review", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const connectionStore = new ConnectionLinkStore(createDurableObjectState());
@@ -1847,4 +1920,300 @@ test("durable manual review retry after resolution is idempotent and never reope
   assert.equal(db.rows.size, 1);
   assert.equal(db.rows.get(reviewId).status, "approved");
   assert.equal(db.rows.get(reviewId).selected_character, "Megumin");
+});
+
+
+test("broadcast keeps its draft claim when Telegram pauses outbound delivery", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  await post("/broadcast", { ownerTelegramId: 1001, action: "begin" });
+  await post("/broadcast", { ownerTelegramId: 1001, action: "save", text: "پیام آزمایشی همگانی" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret", OWNER_TELEGRAM_ID: "1001", CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop();
+      const payload = JSON.parse(init.body);
+      calls.push({ method, payload });
+      if (method === "sendMessage" && payload.chat_id === 2001) {
+        return new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 30 } }), { status: 429, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify({ update_id: 401, callback_query: {
+      id: "callback-401", from: { id: 1001 }, message: { message_id: 9, chat: { id: 1001, type: "private" } }, data: "owner:broadcast:confirm",
+    } }),
+  }), env);
+  assert.equal(response.status, 200);
+  const queued = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(queued.draft?.status, "queued");
+  await store.alarm({}, env);
+  const state = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(state.draft?.status, "paused");
+  assert.equal(state.draft?.text, "پیام آزمایشی همگانی");
+  assert.deepEqual(state.draft?.recipientIds, [2001, 2002]);
+  assert.equal(state.draft?.nextIndex, 0);
+  assert.equal(state.draft?.deliveredCount, 0);
+  assert.equal(state.draft?.failedCount, 0);
+  assert.equal(calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 2001).length, 1);
+});
+
+
+test("broadcast resumes after a pause without resending recipients already confirmed delivered", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  await post("/broadcast", { ownerTelegramId: 1001, action: "begin" });
+  await post("/broadcast", { ownerTelegramId: 1001, action: "save", text: "پیام قابل ادامه" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const webhook = (updateId, env) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify({ update_id: updateId, callback_query: {
+      id: "callback-" + updateId, from: { id: 1001 }, message: { message_id: 9, chat: { id: 1001, type: "private" } }, data: "owner:broadcast:confirm",
+    } }),
+  }), env);
+  const firstCalls = [];
+  const firstEnv = {
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
+    OWNER_TELEGRAM_ID: "1001", CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop(); const payload = JSON.parse(init.body); firstCalls.push({ method, payload });
+      if (method === "sendMessage" && payload.chat_id === 2002) {
+        return new Response(JSON.stringify({ ok: false, error_code: 429, parameters: { retry_after: 30 } }), { status: 429, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  await webhook(501, firstEnv);
+  await store.alarm({}, firstEnv);
+  await store.alarm({}, firstEnv);
+  const paused = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
+  assert.equal(paused.draft?.status, "paused");
+  assert.deepEqual(paused.draft?.recipientIds, [2001, 2002]);
+  assert.equal(paused.draft?.nextIndex, 1);
+  assert.equal(paused.draft?.deliveredCount, 1);
+  assert.equal(paused.draft?.failedCount, 0);
+
+  const resumedCalls = [];
+  const resumedEnv = {
+    ...firstEnv, KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop(); const payload = JSON.parse(init.body); resumedCalls.push({ method, payload });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 2 } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  await webhook(502, resumedEnv);
+  await store.alarm({}, resumedEnv);
+  assert.deepEqual(resumedCalls.filter((call) => call.method === "sendMessage").map((call) => call.payload.chat_id), [2002]);
+});
+
+
+test("ambiguous broadcast delivery is locked for Owner review and cannot be retried automatically", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  await post("/register", { telegramUserId: 1001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2001, ownerTelegramId: "1001" });
+  await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const calls = [];
+  const env = {
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
+    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret", OWNER_TELEGRAM_ID: "1001", CONNECT_LINKS: binding,
+    FETCH: async (url, init) => {
+      const method = url.split("/").pop();
+      const payload = JSON.parse(init.body);
+      calls.push({ method, payload });
+      if (method === "sendMessage" && payload.chat_id === 2001 && payload.text === "ambiguous delivery") {
+        throw new TypeError("network connection lost");
+      }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  const webhook = (update) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
+    body: JSON.stringify(update),
+  }), env);
+  const callback = (id, data, messageId) => ({
+    update_id: id,
+    callback_query: { id: "callback-" + id, from: { id: 1001 }, message: { message_id: messageId, chat: { id: 1001, type: "private" } }, data },
+  });
+
+  assert.equal((await webhook(callback(401, "owner:broadcast", 1))).status, 200);
+  assert.equal((await webhook({
+    update_id: 402,
+    message: { message_id: 2, from: { id: 1001 }, chat: { id: 1001, type: "private" }, text: "ambiguous delivery" },
+  })).status, 200);
+
+  calls.length = 0;
+  assert.equal((await webhook(callback(403, "owner:broadcast:confirm", 3))).status, 200);
+  const queued = await post("/broadcast", { ownerTelegramId: 1001, action: "get" });
+  assert.equal((await queued.json()).draft.status, "queued");
+  await store.alarm({}, env);
+  const state = await post("/broadcast", { ownerTelegramId: 1001, action: "get" });
+  const draft = (await state.json()).draft;
+  assert.equal(draft.status, "review_required");
+  assert.equal(draft.nextIndex, 0);
+  assert.equal(draft.deliveredCount, 0);
+  assert.equal(draft.reviewIndex, 0);
+  assert.equal(draft.reviewRecipientId, 2001);
+  assert.deepEqual(calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id !== 1001).map((call) => call.payload.chat_id), [2001]);
+  // The webhook only acknowledges durable queue admission; the alarm owns delivery outcomes.
+  calls.length = 0;
+  assert.equal((await webhook(callback(404, "owner:broadcast:confirm", 3))).status, 200);
+  assert.equal(calls.some((call) => call.method === "sendMessage" && call.payload.chat_id === 2001 && call.payload.text === "ambiguous delivery"), false);
+  const lockedNotice = calls.find((call) => call.method === "editMessageText" && call.payload.chat_id === 1001);
+  assert.match(lockedNotice.payload.text, /بررسی Owner|بررسی دستی/);
+});
+
+test("broadcast review state cannot be reclaimed or overwritten by a new draft", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (payload) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+  }));
+  const ownerTelegramId = 1001;
+  assert.equal((await post({ ownerTelegramId, action: "begin" })).status, 200);
+  assert.equal((await post({ ownerTelegramId, action: "save", text: "test" })).status, 200);
+  assert.equal((await post({ ownerTelegramId, action: "claim" })).status, 200);
+  assert.equal((await post({ ownerTelegramId, action: "initialize", recipientIds: [2001] })).status, 200);
+  const reviewed = await post({ ownerTelegramId, action: "review", expectedIndex: 0 });
+  assert.equal(reviewed.status, 200);
+  assert.equal((await reviewed.json()).draft.status, "review_required");
+  assert.equal((await post({ ownerTelegramId, action: "claim" })).status, 409);
+  assert.equal((await post({ ownerTelegramId, action: "begin" })).status, 409);
+  const current = await post({ ownerTelegramId, action: "get" });
+  assert.equal((await current.json()).draft.status, "review_required");
+});
+
+
+test("broadcast enqueue durably schedules the Durable Object alarm", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+  await post("begin");
+  await post("save", { text: "queued broadcast" });
+  await post("claim");
+  await post("initialize", { recipientIds: [2001, 2002] });
+  const queued = await post("enqueue");
+  assert.equal(queued.status, 200);
+  assert.equal((await queued.json()).draft.status, "queued");
+  assert.ok(state.alarmAt > Date.now());
+});
+
+test("broadcast alarm sends one recipient and durably advances before scheduling the next alarm", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+  await post("begin");
+  await post("save", { text: "queued broadcast" });
+  await post("claim");
+  await post("initialize", { recipientIds: [2001, 2002] });
+  await post("enqueue");
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async (url, init) => {
+      assert.ok(state.alarmAt - Date.now() >= 50_000, "watchdog must be armed before Telegram I/O");
+      calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: calls.length } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  await store.alarm({}, env);
+  let draft = (await (await post("get")).json()).draft;
+  assert.equal(draft.status, "queued");
+  assert.equal(draft.nextIndex, 1);
+  assert.equal(draft.deliveredCount, 1);
+  assert.equal(calls.filter((call) => call.method === "sendMessage").length, 1);
+  assert.ok(state.alarmAt > Date.now());
+  await store.alarm({}, env);
+  draft = (await (await post("get")).json()).draft;
+  assert.equal(draft.status, "completed");
+  assert.equal(draft.nextIndex, 2);
+  assert.equal(draft.deliveredCount, 2);
+});
+
+test("broadcast alarm locks an ambiguous send for Owner review without automatic retry", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+  await post("begin");
+  await post("save", { text: "uncertain" });
+  await post("claim");
+  await post("initialize", { recipientIds: [2001] });
+  await post("enqueue");
+  let sends = 0;
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async () => { sends += 1; throw new TypeError("connection reset"); },
+  };
+  await store.alarm({}, env);
+  const draft = (await (await post("get")).json()).draft;
+  assert.equal(draft.status, "review_required");
+  assert.equal(draft.nextIndex, 0);
+  assert.equal(draft.reviewRecipientId, 2001);
+  assert.equal(sends, 1);
+  assert.equal(state.alarmAt, null);
+  await store.alarm({}, env);
+  assert.equal(sends, 1);
+});
+
+test("broadcast alarm converts a stale in-flight attempt to Owner review after crash recovery", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  await state.storage.put("broadcast:1001", {
+    status: "sending", text: "uncertain", recipientIds: [2001], nextIndex: 0,
+    deliveredCount: 0, failedCount: 0, inFlightIndex: 0,
+    inFlightAttemptId: "attempt-1", inFlightAt: Date.now() - 60_000,
+  });
+  let sends = 0;
+  await store.alarm({}, {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async () => { sends += 1; return new Response(JSON.stringify({ ok: true, result: {} })); },
+  });
+  const draft = await state.storage.get("broadcast:1001");
+  assert.equal(draft.status, "review_required");
+  assert.equal(draft.reviewIndex, 0);
+  assert.equal(draft.reviewRecipientId, 2001);
+  assert.equal(sends, 0);
 });

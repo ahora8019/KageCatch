@@ -1,14 +1,7 @@
+import { isTelegramSafetyStop } from "./telegram_safety.mjs";
 const QUEUE_PATH = "/internal/panel-requests";
 const MAX_QUEUE_BODY_BYTES = 4096;
 const PANEL_TTL_MINUTES = 10;
-
-function isTelegramSafetyStop(error) {
-  const message = typeof error?.message === "string" ? error.message : "";
-  return error?.name === "TelegramSafetyGateError"
-    || error?.kind === "rate_limited"
-    || error?.kind === "invalid_credentials"
-    || /^telegram_(?:safety|chat_pacing|chat_id)_/.test(message);
-}
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
