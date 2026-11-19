@@ -299,7 +299,7 @@ class AuthorizationPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase):
         class FailOnceManager(FakeManager):
             def __init__(self):
                 super().__init__()
-                self.save_failures = 1
+                self.save_failures = 2
 
             async def save_authorized_session(self, user_id, session_string):
                 if self.save_failures:
