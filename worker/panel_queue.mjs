@@ -1,3 +1,4 @@
+import { isTelegramSafetyStop } from "./telegram_safety.mjs";
 const QUEUE_PATH = "/internal/panel-requests";
 const MAX_QUEUE_BODY_BYTES = 4096;
 const PANEL_TTL_MINUTES = 10;
@@ -96,10 +97,10 @@ export async function processPanelQueue(env, sendTelegram) {
   if (!env.KAGECATCH_DB || typeof sendTelegram !== "function") return { processed: 0 };
   // Recover claims abandoned by a Worker restart, while bounding retries.
   await env.KAGECATCH_DB.prepare(
-    "UPDATE panel_requests SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND updated_at < datetime('now', '-2 minutes') AND attempts < 3"
+    "UPDATE panel_requests SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND lease_expires_at <= CURRENT_TIMESTAMP AND attempts < 3"
   ).run();
   await env.KAGECATCH_DB.prepare(
-    "UPDATE panel_requests SET status = 'failed', last_error_code = 'delivery_attempts_exhausted', updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND updated_at < datetime('now', '-2 minutes') AND attempts >= 3"
+    "UPDATE panel_requests SET status = 'failed', lease_token = NULL, lease_expires_at = NULL, last_error_code = 'delivery_attempts_exhausted', updated_at = CURRENT_TIMESTAMP WHERE status = 'processing' AND lease_expires_at <= CURRENT_TIMESTAMP AND attempts >= 3"
   ).run();
   await env.KAGECATCH_DB.prepare(
     "UPDATE panel_requests SET status = 'expired', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending' AND expires_at <= CURRENT_TIMESTAMP"
@@ -109,9 +110,10 @@ export async function processPanelQueue(env, sendTelegram) {
   ).all();
   let processed = 0;
   for (const item of rows.results || []) {
+    const leaseToken = crypto.randomUUID().replaceAll("-", "");
     const row = await env.KAGECATCH_DB.prepare(
-      "UPDATE panel_requests SET status = 'processing', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP RETURNING request_id, owner_id, chat_id, source_message_id, attempts"
-    ).bind(item.request_id).first();
+      "UPDATE panel_requests SET status = 'processing', attempts = attempts + 1, lease_token = ?, lease_expires_at = datetime('now', '+5 minutes'), updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'pending' AND expires_at > CURRENT_TIMESTAMP RETURNING request_id, owner_id, chat_id, source_message_id, attempts, lease_token"
+    ).bind(leaseToken, item.request_id).first();
     if (!row) continue;
     try {
       const callback = (action) => "kp:" + row.request_id + ":" + action;
@@ -127,15 +129,23 @@ export async function processPanelQueue(env, sendTelegram) {
       });
       const messageId = sent?.message_id;
       if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("invalid_telegram_message");
-      await env.KAGECATCH_DB.prepare(
-        "UPDATE panel_requests SET status = 'completed', panel_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
-      ).bind(messageId, row.request_id).run();
-      processed += 1;
-    } catch {
+      const completion = await env.KAGECATCH_DB.prepare(
+        "UPDATE panel_requests SET status = 'completed', panel_message_id = ?, lease_token = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing' AND lease_token = ?"
+      ).bind(messageId, row.request_id, leaseToken).run();
+      if (completion.meta?.changes === 1) processed += 1;
+    } catch (error) {
+      if (isTelegramSafetyStop(error)) {
+        const errorCode = typeof error?.kind === "string" ? error.kind.slice(0, 64) : "safety_gate";
+        await env.KAGECATCH_DB.prepare(
+          "UPDATE panel_requests SET status = 'pending', attempts = MAX(attempts - 1, 0), lease_token = NULL, lease_expires_at = NULL, last_error_code = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing' AND lease_token = ?"
+        ).bind(errorCode, row.request_id, leaseToken).run();
+        // A global pause or safety gate applies to the rest of this batch too.
+        break;
+      }
       const nextStatus = row.attempts >= 3 ? "failed" : "pending";
       await env.KAGECATCH_DB.prepare(
-        "UPDATE panel_requests SET status = ?, last_error_code = 'telegram_delivery_failed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
-      ).bind(nextStatus, row.request_id).run();
+        "UPDATE panel_requests SET status = ?, lease_token = NULL, lease_expires_at = NULL, last_error_code = 'telegram_delivery_failed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing' AND lease_token = ?"
+      ).bind(nextStatus, row.request_id, leaseToken).run();
     }
   }
   return { processed };

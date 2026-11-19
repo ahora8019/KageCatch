@@ -14,7 +14,7 @@ Role-based multi-user Telegram character spawn recognition and catch orchestrati
 
 - **Control Plane:** Cloudflare Worker + Telegram Bot API for commands and user-facing control.
 - **Execution Plane:** Python core with encrypted per-user Telethon sessions.
-- **Recognition:** Planned spawn ingestion, image/video analysis, reference-catalog search, candidate ranking, and confidence gating.
+- **Recognition:** Opt-in video spawn metadata extraction and anime-title-to-cast candidate resolution now feed a human-review queue; full character-in-frame recognition, reference-catalog search, and character-level confidence gating remain planned.
 - **Catch Engine:** Quota check, duplicate suppression, adapter-specific command dispatch, and verification against the target bot response.
 
 ## Repository status
@@ -42,11 +42,13 @@ See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md).
 
 ## Durable group panel queue
 
-Group commands `.panel` and `.پنل` are accepted only from the authorized account owner in a group/supergroup. The Python Core sends a timestamped HMAC-signed request to `POST /internal/panel-requests`; the Worker stores it in the independent `panel_requests` D1 table with a deterministic idempotency key. After the Worker accepts a signed request, it immediately dispatches the queue in the request's `waitUntil` background task; panel delivery does not wait for the ten-minute Render keep-alive Cron. The `*/10 * * * *` Cron only sends a lightweight GET to the Render Core `/healthz` endpoint. Abandoned delivery claims are recovered when the queue is next dispatched, and delivery attempts are bounded to three.
+Group commands `.panel` and `.پنل` are accepted only from the authorized account owner in a group/supergroup. The Python Core sends a timestamped HMAC-signed request to `POST /internal/panel-requests`; the Worker stores it in the independent `panel_requests` D1 table with a deterministic idempotency key. After accepting a signed request, the Worker immediately attempts queue dispatch in the request's `waitUntil` background task. The `*/10 * * * *` Cron remains a Render Core keep-alive only; it does not drain the panel queue. Pending work is retried when the queue is next dispatched, and delivery attempts are bounded to three.
 
 Every callback is bound to the stored request, owner Telegram ID, exact group ID, exact panel message ID, and active expiry. Non-owners receive an alert. Catch remains disabled in the panel; buttons currently expose status/configuration placeholders only.
 
-The schema is in `migrations/0004_panel_requests.sql`. The additive table has been created in the existing `kagecatch-sessions-preview` D1 database; the existing `telegram_sessions` table was not modified. The Core uses `KAGECATCH_PANEL_QUEUE_URL`, falling back to `KAGECATCH_SESSION_STORE_URL`, and the existing `KAGECATCH_CORE_SECRET` for HMAC signing. The Worker route and scheduled delivery code are committed but not deployed. Do not enable real group delivery until the Worker deployment and a controlled test group verification are explicitly approved.
+D1 claims use five-minute lease tokens. Only expired leases can be reclaimed; completion and failure updates require the exact token, preventing an older worker from overwriting a newer claim. Telegram safety stops (including rate-limit/global-pause and missing safety-state errors) release the current claim without consuming a retry and stop the remainder of that batch. Ordinary delivery failures consume the bounded retry budget. These guarantees protect queue state, not the external Telegram send: if Telegram accepts `sendMessage` but the Worker crashes before D1 records `completed`, a later retry may still deliver a duplicate because Telegram `sendMessage` has no idempotency key. Lease fencing is not an exactly-once external-delivery guarantee.
+
+The schema is in `migrations/0004_panel_requests.sql`, with fenced lease fields added by `migrations/0009_panel_request_leases.sql`. The additive table has been created in the existing `kagecatch-sessions-preview` D1 database; the existing `telegram_sessions` table was not modified. The Core uses `KAGECATCH_PANEL_QUEUE_URL`, falling back to `KAGECATCH_SESSION_STORE_URL`, and the existing `KAGECATCH_CORE_SECRET` for HMAC signing. The Worker route is committed but not deployed. Do not enable real group delivery until the Worker deployment and a controlled test group verification are explicitly approved.
 
 ## Durable session storage (Cloudflare D1)
 
@@ -59,6 +61,17 @@ The D1 database and schema are provisioned for preview, but the Worker binding a
 ## Control bot roles
 
 `worker/index.mjs` defines a role-based access model. The numeric ID configured in the `OWNER_TELEGRAM_ID` Worker secret is always resolved as `OWNER`; existing registered members retain `MEMBER`. New users must redeem a short-lived Owner-issued invite link (`/start inv_…`) before they are registered. Invites are stored by token digest, have bounded use counts and expiry, and can be revoked. Members see only personal account, security, and statistics controls. The Owner receives the member list, block/unblock controls, invite management, system overview, and broadcast. Global settings and emergency-stop actions remain unfinished placeholders. Role checks run again on every callback; blocked users are denied. `/admin` is Owner-only. `OWNER_TELEGRAM_ID` must remain a Cloudflare Secret and must never be committed to the repository. Never ask users to send Telegram login codes or 2FA passwords to the bot.
+
+## Opt-in recognition job worker
+
+The Python Core can run the Stage 5 SQLite recognition queue and Stage 6 authorized-session event producer when all required dependencies are configured:
+
+- Set `KAGECATCH_JOB_QUEUE_PATH` to a persistent local disk path (for example, `/var/lib/kagecatch/recognition-jobs.sqlite3`). The SQLite queue is single-host storage; do not place it on ephemeral storage, object storage, or use it as a multi-region queue.
+- Configure `KAGECATCH_SENPAI_SENDER_ID` or `KAGECATCH_SENPAI_SENDER_USERNAME` to restrict spawn detection to the intended sender. The Senpai adapter remains opt-in and its target availability must be verified separately.
+- Configure `KAGECATCH_SESSION_STORE_URL` and `KAGECATCH_CORE_SECRET` so the worker can persist human-review items through the existing signed D1 path.
+- Optionally set `KAGECATCH_RECOGNITION_WORKER_ID`, `KAGECATCH_RECOGNITION_LEASE_SECONDS`, and `KAGECATCH_RECOGNITION_RETRY_DELAY`.
+
+The Core starts the worker only when a queue, detector, resolver, and durable review queue are all available. Incoming authorized-session events are converted to idempotent `spawn.recognize` jobs; the worker resolves anime-title mappings and stores candidate lists for human review. It does **not** identify the character in the frame, automatically choose a character, or send catch commands. This is not a distributed queue, and no live Telegram operation is implied by configuring these variables.
 
 ## Development
 

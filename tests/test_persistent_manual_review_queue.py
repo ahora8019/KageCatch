@@ -63,6 +63,28 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending, [created])
         self.assertEqual(pending[0].status, ReviewStatus.PENDING)
 
+    async def test_idempotency_key_reuses_the_same_durable_review_id(self):
+        store = FakeDurableStore()
+        queue = PersistentManualReviewQueue(store=store)
+        first = await queue.enqueue(
+            user_id="12345", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin", "Aqua"), idempotency_key="recognition:job-1",
+        )
+        second = await queue.enqueue(
+            user_id="12345", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin", "Aqua"), idempotency_key="recognition:job-1",
+        )
+        self.assertEqual(first.review_id, second.review_id)
+        self.assertEqual(len(store.records), 1)
+
+    async def test_idempotency_key_is_validated(self):
+        queue = PersistentManualReviewQueue(store=FakeDurableStore())
+        with self.assertRaises(ValueError):
+            await queue.enqueue(
+                user_id="12345", spawn_id=90, anime_name="KonoSuba",
+                candidates=("Megumin",), idempotency_key="   ",
+            )
+
     async def test_approval_persists_selected_character_and_removes_pending_item(self):
         store = FakeDurableStore()
         queue = PersistentManualReviewQueue(store=store)

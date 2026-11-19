@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, createHash } from "node:crypto";
 import { enqueuePanelRequest, processPanelQueue, handlePanelCallback, parsePanelCallback } from "./panel_queue.mjs";
+import { TelegramSafetyGateError } from "./telegram_safety.mjs";
 
 class FakeD1 {
   constructor() { this.rows = new Map(); }
@@ -12,25 +13,78 @@ class FakeD1 {
       bind(...values) { this.values = values; return this; },
       async run() {
         const v = this.values;
+        if (sql.startsWith("UPDATE panel_requests SET status = 'pending', lease_token = NULL, lease_expires_at = NULL")) {
+          let changed = 0;
+          for (const row of db.rows.values()) {
+            const leaseExpiry = row.lease_expires_at ? Date.parse(String(row.lease_expires_at).replace(" ", "T") + "Z") : NaN;
+            if (row.status === "processing" && Number.isFinite(leaseExpiry) && leaseExpiry <= Date.now() && row.attempts < 3) {
+              Object.assign(row, { status: "pending", lease_token: null, lease_expires_at: null });
+              changed += 1;
+            }
+          }
+          return { meta: { changes: changed } };
+        }
+        if (sql.startsWith("UPDATE panel_requests SET status = 'failed', lease_token = NULL, lease_expires_at = NULL")) {
+          let changed = 0;
+          for (const row of db.rows.values()) {
+            const leaseExpiry = row.lease_expires_at ? Date.parse(String(row.lease_expires_at).replace(" ", "T") + "Z") : NaN;
+            if (row.status === "processing" && Number.isFinite(leaseExpiry) && leaseExpiry <= Date.now() && row.attempts >= 3) {
+              Object.assign(row, { status: "failed", lease_token: null, lease_expires_at: null, last_error_code: "delivery_attempts_exhausted" });
+              changed += 1;
+            }
+          }
+          return { meta: { changes: changed } };
+        }
+        if (sql.startsWith("UPDATE panel_requests SET status = 'expired'")) {
+          let changed = 0;
+          for (const row of db.rows.values()) {
+            const expiry = Date.parse(String(row.expires_at).replace(" ", "T") + "Z");
+            if (row.status === "pending" && Number.isFinite(expiry) && expiry <= Date.now()) {
+              row.status = "expired";
+              changed += 1;
+            }
+          }
+          return { meta: { changes: changed } };
+        }
+        if (sql.startsWith("UPDATE panel_requests SET status = 'pending', attempts = MAX")) {
+          const [last_error_code, request_id, lease_token] = v;
+          const row = db.rows.get(request_id);
+          const changed = Boolean(row && row.status === "processing" && row.lease_token === lease_token);
+          if (changed) Object.assign(row, {
+            status: "pending", attempts: Math.max(0, row.attempts - 1),
+            lease_token: null, lease_expires_at: null, last_error_code,
+          });
+          return { meta: { changes: changed ? 1 : 0 } };
+        }
         if (sql.startsWith("INSERT INTO panel_requests")) {
           const [request_id, idempotency_key, owner_id, chat_id, source_message_id] = v;
           if (![...db.rows.values()].some((r) => r.idempotency_key === idempotency_key)) {
-            db.rows.set(request_id, { request_id, idempotency_key, owner_id, chat_id, source_message_id, status: "pending", attempts: 0, panel_message_id: null, expires_at: new Date(Date.now() + 600000).toISOString().replace("T", " ").slice(0, 19) });
+            db.rows.set(request_id, { request_id, idempotency_key, owner_id, chat_id, source_message_id, status: "pending", attempts: 0, lease_token: null, lease_expires_at: null, panel_message_id: null, expires_at: new Date(Date.now() + 600000).toISOString().replace("T", " ").slice(0, 19) });
           }
           return { meta: { changes: 1 } };
         }
         if (sql.startsWith("UPDATE panel_requests SET status = 'completed'")) {
-          const [panel_message_id, request_id] = v;
-          const row = db.rows.get(request_id); if (row) Object.assign(row, { status: "completed", panel_message_id });
-          return { meta: { changes: row ? 1 : 0 } };
+          const [panel_message_id, request_id, lease_token] = v;
+          const row = db.rows.get(request_id);
+          const changed = Boolean(row && row.status === "processing" && row.lease_token === lease_token);
+          if (changed) Object.assign(row, { status: "completed", panel_message_id, lease_token: null, lease_expires_at: null });
+          return { meta: { changes: changed ? 1 : 0 } };
         }
         if (sql.startsWith("UPDATE panel_requests SET status = 'closed'")) {
           const [request_id] = v; const row = db.rows.get(request_id); if (row) row.status = "closed";
           return { meta: { changes: row ? 1 : 0 } };
         }
-        if (sql.startsWith("UPDATE panel_requests SET status = ?, last_error_code")) {
-          const [status, request_id] = v; const row = db.rows.get(request_id); if (row) row.status = status;
+        if (sql.startsWith("UPDATE panel_requests SET status = 'pending', attempts = MAX")) {
+          const [last_error_code, request_id] = v; const row = db.rows.get(request_id);
+          if (row) { row.status = "pending"; row.attempts = Math.max(row.attempts - 1, 0); row.last_error_code = last_error_code; }
           return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (sql.startsWith("UPDATE panel_requests SET status = ?, lease_token")) {
+          const [status, request_id, lease_token] = v;
+          const row = db.rows.get(request_id);
+          const changed = Boolean(row && row.status === "processing" && row.lease_token === lease_token);
+          if (changed) Object.assign(row, { status, lease_token: null, lease_expires_at: null });
+          return { meta: { changes: changed ? 1 : 0 } };
         }
         return { meta: { changes: 0 } };
       },
@@ -38,9 +92,11 @@ class FakeD1 {
         const v = this.values;
         if (sql.includes("WHERE idempotency_key = ?")) return [...db.rows.values()].find((r) => r.idempotency_key === v[0]) || null;
         if (sql.includes("WHERE request_id = ?") && sql.startsWith("UPDATE")) {
-          const row = db.rows.get(v[0]);
+          const [lease_token, request_id] = v;
+          const row = db.rows.get(request_id);
           if (!row || row.status !== "pending") return null;
-          row.status = "processing"; row.attempts += 1; return { ...row };
+          Object.assign(row, { status: "processing", attempts: row.attempts + 1, lease_token, lease_expires_at: "2099-01-01 00:00:00" });
+          return { ...row };
         }
         if (sql.includes("WHERE request_id = ?")) return db.rows.get(v[0]) || null;
         return null;
@@ -121,6 +177,144 @@ test("scheduler claims a queued request once and stores the delivered panel mess
   assert.equal(env.db.rows.get(requestId).status, "completed");
   assert.equal(env.db.rows.get(requestId).panel_message_id, 444);
   assert.match(calls[0].payload.reply_markup.inline_keyboard[0][0].callback_data, /^kp:[a-f0-9]{32}:stats$/);
+});
+
+test("expired panel leases are reclaimed with a new token and can complete", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 1101,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), {
+    status: "processing", attempts: 1, lease_token: "expired-owner",
+    lease_expires_at: "2000-01-01 00:00:00",
+  });
+  const sent = [];
+  const result = await processPanelQueue(env, async (_method, payload) => {
+    sent.push(payload.chat_id);
+    return { message_id: 6101 };
+  });
+  assert.deepEqual(result, { processed: 1 });
+  assert.deepEqual(sent, [-100123456]);
+  const row = env.db.rows.get(requestId);
+  assert.equal(row.status, "completed");
+  assert.equal(row.attempts, 2);
+  assert.equal(row.lease_token, null);
+  assert.equal(row.lease_expires_at, null);
+  assert.equal(row.panel_message_id, 6101);
+});
+
+test("expired panel leases at the retry limit fail without another Telegram send", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 1102,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), {
+    status: "processing", attempts: 3, lease_token: "expired-owner",
+    lease_expires_at: "2000-01-01 00:00:00",
+  });
+  let sends = 0;
+  const result = await processPanelQueue(env, async () => {
+    sends += 1;
+    return { message_id: 6102 };
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(sends, 0);
+  assert.equal(env.db.rows.get(requestId).status, "failed");
+  assert.equal(env.db.rows.get(requestId).last_error_code, "delivery_attempts_exhausted");
+  assert.equal(env.db.rows.get(requestId).lease_token, null);
+});
+
+test("unexpired panel leases are not reclaimed or sent by another processor", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 1103,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  Object.assign(env.db.rows.get(requestId), {
+    status: "processing", attempts: 1, lease_token: "active-owner",
+    lease_expires_at: "2099-01-01 00:00:00",
+  });
+  let sends = 0;
+  const result = await processPanelQueue(env, async () => {
+    sends += 1;
+    return { message_id: 6103 };
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(sends, 0);
+  assert.equal(env.db.rows.get(requestId).status, "processing");
+  assert.equal(env.db.rows.get(requestId).lease_token, "active-owner");
+});
+
+test("expired pending panel requests are marked expired before claim", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 1104,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  env.db.rows.get(requestId).expires_at = "2000-01-01 00:00:00";
+  let sends = 0;
+  const result = await processPanelQueue(env, async () => {
+    sends += 1;
+    return { message_id: 6104 };
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(sends, 0);
+  assert.equal(env.db.rows.get(requestId).status, "expired");
+});
+
+test("Telegram safety stops release the current lease without consuming retries or processing later rows", async () => {
+  const env = envWithDb();
+  const accepted = await Promise.all([1105, 1106].map((messageId) =>
+    enqueuePanelRequest(signedRequest(env, {
+      owner_id: "12345", chat_id: -100123456 - messageId, source_message_id: messageId,
+    }, String(messageId).repeat(4)), env)
+  ));
+  const ids = await Promise.all(accepted.map(async (response) => (await response.json()).request_id));
+  let sends = 0;
+  const safetyError = new Error("Telegram send paused");
+  safetyError.kind = "rate_limited";
+  const result = await processPanelQueue(env, async () => {
+    sends += 1;
+    throw safetyError;
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(sends, 1);
+  const affected = ids.map((id) => env.db.rows.get(id));
+  const stoppedRows = affected.filter((row) => row.last_error_code === "rate_limited");
+  const untouchedRows = affected.filter((row) => row.last_error_code === undefined);
+  assert.equal(stoppedRows.length, 1);
+  assert.equal(untouchedRows.length, 1);
+
+  const stopped = stoppedRows[0];
+  assert.equal(stopped.status, "pending");
+  assert.equal(stopped.attempts, 0);
+  assert.equal(stopped.lease_token, null);
+  assert.equal(stopped.lease_expires_at, null);
+
+  const untouched = untouchedRows[0];
+  assert.equal(untouched.status, "pending");
+  assert.equal(untouched.attempts, 0);
+  assert.equal(untouched.lease_token, null);
+  assert.equal(untouched.lease_expires_at, null);
+});
+
+test("stale panel sender cannot complete a request after its lease token is replaced", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 998,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  const result = await processPanelQueue(env, async () => {
+    // Simulate another processor reclaiming the row after the original lease expired.
+    env.db.rows.get(requestId).lease_token = "new-owner-token";
+    return { message_id: 777 };
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(env.db.rows.get(requestId).status, "processing");
+  assert.equal(env.db.rows.get(requestId).panel_message_id, null);
+  assert.equal(env.db.rows.get(requestId).lease_token, "new-owner-token");
 });
 
 test("panel callback is bound to owner, exact group and exact message", async () => {
@@ -330,4 +524,24 @@ test("engine enable callback sends an authenticated Core state change and refres
   assert.match(signedHeaders.get("X-KageCatch-Nonce"), /^[a-f0-9]{32}$/);
   assert.match(edit.payload.text, /وضعیت حالت: 🟢 روشن/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_off");
+});
+
+
+test("panel queue stops the batch and does not consume retries while the global safety gate is closed", async () => {
+  const env = envWithDb();
+  const first = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 1 }), env);
+  const second = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 2 }, "c".repeat(32)), env);
+  const firstId = (await first.json()).request_id;
+  const secondId = (await second.json()).request_id;
+  let calls = 0;
+  const result = await processPanelQueue(env, async () => {
+    calls += 1;
+    throw new TelegramSafetyGateError("rate_limited", 5000);
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(calls, 1);
+  assert.equal(env.db.rows.get(firstId).status, "pending");
+  assert.equal(env.db.rows.get(firstId).attempts, 0);
+  assert.equal(env.db.rows.get(secondId).status, "pending");
+  assert.equal(env.db.rows.get(secondId).attempts, 0);
 });

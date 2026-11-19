@@ -68,6 +68,10 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
         self.assertLess(names.index("0005_telegram_bot_safety.sql"), names.index(manual_review))
         self.assertLess(names.index(manual_review), names.index(chat_pacing))
         self.assertLess(names.index(chat_pacing), names.index("0008_telegram_bot_chat_circuit_breaker.sql"))
+        self.assertLess(names.index("0008_telegram_bot_chat_circuit_breaker.sql"), names.index("0009_panel_request_leases.sql"))
+        lease_columns = {row[1] for row in self.db.execute("PRAGMA table_info(panel_requests)").fetchall()}
+        self.assertIn("lease_token", lease_columns)
+        self.assertIn("lease_expires_at", lease_columns)
 
         review_columns = {
             row[1] for row in self.db.execute("PRAGMA table_info(manual_review_items)").fetchall()
@@ -107,6 +111,7 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
                     "0005_telegram_bot_safety.sql",
                     "0007_telegram_bot_chat_pacing.sql",
                     "0008_telegram_bot_chat_circuit_breaker.sql",
+                    "0009_panel_request_leases.sql",
                 ],
             )
             review_columns = {
