@@ -342,7 +342,7 @@ test("engine enable callback sends an authenticated Core state change and refres
 test("panel queue stops the batch and does not consume retries while the global safety gate is closed", async () => {
   const env = envWithDb();
   const first = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 1 }), env);
-  const second = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 2 }), env, "c".repeat(32));
+  const second = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 2 }, "c".repeat(32)), env);
   const firstId = (await first.json()).request_id;
   const secondId = (await second.json()).request_id;
   let calls = 0;
