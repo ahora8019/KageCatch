@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac, createHash } from "node:crypto";
 import { enqueuePanelRequest, processPanelQueue, handlePanelCallback, parsePanelCallback } from "./panel_queue.mjs";
+import { TelegramSafetyGateError } from "./telegram_safety.mjs";
 
 class FakeD1 {
   constructor() { this.rows = new Map(); }
@@ -26,6 +27,11 @@ class FakeD1 {
         }
         if (sql.startsWith("UPDATE panel_requests SET status = 'closed'")) {
           const [request_id] = v; const row = db.rows.get(request_id); if (row) row.status = "closed";
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (sql.startsWith("UPDATE panel_requests SET status = 'pending', attempts = MAX")) {
+          const [last_error_code, request_id] = v; const row = db.rows.get(request_id);
+          if (row) { row.status = "pending"; row.attempts = Math.max(row.attempts - 1, 0); row.last_error_code = last_error_code; }
           return { meta: { changes: row ? 1 : 0 } };
         }
         if (sql.startsWith("UPDATE panel_requests SET status = ?, last_error_code")) {
@@ -330,4 +336,24 @@ test("engine enable callback sends an authenticated Core state change and refres
   assert.match(signedHeaders.get("X-KageCatch-Nonce"), /^[a-f0-9]{32}$/);
   assert.match(edit.payload.text, /وضعیت حالت: 🟢 روشن/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_off");
+});
+
+
+test("panel queue stops the batch and does not consume retries while the global safety gate is closed", async () => {
+  const env = envWithDb();
+  const first = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 1 }), env);
+  const second = await enqueuePanelRequest(signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 2 }), env, "c".repeat(32));
+  const firstId = (await first.json()).request_id;
+  const secondId = (await second.json()).request_id;
+  let calls = 0;
+  const result = await processPanelQueue(env, async () => {
+    calls += 1;
+    throw new TelegramSafetyGateError("rate_limited", 5000);
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(calls, 1);
+  assert.equal(env.db.rows.get(firstId).status, "pending");
+  assert.equal(env.db.rows.get(firstId).attempts, 0);
+  assert.equal(env.db.rows.get(secondId).status, "pending");
+  assert.equal(env.db.rows.get(secondId).attempts, 0);
 });
