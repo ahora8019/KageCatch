@@ -60,6 +60,17 @@ The D1 database and schema are provisioned for preview, but the Worker binding a
 
 `worker/index.mjs` defines a role-based access model. The numeric ID configured in the `OWNER_TELEGRAM_ID` Worker secret is always resolved as `OWNER`; existing registered members retain `MEMBER`. New users must redeem a short-lived Owner-issued invite link (`/start inv_…`) before they are registered. Invites are stored by token digest, have bounded use counts and expiry, and can be revoked. Members see only personal account, security, and statistics controls. The Owner receives the member list, block/unblock controls, invite management, system overview, and broadcast. Global settings and emergency-stop actions remain unfinished placeholders. Role checks run again on every callback; blocked users are denied. `/admin` is Owner-only. `OWNER_TELEGRAM_ID` must remain a Cloudflare Secret and must never be committed to the repository. Never ask users to send Telegram login codes or 2FA passwords to the bot.
 
+## Opt-in recognition job worker
+
+The Python Core can run the Stage 5 SQLite recognition queue and Stage 6 authorized-session event producer when all required dependencies are configured:
+
+- Set `KAGECATCH_JOB_QUEUE_PATH` to a persistent local disk path (for example, `/var/lib/kagecatch/recognition-jobs.sqlite3`). The SQLite queue is single-host storage; do not place it on ephemeral storage, object storage, or use it as a multi-region queue.
+- Configure `KAGECATCH_SENPAI_SENDER_ID` or `KAGECATCH_SENPAI_SENDER_USERNAME` to restrict spawn detection to the intended sender. The Senpai adapter remains opt-in and its target availability must be verified separately.
+- Configure `KAGECATCH_SESSION_STORE_URL` and `KAGECATCH_CORE_SECRET` so the worker can persist human-review items through the existing signed D1 path.
+- Optionally set `KAGECATCH_RECOGNITION_WORKER_ID`, `KAGECATCH_RECOGNITION_LEASE_SECONDS`, and `KAGECATCH_RECOGNITION_RETRY_DELAY`.
+
+The Core starts the worker only when a queue, detector, resolver, and durable review queue are all available. Incoming authorized-session events are converted to idempotent `spawn.recognize` jobs; the worker resolves anime-title mappings and stores candidate lists for human review. It does **not** identify the character in the frame, automatically choose a character, or send catch commands. This is not a distributed queue, and no live Telegram operation is implied by configuring these variables.
+
 ## Development
 
 Python 3.11+ is required. Install the Telegram integration and run tests with:
