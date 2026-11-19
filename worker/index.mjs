@@ -1169,11 +1169,16 @@ async function handleWebhook(request, env) {
     response = new Response("Webhook processing failed", { status: 502 });
   }
   try {
-    await stub.fetch("https://connect-links.internal/" + (response.status >= 500 ? "release-update" : "complete-update"), {
+    const finalized = await stub.fetch("https://connect-links.internal/" + (response.status >= 500 ? "release-update" : "complete-update"), {
       method: "POST", headers: { "content-type": "application/json" },
       body: claimBody,
     });
-  } catch {}
+    if (!finalized.ok && response.status < 500) {
+      return new Response("Webhook completion could not be persisted", { status: 503 });
+    }
+  } catch {
+    if (response.status < 500) return new Response("Webhook completion could not be persisted", { status: 503 });
+  }
   return response;
 }
 
