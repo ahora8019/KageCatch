@@ -177,25 +177,22 @@ export async function recordTelegramChatApiFailure(db, chatId, policy, now = Dat
     return { recorded: false, opened: false };
   }
   const key = normalizeCircuitChatId(chatId);
-  await db.prepare(
-    "INSERT INTO telegram_bot_chat_circuit_breaker (chat_id, updated_at_ms) VALUES (?, ?) ON CONFLICT(chat_id) DO NOTHING"
-  ).bind(key, now).run();
-  const current = await db.prepare(
-    "SELECT consecutive_failures, is_open FROM telegram_bot_chat_circuit_breaker WHERE chat_id = ?"
-  ).bind(key).first();
-  if (!current) throw new Error("telegram_chat_circuit_state_missing");
-  if (current.is_open === 1 || current.is_open === true) {
-    return { recorded: true, opened: true, consecutiveFailures: current.consecutive_failures };
-  }
-  const consecutiveFailures = Math.min(
-    CHAT_CIRCUIT_FAILURE_THRESHOLD,
-    Math.max(0, Number(current.consecutive_failures) || 0) + 1,
-  );
-  const isOpen = consecutiveFailures >= CHAT_CIRCUIT_FAILURE_THRESHOLD ? 1 : 0;
-  await db.prepare(
-    "UPDATE telegram_bot_chat_circuit_breaker SET consecutive_failures = ?, is_open = ?, last_error_code = ?, updated_at_ms = ? WHERE chat_id = ?"
-  ).bind(key, consecutiveFailures, isOpen, policy.errorCode, now).run();
-  return { recorded: true, opened: isOpen === 1, consecutiveFailures };
+  const state = await db.prepare(
+    "INSERT INTO telegram_bot_chat_circuit_breaker " +
+    "(chat_id, consecutive_failures, is_open, last_error_code, updated_at_ms) " +
+    "VALUES (?, 1, 0, ?, ?) " +
+    "ON CONFLICT(chat_id) DO UPDATE SET " +
+    "consecutive_failures = MIN(telegram_bot_chat_circuit_breaker.consecutive_failures + 1, 3), " +
+    "is_open = CASE WHEN MIN(telegram_bot_chat_circuit_breaker.consecutive_failures + 1, 3) >= 3 THEN 1 ELSE telegram_bot_chat_circuit_breaker.is_open END, " +
+    "last_error_code = excluded.last_error_code, updated_at_ms = excluded.updated_at_ms " +
+    "RETURNING consecutive_failures, is_open"
+  ).bind(key, policy.errorCode, now).first();
+  if (!state) throw new Error("telegram_chat_circuit_state_missing");
+  return {
+    recorded: true,
+    opened: state.is_open === 1 || state.is_open === true,
+    consecutiveFailures: state.consecutive_failures,
+  };
 }
 
 export async function recordTelegramChatApiSuccess(db, chatId, now = Date.now()) {
