@@ -1082,6 +1082,55 @@ test("internal session store rejects unsigned requests and replays", async () =>
   assert.equal((await worker.fetch(replay, env)).status, 409);
 });
 
+
+
+test("internal session store retains a hard 16 KiB request body ceiling", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const nonceStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: createFakeD1SessionDatabase() };
+  const ciphertext = "A".repeat(17000);
+  const request = await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret);
+  const requestBody = await request.clone().arrayBuffer();
+  assert.ok(requestBody.byteLength > 16 * 1024);
+  const response = await worker.fetch(request, env);
+  assert.equal(response.status, 413);
+});
+
+test("internal session store accepts Fernet-sized encrypted session payloads", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const nonceStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const DB = createFakeD1SessionDatabase();
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: DB };
+  // Fernet + Base64 for the Core's bounded StringSession can exceed 8 KiB.
+  const ciphertext = "A".repeat(12000);
+  const request = await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret);
+  const requestBody = await request.clone().arrayBuffer();
+  assert.ok(requestBody.byteLength > 8192 && requestBody.byteLength <= 16384);
+  const response = await worker.fetch(request, env);
+  assert.equal(response.status, 200);
+  assert.equal(DB.rows.get("7135051954"), ciphertext);
+});
+
+test("internal auth challenge store accepts Fernet-sized encrypted checkpoint payloads", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const nonceStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => nonceStore.fetch(new Request(input, init)) }) };
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const DB = createFakeD1SessionDatabase();
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: DB };
+  const ciphertext = "A".repeat(12000);
+  const request = await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret, undefined, "auth-challenge");
+  const requestBody = await request.clone().arrayBuffer();
+  assert.ok(requestBody.byteLength > 8192 && requestBody.byteLength <= 16384);
+  const response = await worker.fetch(request, env);
+  assert.equal(response.status, 200);
+  assert.equal(DB.challengeRows.get("7135051954"), ciphertext);
+});
+
 test("internal session store refuses invalid user identifiers and oversized payloads", async () => {
   const secret = "test-core-session-store-secret-with-32-bytes-minimum";
   const invalid = await worker.fetch(await makeSignedSessionStoreRequest("GET", "../100", undefined, secret), { CORE_API_SECRET: secret });

@@ -1546,7 +1546,7 @@ async function internalSessionStore(request, env) {
   if (!listUsers && Number(userId) > (2 ** 52 - 1)) return json({ error: "invalid_user_id" }, 400);
   let rawBody;
   try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
-  if (rawBody.byteLength > 8192) return json({ error: "request_too_large" }, 413);
+  if (rawBody.byteLength > 16 * 1024) return json({ error: "request_too_large" }, 413);
   if (request.method === "PUT" && !(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
   if (request.method !== "PUT" && rawBody.byteLength !== 0) return json({ error: "unexpected_request_body" }, 400);
   const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";
@@ -1620,7 +1620,7 @@ async function internalAuthChallengeStore(request, env) {
   if (Number(userId) > (2 ** 52 - 1)) return json({ error: "invalid_user_id" }, 400);
   let rawBody;
   try { rawBody = new Uint8Array(await request.arrayBuffer()); } catch { return json({ error: "invalid_request" }, 400); }
-  if (rawBody.byteLength > 8192) return json({ error: "request_too_large" }, 413);
+  if (rawBody.byteLength > 16 * 1024) return json({ error: "request_too_large" }, 413);
   if (request.method === "PUT" && !(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
   if (request.method !== "PUT" && rawBody.byteLength !== 0) return json({ error: "unexpected_request_body" }, 400);
   const timestampRaw = request.headers.get("X-KageCatch-Timestamp") || "";

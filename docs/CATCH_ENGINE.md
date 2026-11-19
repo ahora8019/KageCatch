@@ -58,7 +58,15 @@ SQLiteSessionStore persists ciphertext (not raw StringSessions) in a local SQLit
 
 The transport-independent, bot-driven authorization state machine is in kagecatch/telegram_auth_flow.py. It supports one pending login per KageCatch user, a five-minute default expiry, a three-attempt limit, explicit cancellation, optional 2FA, and persistence only after Telegram confirms authorization. Phone codes and 2FA passwords are held only as method arguments during the request; they are not stored in the pending state or database.
 
-The Control Worker issues a five-minute, one-time opaque link from the private bot chat. A Durable Object stores only the SHA-256 token hash, the Telegram sender ID, and the expiry; consumption is transactional and replay-resistant. The landing page only validates possession of the link. It does not authorize a Telegram account or create a Telethon session. No phone code or 2FA password is accepted by the bot or landing page. A separate user-controlled MTProto authorization handoff and authenticated Worker-to-Python execution API are still required.
+The currently wired account-connection path is browser-based Phone Login:
+- The private Control Worker issues a short-lived, one-time HTTPS link. The browser connection page accepts the phone number, Telegram OTP, and optional 2FA password when Telegram requires it; none of these values are collected in bot chat.
+- The browser submits those values through authenticated Worker endpoints. The Worker forwards them to the Python Core using timestamped HMAC authentication (method, path, body hash and nonce); the Core rejects stale signatures and replayed nonces.
+- The Core authorization API exposes authenticated `connect`, `connect/code`, `connect/password`, `connect/status`, and `connect/cancel` operations. Therefore OTP/2FA values do reach the trusted Core API transport, but they are not written to logs or pending-session storage.
+- SessionManager encrypts pending challenge metadata and the temporary Telethon StringSession before storage. After Telegram confirms authorization, the final StringSession is persisted encrypted. If that final write fails, the Core returns `persistence_pending` and retains an encrypted authorized-session checkpoint for recovery; cancellation cannot discard an already-authorized session.
+- The standalone `TelegramQrAuthorizationFlow` class exists but is not wired into the active Core API or browser connection page. Do not describe it as the live connection method.
+- The local authorization CLI remains a separate local-development tool. It is not the deployed account-connection transport.
+
+No real Telegram account has been authorized or validated in this development phase. The path has unit-level coverage only; controlled real-account validation and operational review remain prerequisites before enabling real-account use.
 
 For local development only, the explicit authorization helper and CLI remain available in kagecatch/telegram_authorization.py and scripts/authorize_telegram.py. The CLI collects verification material in a private terminal.
 
