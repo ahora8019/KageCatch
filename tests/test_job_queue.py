@@ -74,6 +74,7 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
             claimed = await self.queue.claim_next("worker")
             with self.assertRaises(ValueError):
                 await self.queue.fail(job.job_id, "worker", lease_generation=claimed.lease_generation, retry_delay=value)
+            await self.queue.complete(job.job_id, "worker", lease_generation=claimed.lease_generation)
 
     async def test_failure_retries_then_moves_to_dead_letter(self):
         job = await self.queue.enqueue("spawn.recognize", {"spawn_id": 15}, max_attempts=2)
