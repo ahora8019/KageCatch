@@ -1431,12 +1431,23 @@ export class ConnectionLinkStore {
         return json(draft);
       }
       if (action === 'claim') {
+        // Arm recovery before claiming: if the webhook dies before recipient
+        // snapshot/enqueue completes, the alarm safely returns the draft to
+        // awaiting_confirmation (no Telegram send has started yet).
+        await this.state.storage.setAlarm(Date.now() + 60_000);
         const draft = await this.state.storage.transaction(async (txn) => {
           const current = await txn.get(key);
           if (!current || current.status !== 'awaiting_confirmation') return null;
-          await txn.put(key, { ...current, status: 'sending', updatedAt: Date.now() });
-          return current;
+          const claimed = { ...current, status: 'sending', updatedAt: Date.now() };
+          await txn.put(key, claimed);
+          return claimed;
         });
+        if (!draft) {
+          const active = await this.state.storage.list({ prefix: 'broadcast:' });
+          if (![...active.values()].some((item) => item?.status === 'queued' || item?.status === 'sending')) {
+            await this.state.storage.deleteAlarm();
+          }
+        }
         return draft ? json({ draft }) : json({ error: 'no_confirmable_broadcast' }, 409);
       }
       if (action === 'initialize') {
@@ -1640,8 +1651,31 @@ export class ConnectionLinkStore {
     if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0) return;
 
     if (existing.status === 'sending') {
-      const age = Date.now() - Number(existing.inFlightAt || 0);
-      if (existing.inFlightAttemptId && age >= 60_000) {
+      const age = Date.now() - Number(existing.inFlightAt || existing.updatedAt || 0);
+      if (!existing.inFlightAttemptId) {
+        if (age >= 60_000) {
+          // A claimed draft without an in-flight marker has not started a
+          // Telegram request. It is safe to release for explicit reconfirmation.
+          await this.state.storage.transaction(async (txn) => {
+            const current = await txn.get(key);
+            if (!current || current.status !== 'sending' || current.inFlightAttemptId) return;
+            await txn.put(key, {
+              ...current,
+              status: 'awaiting_confirmation',
+              recipientIds: null,
+              nextIndex: 0,
+              deliveredCount: 0,
+              failedCount: 0,
+              updatedAt: Date.now(),
+            });
+          });
+          await this.state.storage.deleteAlarm();
+          return;
+        }
+        await this.state.storage.setAlarm(Date.now() + Math.max(1000, 60_000 - age));
+        return;
+      }
+      if (age >= 60_000) {
         await this.state.storage.transaction(async (txn) => {
           const current = await txn.get(key);
           if (!current || current.status !== 'sending'
