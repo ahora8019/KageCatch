@@ -84,5 +84,66 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.manager.get_session("user-1"))
 
 
+
+    async def test_rejects_noncanonical_user_identifiers_before_storage_access(self):
+        for invalid_user_id in (None, True, 123, "", " user-1", "user-1 ", "user\\n1", "用户-1"):
+            with self.subTest(user_id=repr(invalid_user_id)):
+                with self.assertRaises(ValueError):
+                    await self.manager.load_session(invalid_user_id)
+        self.assertEqual(self.store.values, {})
+
+    async def test_pending_authorization_rejects_otp_and_password_fields(self):
+        payload = {
+            "version": 1,
+            "phone": "+10000000000",
+            "phone_code_hash": "opaque-hash",
+            "session_string": "temporary-session",
+            "expires_at": 1_800_000_000,
+            "attempts": 0,
+            "code": "12345",
+            "password": "never-store-this",
+        }
+        with self.assertRaises(ValueError):
+            await self.manager.save_pending_authorization("user-1", payload)
+        self.assertNotIn(("pending", "user-1"), self.store.values)
+
+    async def test_pending_authorization_validates_payload_schema_and_bounds(self):
+        valid = {
+            "version": 1,
+            "phone": "+10000000000",
+            "phone_code_hash": "opaque-hash",
+            "session_string": "temporary-session",
+            "expires_at": 1_800_000_000,
+            "attempts": 0,
+            "session_authorized": True,
+        }
+        await self.manager.save_pending_authorization("user-1", valid)
+        self.assertEqual(await self.manager.load_pending_authorization("user-1"), valid)
+
+        invalid_payloads = [
+            {**valid, "version": True},
+            {**valid, "phone": "not-a-phone"},
+            {**valid, "phone_code_hash": ""},
+            {**valid, "session_string": ""},
+            {**valid, "expires_at": float("inf")},
+            {**valid, "attempts": True},
+            {**valid, "session_authorized": "yes"},
+            {**valid, "unexpected": "field"},
+        ]
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    await self.manager.save_pending_authorization("user-1", payload)
+
+    async def test_authorized_session_input_must_be_a_bounded_string(self):
+        for invalid_session in (None, 123, True, " "):
+            with self.subTest(session=repr(invalid_session)):
+                with self.assertRaises(ValueError):
+                    await self.manager.save_authorized_session("user-1", invalid_session)
+        with self.assertRaises(ValueError):
+            await self.manager.save_authorized_session("user-1", "x" * 8193)
+        self.assertEqual(self.store.values, {})
+
+
 if __name__ == "__main__":
     unittest.main()

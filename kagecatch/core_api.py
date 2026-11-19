@@ -485,7 +485,9 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid_telegram_user_id")
         if auth_flow is None:
             raise HTTPException(status_code=503, detail="telegram_auth_flow_not_configured")
-        await auth_flow.cancel(user_id=str(telegram_user_id))
+        result = await auth_flow.cancel(user_id=str(telegram_user_id))
+        if result in {"connected", "persistence_pending"}:
+            return {"status": result}
         return {"status": "cancelled"}
 
     @app.post("/v1/accounts/{telegram_user_id}/reconnect", dependencies=[Depends(require_core_auth)])

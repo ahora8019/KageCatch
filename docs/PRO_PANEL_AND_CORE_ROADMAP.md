@@ -48,12 +48,15 @@ This branch introduces the first professional Mini App UI and its initial identi
 
 ### Phase D — Secure account authorization
 
-The current Core API deliberately does not expose OTP or 2FA submission endpoints. Account connection must use a Telegram-controlled authorization handoff, not a bot or browser form that collects login credentials.
-- Implemented an official Telegram-controlled one-time `tg://login?token=...` deep-link flow; no QR image is rendered.
-- The Worker and Core expose signed connect/status/cancel endpoints. The Core stores a session only after Telethon confirms authorization, then encrypts it through SessionManager.
-- If Telethon reports `SessionPasswordNeededError`, the flow fails closed; it does not collect a 2FA password.
-- Account status, disconnect, explicit reconnect, and revoke endpoints are implemented; session listing and access audit remain to be completed.
-- Validate one real account with explicit user approval before enabling multi-user use.
+The currently wired Core authorization path is the browser-based Phone Login flow, not the standalone QR class:
+- The private Control Bot issues a short-lived, one-time HTTPS connection link. The browser page accepts the phone number, Telegram OTP, and (when Telegram requires it) the 2FA password; these values are not collected in bot chat.
+- The browser submits them through authenticated Worker endpoints. The Worker forwards requests to the Python Core using timestamped HMAC authentication, a nonce/replay check, and a bounded request body.
+- The Core exposes authenticated `connect`, `connect/code`, `connect/password`, `connect/status`, and `connect/cancel` endpoints. These endpoints do accept OTP/2FA values from the trusted Worker transport; therefore the older statement that Core has no OTP/2FA submission endpoints was incorrect.
+- The authorization state machine does not store the OTP or 2FA password. It stores only the pending challenge metadata and a temporary Telethon StringSession encrypted through SessionManager. The final authorized StringSession is persisted encrypted only after Telethon confirms authorization.
+- If final persistence is temporarily unavailable after Telegram has authorized the account, the Core keeps an encrypted authorized-session checkpoint and returns `persistence_pending`. Status polling (or process restart when the checkpoint is durable) retries persistence without asking for the OTP/2FA value again. A cancel action cannot discard an already-authorized session awaiting persistence.
+- The separate `TelegramQrAuthorizationFlow` class exists, but is not wired into the current Core API or the browser connection page. Do not describe it as the active account-connection path.
+- Account status, disconnect, explicit reconnect, and revoke endpoints are implemented. Session listing, key rotation, and session access auditing remain to be completed.
+- This authorization path has unit-level coverage only. No real Telegram account has been connected or validated; require explicit user approval and a controlled end-to-end security review before enabling real-account use.
 
 ### Phase E — Recognition and Catch
 - Spawn ingestion and media normalization.
