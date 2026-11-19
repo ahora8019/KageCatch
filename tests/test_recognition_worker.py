@@ -72,6 +72,7 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "review_queued")
         self.assertEqual(queue.claim_filters, [("spawn.recognize",)])
         self.assertEqual(reviews.calls[0]["candidates"], ("A", "B"))
+        self.assertEqual(reviews.calls[0]["idempotency_key"], "recognition:job-1")
         self.assertIsNone(resolver.metadata.character_name)
         self.assertEqual(queue.completed, [("job-1", "recognizer", 1)])
 
