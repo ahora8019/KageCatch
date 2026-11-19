@@ -216,7 +216,7 @@ test("telegramApi persists a 429 retry_after globally and blocks the next outbou
   assert.equal(networkCalls, 1);
 });
 
-test("telegramApi persists a 401 as an operator-required pause that a later 429 cannot downgrade", async () => {
+test("telegramApi persists a 401 as an operator-required pause and blocks subsequent mutations", async () => {
   const db = new FakeSafetyDb();
   let networkCalls = 0;
   const env = {
