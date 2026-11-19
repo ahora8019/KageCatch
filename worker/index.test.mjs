@@ -472,7 +472,8 @@ test("member cannot invoke owner-only callbacks through the webhook", async () =
 
 test("owner broadcast collects a draft, previews it, and sends only to active members after confirmation", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
+  const storeState = createDurableObjectState();
+  const store = new ConnectionLinkStore(storeState);
   const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
   }));
