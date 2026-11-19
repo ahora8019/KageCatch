@@ -180,3 +180,14 @@ test("unknown Telegram Bot API methods fail closed as mutating unless explicitly
   assert.equal(isTelegramMutatingMethod("futureTelegramMutation"), true);
   assert.equal(isTelegramMutatingMethod("setChatPermissions"), true);
 });
+
+
+test("private chat sends reserve a durable one-second per-chat slot", async () => {
+  const db = safetyDb();
+  assert.deepEqual(await acquireTelegramChatPermit(db, 123456, 1000, 1000), { allowed: true, retryAfterMs: 0 });
+  await assert.rejects(
+    () => acquireTelegramChatPermit(db, 123456, 1500, 1000),
+    (error) => error instanceof TelegramSafetyGateError && error.kind === "chat_cooldown" && error.retryAfterMs === 500,
+  );
+  assert.equal(db.state.chats.size, 1);
+});
