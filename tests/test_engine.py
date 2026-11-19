@@ -1,6 +1,6 @@
 import unittest
 
-from kagecatch.engine import (
+from kagecatch.catch_admission import SQLiteCatchAdmissionStore\nfrom kagecatch.engine import (
     Candidate,
     CatchEngine,
     CatchReceipt,
@@ -170,3 +170,69 @@ class CatchEngineTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class FakeCatchAdmissionStore:
+    def __init__(self, decision="admitted"):
+        self.decision = decision
+        self.keys = []
+
+    async def reserve(self, *, user_id, source, dedupe_key):
+        self.keys.append((user_id, source, dedupe_key))
+        return self.decision
+
+
+class CatchEngineAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_engine_uses_one_atomic_admission_result_for_quota_and_dedupe(self):
+        admission = FakeCatchAdmissionStore("quota_blocked")
+        engine = CatchEngine(
+            confidence_threshold=0.92,
+            admission=admission,
+            enabled=True,
+        )
+        adapter = FakeAdapter()
+
+        result = await engine.handle_spawn("user-1", sample_spawn(), adapter)
+
+        self.assertEqual(result.status, "quota_blocked")
+        self.assertEqual(adapter.sent, [])
+        self.assertEqual(len(admission.keys), 1)
+        self.assertEqual(admission.keys[0], (
+            "user-1", "henta_catcher", "user-1:henta_catcher:100:200"
+        ))
+
+    async def test_engine_rejects_malformed_spawn_identity_before_admission(self):
+        admission = FakeCatchAdmissionStore()
+        engine = CatchEngine(
+            confidence_threshold=0.92,
+            admission=admission,
+            enabled=True,
+        )
+        adapter = FakeAdapter()
+        malformed = Spawn(
+            source="henta_catcher",
+            chat_id=True,
+            message_id=200,
+            media_kind="image",
+            candidates=(Candidate("Sakura", 0.99),),
+        )
+
+        with self.assertRaises(ValueError):
+            await engine.handle_spawn("user-1", malformed, adapter)
+
+        self.assertEqual(admission.keys, [])
+        self.assertEqual(adapter.sent, [])
+
+    async def test_engine_rejects_noncanonical_user_id_before_admission(self):
+        admission = FakeCatchAdmissionStore()
+        engine = CatchEngine(
+            confidence_threshold=0.92,
+            admission=admission,
+            enabled=True,
+        )
+
+        with self.assertRaises(ValueError):
+            await engine.handle_spawn("  user-1  ", sample_spawn(), FakeAdapter())
+
+        self.assertEqual(admission.keys, [])
