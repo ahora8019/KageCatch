@@ -50,13 +50,14 @@ test("error classification never copies Telegram descriptions into diagnostics",
   assert.deepEqual(result, { kind: "invalid_request", retryAfterSeconds: null, errorCode: 400 });
   assert.doesNotMatch(JSON.stringify(result), /sensitive upstream detail/);
 });
-import { acquireTelegramSendPermit, waitForTelegramSendPermit, recordTelegramApiFailure, TelegramSafetyGateError } from "./telegram_safety.mjs";
+import { acquireTelegramSendPermit, waitForTelegramSendPermit, acquireTelegramChatPermit, waitForTelegramChatPermit, recordTelegramApiFailure, TelegramSafetyGateError } from "./telegram_safety.mjs";
 
 function safetyDb(initial = {}) {
   const state = {
     paused_until_ms: initial.paused_until_ms ?? 0,
     next_allowed_at_ms: initial.next_allowed_at_ms ?? 0,
     pause_reason: initial.pause_reason ?? null,
+    chats: new Map(),
   };
   return {
     state,
@@ -66,6 +67,16 @@ function safetyDb(initial = {}) {
         bind(...values) { this.values = values; return this; },
         async first() {
           const v = this.values;
+          if (sql.includes("UPDATE telegram_bot_chat_pacing")) {
+            const [now, interval, chatId, checkNow] = v;
+            const current = state.chats.get(chatId) ?? 0;
+            if (current > checkNow) return null;
+            state.chats.set(chatId, now + interval);
+            return { next_allowed_at_ms: now + interval };
+          }
+          if (sql.includes("SELECT next_allowed_at_ms FROM telegram_bot_chat_pacing")) {
+            return { next_allowed_at_ms: state.chats.get(v[0]) ?? 0 };
+          }
           if (sql.includes("RETURNING")) {
             const [now, interval, pausedCheckNow, nextCheckNow] = v;
             if (state.paused_until_ms > pausedCheckNow || state.next_allowed_at_ms > nextCheckNow) return null;
@@ -77,7 +88,9 @@ function safetyDb(initial = {}) {
         },
         async run() {
           const v = this.values;
-          if (sql.includes("paused_until_ms = MAX")) {
+          if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
+            if (!state.chats.has(v[0])) state.chats.set(v[0], 0);
+          } else if (sql.includes("paused_until_ms = MAX")) {
             const [until] = v;
             state.paused_until_ms = Math.max(state.paused_until_ms, until);
             state.pause_reason = "telegram_429";
@@ -137,4 +150,24 @@ test("concurrent outbound operations serialize through the shared permit instead
   ]);
   assert.ok(Date.now() - started >= 60);
   assert.ok(db.state.next_allowed_at_ms >= started + 80);
+});
+
+
+test("group sends use a durable per-chat cooldown while different groups remain independent", async () => {
+  const db = safetyDb();
+  const started = Date.now();
+  await Promise.all([
+    waitForTelegramChatPermit(db, -100123456, 80, 1000),
+    waitForTelegramChatPermit(db, -100123456, 80, 1000),
+    waitForTelegramChatPermit(db, -100654321, 80, 1000),
+  ]);
+  assert.ok(Date.now() - started >= 60);
+  assert.equal(db.state.chats.size, 2);
+  assert.ok(db.state.chats.get("-100123456") >= started + 80);
+});
+
+test("private chats do not consume the group pacing budget", async () => {
+  const db = safetyDb();
+  assert.deepEqual(await acquireTelegramChatPermit(db, 123456, 1000, 3100), { allowed: true, retryAfterMs: 0 });
+  assert.equal(db.state.chats.size, 0);
 });
