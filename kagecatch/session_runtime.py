@@ -103,19 +103,23 @@ class SessionRuntime:
     async def disconnect_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
         async with lock:
-            client = self._clients.pop(user_id, None)
+            client = self._clients.get(user_id)
             if client is not None:
+                # Keep the client tracked until Telegram confirms disconnect.
+                # A failed disconnect must remain observable and retryable.
                 await client.disconnect()
+                self._clients.pop(user_id, None)
 
     async def revoke_user(self, user_id: str) -> None:
         lock = await self._user_lock(user_id)
         async with lock:
-            client = self._clients.pop(user_id, None)
-            try:
-                if client is not None:
-                    await client.disconnect()
-            finally:
-                await self._session_manager.revoke_session(user_id)
+            client = self._clients.get(user_id)
+            if client is not None:
+                # Do not delete the only stored session reference when the live
+                # client may still be connected. The caller can retry revoke.
+                await client.disconnect()
+                self._clients.pop(user_id, None)
+            await self._session_manager.revoke_session(user_id)
 
 
 class TelethonSessionClientFactory:
