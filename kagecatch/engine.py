@@ -92,11 +92,15 @@ class CatchEngine:
         deduplicator: Deduplicator | None = None,
         enabled: bool = False,
     ) -> None:
+        try:
+            threshold = float(confidence_threshold)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("confidence_threshold must be between 0 and 1") from None
         if (
             isinstance(confidence_threshold, bool)
             or not isinstance(confidence_threshold, (int, float))
-            or not math.isfinite(float(confidence_threshold))
-            or not 0.0 <= float(confidence_threshold) <= 1.0
+            or not math.isfinite(threshold)
+            or not 0.0 <= threshold <= 1.0
         ):
             raise ValueError("confidence_threshold must be between 0 and 1")
         if admission is not None and (quota is not None or deduplicator is not None):
@@ -104,7 +108,7 @@ class CatchEngine:
         if admission is None and (quota is None or deduplicator is None):
             raise ValueError("provide an atomic admission gate or both legacy gates")
 
-        self.confidence_threshold = float(confidence_threshold)
+        self.confidence_threshold = threshold
         self.admission = admission
         self.quota = quota
         self.deduplicator = deduplicator
@@ -238,7 +242,7 @@ class CatchEngine:
             raise ValueError("spawn chat_id must be a non-zero integer")
         if isinstance(spawn.message_id, bool) or not isinstance(spawn.message_id, int) or spawn.message_id <= 0:
             raise ValueError("spawn message_id must be a positive integer")
-        if spawn.media_kind not in _ALLOWED_MEDIA:
+        if not isinstance(spawn.media_kind, str) or spawn.media_kind not in _ALLOWED_MEDIA:
             raise ValueError("spawn media_kind must be image or video")
         if (
             not isinstance(spawn.candidates, Sequence)
@@ -255,7 +259,7 @@ class CatchEngine:
         character_name = receipt.character_name
         if (
             not isinstance(reference, str)
-            or not reference
+            or not reference.strip()
             or len(reference) > 256
             or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in reference)
         ):
