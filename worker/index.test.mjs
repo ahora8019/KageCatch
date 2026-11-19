@@ -333,7 +333,9 @@ test("standalone connection page reports persistence_pending truthfully and poll
   assert.match(html, /auth-status/);
   assert.doesNotMatch(html, /ورود تأیید و نشست ذخیره شد/);
   assert.match(html, /ذخیره نشست هنوز تکمیل نشده/);
-  const script = html.match(/<script>([\\s\\S]*?)<\\/script>/)?.[1];
+  const scriptStart = html.indexOf("<script>");
+  const scriptEnd = html.indexOf("</script>");
+  const script = scriptStart >= 0 && scriptEnd > scriptStart ? html.slice(scriptStart + 8, scriptEnd) : "";
   assert.ok(script, "standalone login script must be present");
   assert.doesNotThrow(() => new Function(script), "standalone login script must parse");
 });
