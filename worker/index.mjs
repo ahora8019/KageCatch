@@ -957,12 +957,12 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/broadcast') {
       const { ownerTelegramId, action, text } = body || {};
-      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','review','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','review','clear','enqueue','resume'].includes(action)) return json({ error: 'invalid_request' }, 400);
       const key = 'broadcast:' + ownerTelegramId;
       if (action === 'begin') {
         const result = await this.state.storage.transaction(async (txn) => {
           const current = await txn.get(key);
-          if (current && ['awaiting_confirmation', 'sending', 'review_required'].includes(current.status)) {
+          if (current && ['awaiting_confirmation', 'queued', 'paused', 'sending', 'review_required'].includes(current.status)) {
             return { blocked: current.status };
           }
           await txn.put(key, { status: 'awaiting_text', text: null, updatedAt: Date.now() });
@@ -974,6 +974,10 @@ export class ConnectionLinkStore {
       }
       if (action === 'get') return json({ draft: await this.state.storage.get(key) || null });
       if (action === 'clear') {
+        const current = await this.state.storage.get(key);
+        if (current?.status === 'sending' && current.inFlightAttemptId) {
+          return json({ error: 'broadcast_delivery_in_flight' }, 409);
+        }
         await this.state.storage.delete(key);
         return json({ status: 'cleared' });
       }
@@ -1054,6 +1058,34 @@ export class ConnectionLinkStore {
         });
         return draft ? json({ draft }) : json({ error: 'broadcast_progress_conflict' }, 409);
       }
+      if (action === 'enqueue') {
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending' || !Array.isArray(current.recipientIds)
+            || !Number.isSafeInteger(current.nextIndex)) return null;
+          const queued = {
+            ...current, status: 'queued', queuedAt: Date.now(), updatedAt: Date.now(),
+            inFlightIndex: null, inFlightAttemptId: null, inFlightAt: null,
+          };
+          await txn.put(key, queued);
+          return queued;
+        });
+        if (!draft) return json({ error: 'broadcast_not_ready_for_queue' }, 409);
+        await this.state.storage.setAlarm(Date.now() + 1000);
+        return json({ draft });
+      }
+      if (action === 'resume') {
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'paused') return null;
+          const queued = { ...current, status: 'queued', updatedAt: Date.now(), pauseReason: null };
+          await txn.put(key, queued);
+          return queued;
+        });
+        if (!draft) return json({ error: 'broadcast_not_paused' }, 409);
+        await this.state.storage.setAlarm(Date.now() + 1000);
+        return json({ draft });
+      }
       if (action === 'release') {
         const draft = await this.state.storage.transaction(async (txn) => {
           const current = await txn.get(key);
@@ -1110,6 +1142,124 @@ export class ConnectionLinkStore {
       return json({ telegramUserId: record.telegramUserId }, 200);
     }
     return json({ error: 'not_found' }, 404);
+  }
+
+  async alarm(controller, env) {
+    const entries = await this.state.storage.list({ prefix: 'broadcast:' });
+    const active = [...entries.entries()].find(([, draft]) =>
+      draft && ['queued', 'sending'].includes(draft.status));
+    if (!active) return;
+    const [key, existing] = active;
+    const ownerTelegramId = Number(key.slice('broadcast:'.length));
+    if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0) return;
+
+    if (existing.status === 'sending') {
+      const age = Date.now() - Number(existing.inFlightAt || 0);
+      if (existing.inFlightAttemptId && age >= 60_000) {
+        await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending'
+            || current.inFlightAttemptId !== existing.inFlightAttemptId) return;
+          await txn.put(key, {
+            ...current, status: 'review_required',
+            reviewIndex: current.inFlightIndex,
+            reviewRecipientId: current.recipientIds?.[current.inFlightIndex] ?? null,
+            reviewReason: 'worker_crash_during_delivery',
+            updatedAt: Date.now(),
+          });
+        });
+        await this.state.storage.deleteAlarm();
+        return;
+      }
+      await this.state.storage.setAlarm(Date.now() + Math.max(1000, 60_000 - Math.max(0, age)));
+      return;
+    }
+
+    const attempt = await this.state.storage.transaction(async (txn) => {
+      const current = await txn.get(key);
+      if (!current || current.status !== 'queued'
+        || !Array.isArray(current.recipientIds)
+        || !Number.isSafeInteger(current.nextIndex)) return null;
+      if (current.nextIndex >= current.recipientIds.length) {
+        const completed = { ...current, status: 'completed', completedAt: Date.now(), updatedAt: Date.now() };
+        await txn.put(key, completed);
+        return { completed: true };
+      }
+      const attemptId = crypto.randomUUID();
+      const inFlight = {
+        ...current, status: 'sending', inFlightIndex: current.nextIndex,
+        inFlightAttemptId: attemptId, inFlightAt: Date.now(), updatedAt: Date.now(),
+      };
+      await txn.put(key, inFlight);
+      return { attemptId, index: current.nextIndex, recipientId: current.recipientIds[current.nextIndex], text: current.text };
+    });
+    if (!attempt) return;
+    if (attempt.completed) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
+
+    // Persist a watchdog before crossing the external Telegram side-effect boundary.
+    await this.state.storage.setAlarm(Date.now() + 60_000);
+    let outcome = 'delivered';
+    try {
+      await telegramApi(env, 'sendMessage', { chat_id: attempt.recipientId, text: attempt.text });
+    } catch (error) {
+      const recipientSpecificFailure = error?.kind === 'access_denied' || error?.kind === 'invalid_request';
+      if (isTelegramSafetyStop(error)) {
+        await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending' || current.inFlightAttemptId !== attempt.attemptId) return;
+          await txn.put(key, {
+            ...current, status: 'paused', pauseReason: error?.kind || 'safety_gate',
+            inFlightIndex: null, inFlightAttemptId: null, inFlightAt: null, updatedAt: Date.now(),
+          });
+        });
+        await this.state.storage.deleteAlarm();
+        return;
+      }
+      if (recipientSpecificFailure) {
+        outcome = 'failed';
+      } else {
+        await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending' || current.inFlightAttemptId !== attempt.attemptId) return;
+          await txn.put(key, {
+            ...current, status: 'review_required',
+            reviewIndex: attempt.index, reviewRecipientId: attempt.recipientId,
+            reviewReason: 'ambiguous_delivery',
+            inFlightIndex: null, inFlightAttemptId: null, inFlightAt: null, updatedAt: Date.now(),
+          });
+        });
+        await this.state.storage.deleteAlarm();
+        return;
+      }
+    }
+
+    const advanced = await this.state.storage.transaction(async (txn) => {
+      const current = await txn.get(key);
+      if (!current || current.status !== 'sending' || current.inFlightAttemptId !== attempt.attemptId
+        || current.nextIndex !== attempt.index) return null;
+      const nextIndex = attempt.index + 1;
+      const done = nextIndex >= current.recipientIds.length;
+      const updated = {
+        ...current,
+        status: done ? 'completed' : 'queued',
+        nextIndex,
+        deliveredCount: (current.deliveredCount || 0) + (outcome === 'delivered' ? 1 : 0),
+        failedCount: (current.failedCount || 0) + (outcome === 'failed' ? 1 : 0),
+        inFlightIndex: null, inFlightAttemptId: null, inFlightAt: null,
+        ...(done ? { completedAt: Date.now() } : {}),
+        updatedAt: Date.now(),
+      };
+      await txn.put(key, updated);
+      return updated;
+    });
+    if (!advanced || advanced.status === 'completed') {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
+    await this.state.storage.setAlarm(Date.now() + 3500);
   }
 }
 
@@ -1218,7 +1368,7 @@ async function handleOwnerCallback(callback, env) {
   if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
   if (data === 'owner:broadcast') {
     const { draft: current } = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'get' });
-    if (current && ['awaiting_confirmation', 'sending', 'review_required'].includes(current.status)) {
+    if (current && ['awaiting_confirmation', 'queued', 'paused', 'sending', 'review_required'].includes(current.status)) {
       const reviewRequired = current.status === 'review_required';
       return {
         text: reviewRequired
@@ -1245,6 +1395,13 @@ async function handleOwnerCallback(callback, env) {
         alert: true,
       };
     }
+    if (current?.status === 'queued') {
+      return { text: '⏳ ارسال همگانی از قبل در صف پایدار قرار دارد و به‌صورت خودکار ادامه پیدا می‌کند.', keyboard: BACK_MENU, alert: true };
+    }
+    if (current?.status === 'paused') {
+      await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'resume' });
+      return { text: '▶️ صف ارسال دوباره فعال شد. ادامهٔ کار با Alarm و پس از عبور از Safety Gate انجام می‌شود.', keyboard: BACK_MENU };
+    }
     if (current?.status === 'sending') {
       return {
         text: '⏳ این ارسال هنوز در وضعیت پردازش است. برای جلوگیری از ارسال تکراری، تأیید دیگری اجرا نشد.',
@@ -1267,61 +1424,16 @@ async function handleOwnerCallback(callback, env) {
       });
       draft = initialized.draft;
     }
-    const recipients = draft.recipientIds;
-    let delivered = draft.deliveredCount || 0;
-    let failed = draft.failedCount || 0;
-    for (let index = draft.nextIndex; index < recipients.length; index += 1) {
-      const recipientId = recipients[index];
-      let outcome = "delivered";
-      try {
-        await telegramApi(env, 'sendMessage', { chat_id: recipientId, text: messageText });
-      } catch (error) {
-        const recipientSpecificFailure = error?.kind === "access_denied" || error?.kind === "invalid_request";
-        if (isTelegramSafetyStop(error)) {
-          const released = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'release' });
-          const saved = released.draft || draft;
-          const retryAfterSeconds = Number.isSafeInteger(error?.retryAfterSeconds)
-            ? error.retryAfterSeconds
-            : Number.isFinite(error?.retryAfterMs) && error.retryAfterMs > 0
-              ? Math.ceil(error.retryAfterMs / 1000)
-              : null;
-          const pauseText = error?.kind === "invalid_credentials"
-            ? "اعتبار بات نیاز به بررسی Owner دارد."
-            : retryAfterSeconds
-              ? "حداقل " + retryAfterSeconds + " ثانیه مکث لازم است."
-              : "پس از بازشدن Safety Gate می‌توان با تأیید Owner ادامه داد.";
-          return {
-            text: "⚠️ ارسال همگانی متوقف شد.\n\nموفق: " + (saved.deliveredCount || 0)
-              + "\nناموفق: " + (saved.failedCount || 0)
-              + "\nباقی‌مانده: " + Math.max(0, recipients.length - saved.nextIndex)
-              + "\n" + pauseText + "\nپیش‌نویس و نقطهٔ ادامه حفظ شدند.",
-            keyboard: { inline_keyboard: [[{ text: "🔁 ادامهٔ ارسال", callback_data: "owner:broadcast:confirm" }], ...BACK_MENU.inline_keyboard] },
-          };
-        }
-        if (recipientSpecificFailure) {
-          outcome = "failed";
-        } else {
-          await registryRequest(env, '/broadcast', {
-            ownerTelegramId: callback.from.id, action: 'review', expectedIndex: index,
-          });
-          return {
-            text: "⚠️ نتیجهٔ ارسال برای مخاطب " + recipientId + " نامشخص است.\n\n"
-              + "برای جلوگیری از ارسال تکراری، ارسال همگانی متوقف و در وضعیت review_required قفل شد. "
-              + "نقطهٔ ادامه روی همین مخاطب باقی مانده؛ Owner باید نتیجه را بررسی کند. "
-              + "هیچ تلاش مجدد خودکاری انجام نمی‌شود.",
-            keyboard: { inline_keyboard: [[{ text: "🗑️ لغو پیش‌نویس", callback_data: "owner:broadcast:cancel" }], ...BACK_MENU.inline_keyboard] },
-          };
-        }
-      }
-      const progress = await registryRequest(env, '/broadcast', {
-        ownerTelegramId: callback.from.id, action: 'advance', expectedIndex: index, outcome,
-      });
-      delivered = progress.draft.deliveredCount;
-      failed = progress.draft.failedCount;
-      if (index + 1 < recipients.length) await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
-    return { text: '📣 ارسال همگانی تمام شد.\n\nموفق: ' + delivered + '\nناموفق: ' + failed + '\nمخاطبان: ' + recipients.length, keyboard: BACK_MENU };
+    const queued = await registryRequest(env, '/broadcast', {
+      ownerTelegramId: callback.from.id, action: 'enqueue',
+    });
+    return {
+      text: '📣 ارسال همگانی با موفقیت در صف پایدار ثبت شد.\n\n'
+        + 'مخاطبان: ' + (queued.draft?.recipientIds?.length || 0) + '\n'
+        + 'ارسال‌ها در پس‌زمینه و به‌صورت مرحله‌ای انجام می‌شوند. '
+        + 'در صورت توقف Safety Gate یا نتیجهٔ مبهم، صف متوقف می‌شود و ارسال خودکار تکرار نخواهد شد.',
+      keyboard: BACK_MENU,
+    };
   }
   if (data === 'owner:emergency') return { text: '🛑 توقف اضطراری\n\nCatch در حال حاضر فعال نیست؛ هیچ عملیات زنده‌ای برای توقف وجود ندارد.', keyboard: BACK_MENU };
   if (data === 'owner:members') {

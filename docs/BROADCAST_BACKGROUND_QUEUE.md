@@ -1,6 +1,6 @@
 # Broadcast Background Queue — Design and Safety Notes
 
-**Status:** Architecture proposal for the Control Bot. The current implementation is still synchronous; the durable alarm-driven queue described below is not yet implemented.
+**Status:** Implemented on PR #44 (source-only; not deployed). Broadcast confirmation now hands off to the existing `ConnectionLinkStore` Durable Object alarm queue.
 
 ## 1. Current execution path and limits
 
@@ -79,3 +79,16 @@ The full alarm-driven queue remains a follow-up, but the current synchronous pat
 - The Owner can explicitly discard the draft. There is not yet a UI action to mark the uncertain attempt delivered or intentionally retry it; those resolution controls belong in the dedicated queue/review phase.
 
 This guard reduces duplicate risk but does not make the current webhook loop asynchronous or recover an invocation that is terminated before it can persist the review transition.
+
+
+## 8. Alarm queue implementation on PR #44
+
+The webhook confirmation path now snapshots active recipients, persists the queue state, schedules the existing Durable Object alarm, and returns without iterating recipients. The alarm processes one recipient per invocation through the existing `telegramApi` boundary, so global pacing, per-chat pacing, the circuit breaker, 401 pause, and 429 pause remain enforced.
+
+- The queue record, cursor, counters, and in-flight attempt marker are stored in the existing Durable Object storage; no new binding or D1 migration is introduced.
+- A watchdog alarm is persisted before the Telegram request. If an invocation is recovered with a stale in-flight marker, the item is locked as `review_required`; it is never automatically resent.
+- Confirmed sends and definite recipient-specific 400/403 rejections advance the cursor transactionally and schedule the next alarm.
+- Safety Gate / 401 / 429 outcomes move the queue to `paused` without advancing the cursor. Owner confirmation may resume it; the Safety Gate still decides whether a send is permitted.
+- Network exceptions, 5xx/unknown Telegram outcomes, and stale in-flight recovery lock the exact recipient/index for Owner review and do not schedule a retry.
+- Completion is persisted as `completed`; no exactly-once guarantee is made. The system avoids automatic replay of uncertain deliveries.
+- This implementation has not been deployed and has not sent any live Telegram messages.
