@@ -1004,7 +1004,7 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/broadcast') {
       const { ownerTelegramId, action, text } = body || {};
-      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','review','clear','enqueue','resume'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','review','resolve','clear','enqueue','resume'].includes(action)) return json({ error: 'invalid_request' }, 400);
       const key = 'broadcast:' + ownerTelegramId;
       if (action === 'begin') {
         const result = await this.state.storage.transaction(async (txn) => {
@@ -1077,10 +1077,50 @@ export class ConnectionLinkStore {
             reviewIndex: expectedIndex,
             reviewRecipientId: current.recipientIds[expectedIndex],
             reviewReason: 'ambiguous_delivery',
+            reviewAttemptId: current.inFlightAttemptId,
             updatedAt: Date.now(),
           };
           await txn.put(key, reviewed);
           return reviewed;
+        });
+        return draft ? json({ draft }) : json({ error: 'broadcast_review_conflict' }, 409);
+      }
+      if (action === 'resolve') {
+        const { expectedIndex, expectedAttemptId, decision } = body || {};
+        if (!Number.isSafeInteger(expectedIndex)
+          || typeof expectedAttemptId !== 'string' || !/^[0-9a-f-]{16,36}$/i.test(expectedAttemptId)
+          || !['delivered', 'retry'].includes(decision)) {
+          return json({ error: 'invalid_broadcast_resolution' }, 400);
+        }
+        const snapshot = await this.state.storage.get(key);
+        if (!snapshot || snapshot.status !== 'review_required'
+          || snapshot.reviewIndex !== expectedIndex
+          || snapshot.reviewAttemptId !== expectedAttemptId) {
+          return json({ error: 'broadcast_review_conflict' }, 409);
+        }
+        // Arm recovery before the compare-and-set transition to queued.
+        await this.state.storage.setAlarm(Date.now() + 1000);
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'review_required'
+            || current.reviewIndex !== expectedIndex
+            || current.reviewAttemptId !== expectedAttemptId
+            || current.nextIndex !== expectedIndex) return null;
+          const nextIndex = decision === 'delivered' ? expectedIndex + 1 : expectedIndex;
+          const done = nextIndex >= current.recipientIds.length;
+          const resolved = {
+            ...current,
+            status: done ? 'completed' : 'queued',
+            nextIndex,
+            deliveredCount: (current.deliveredCount || 0) + (decision === 'delivered' ? 1 : 0),
+            inFlightIndex: null, inFlightAttemptId: null, inFlightAt: null,
+            reviewIndex: null, reviewRecipientId: null, reviewReason: null, reviewAttemptId: null,
+            lastReviewResolution: decision, lastReviewResolvedAt: Date.now(),
+            ...(done ? { completedAt: Date.now() } : {}),
+            updatedAt: Date.now(),
+          };
+          await txn.put(key, resolved);
+          return resolved;
         });
         return draft ? json({ draft }) : json({ error: 'broadcast_review_conflict' }, 409);
       }
@@ -1217,6 +1257,7 @@ export class ConnectionLinkStore {
             reviewIndex: current.inFlightIndex,
             reviewRecipientId: current.recipientIds?.[current.inFlightIndex] ?? null,
             reviewReason: 'worker_crash_during_delivery',
+            reviewAttemptId: current.inFlightAttemptId,
             updatedAt: Date.now(),
           });
         });
@@ -1282,6 +1323,7 @@ export class ConnectionLinkStore {
             ...current, status: 'review_required',
             reviewIndex: attempt.index, reviewRecipientId: attempt.recipientId,
             reviewReason: 'ambiguous_delivery',
+            reviewAttemptId: attempt.attemptId,
             inFlightIndex: null, inFlightAttemptId: null, inFlightAt: null, updatedAt: Date.now(),
           });
         });
@@ -1420,6 +1462,21 @@ async function handleOwnerCallback(callback, env) {
     return { text: '🗑️ لینک دعوت لغو شد و دیگه قابل استفاده نیست.', keyboard: { inline_keyboard: [[{ text: '🎟️ مدیریت دعوت‌ها', callback_data: 'owner:invites' }], ...BACK_MENU.inline_keyboard] } };
   }
   if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
+  const reviewResolution = /^owner:br:r:([dy]):(\\d{1,4}):([0-9a-f-]{16,36})$/i.exec(data);
+  if (reviewResolution) {
+    const [, choice, indexText, attemptId] = reviewResolution;
+    const decision = choice === 'd' ? 'delivered' : 'retry';
+    const result = await registryRequest(env, '/broadcast', {
+      ownerTelegramId: callback.from.id, action: 'resolve',
+      expectedIndex: Number(indexText), expectedAttemptId: attemptId, decision,
+    });
+    return {
+      text: decision === 'delivered'
+        ? '✅ با تصمیم صریح Owner، این مخاطب تحویل‌شده ثبت شد و صف از گیرندهٔ بعدی ادامه می‌یابد.'
+        : '⚠️ تلاش مجدد ثبت شد. اگر پیام قبلی در تلگرام تحویل شده باشد، ممکن است پیام تکراری ارسال شود.',
+      keyboard: BACK_MENU,
+    };
+  }
   if (data === 'owner:broadcast') {
     const { draft: current } = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'get' });
     if (current && ['awaiting_confirmation', 'queued', 'paused', 'sending', 'review_required'].includes(current.status)) {
@@ -1429,6 +1486,13 @@ async function handleOwnerCallback(callback, env) {
           ? '⚠️ یک نتیجهٔ ارسال نامشخص برای بررسی Owner قفل شده است. هیچ ارسال مجددی انجام نمی‌شود؛ پیش‌نویس را بررسی یا صریحاً لغو کن.'
           : '⚠️ یک پیش‌نویس یا ارسال قبلی هنوز تعیین‌تکلیف نشده است. ابتدا همان مورد را ادامه بده یا لغو کن.',
         keyboard: { inline_keyboard: [
+          ...(reviewRequired && Number.isSafeInteger(current.reviewIndex)
+            && typeof current.reviewAttemptId === 'string'
+            ? [[
+              { text: 'ثبت به‌عنوان تحویل‌شده', callback_data: 'owner:br:r:d:' + current.reviewIndex + ':' + current.reviewAttemptId },
+              { text: 'تلاش مجدد (احتمال تکرار)', callback_data: 'owner:br:r:y:' + current.reviewIndex + ':' + current.reviewAttemptId },
+            ]]
+            : []),
           ...(current.status === 'paused'
             ? [[{ text: '▶️ ادامهٔ صف پس از بررسی Safety Gate', callback_data: 'owner:broadcast:confirm' }]]
             : []),
@@ -1451,7 +1515,16 @@ async function handleOwnerCallback(callback, env) {
       return {
         text: '⚠️ نتیجهٔ ارسال برای مخاطب ' + current.reviewRecipientId
           + ' نامشخص است. برای جلوگیری از ارسال تکراری، پیش‌نویس در وضعیت review_required قفل شده و فقط با بررسی Owner قابل تعیین‌تکلیف است.',
-        keyboard: { inline_keyboard: [[{ text: '🗑️ لغو پیش‌نویس', callback_data: 'owner:broadcast:cancel' }], ...BACK_MENU.inline_keyboard] },
+        keyboard: { inline_keyboard: [
+          ...(Number.isSafeInteger(current.reviewIndex) && typeof current.reviewAttemptId === 'string'
+            ? [[
+              { text: 'ثبت به‌عنوان تحویل‌شده', callback_data: 'owner:br:r:d:' + current.reviewIndex + ':' + current.reviewAttemptId },
+              { text: 'تلاش مجدد (احتمال تکرار)', callback_data: 'owner:br:r:y:' + current.reviewIndex + ':' + current.reviewAttemptId },
+            ]]
+            : []),
+          [{ text: '🗑️ لغو پیش‌نویس', callback_data: 'owner:broadcast:cancel' }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
         alert: true,
       };
     }
