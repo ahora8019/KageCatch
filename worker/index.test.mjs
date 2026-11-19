@@ -1441,7 +1441,16 @@ test("webhook processing failures emit structured diagnostics without exposing e
       } }),
     }), env);
     assert.equal(response.status, 502);
-    assert.equal(logs.length, 1);
+    const retry = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+      body: JSON.stringify({ update_id: 7654321, callback_query: {
+        id: "cb-failure", data: "menu:main", from: { id: 999001 },
+        message: { message_id: 12, chat: { id: 999001, type: "private" } },
+      } }),
+    }), env);
+    assert.equal(retry.status, 502, "failed processing must release the update claim so Telegram can retry");
+    assert.equal(logs.length, 2);
     const event = JSON.parse(logs[0]);
     assert.equal(event.event, "telegram_webhook_processing_failed");
     assert.equal(event.stage, "callback");
@@ -1454,6 +1463,38 @@ test("webhook processing failures emit structured diagnostics without exposing e
   }
 });
 
+
+test("Telegram webhook updates are deduplicated by the durable replay guard", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  await store.fetch(new Request("https://do.internal/register", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }),
+  }));
+  let sends = 0;
+  const env = {
+    CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    FETCH: async () => {
+      sends += 1;
+      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+  const makeRequest = () => new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id: 87654321, message: {
+      message_id: 1, text: "/start", from: { id: 999001, first_name: "Owner" },
+      chat: { id: 999001, type: "private" },
+    } }),
+  });
+  assert.equal((await worker.fetch(makeRequest(), env)).status, 200);
+  assert.equal((await worker.fetch(makeRequest(), env)).status, 200);
+  assert.equal(sends, 1);
+  assert.ok(await state.storage.get("internal-nonce:telegram-update-87654321"));
+});
 
 test("scheduled keepalive sends a lightweight GET to the Render Core liveness endpoint", async () => {
   let captured;
