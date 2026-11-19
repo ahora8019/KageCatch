@@ -148,3 +148,69 @@ export async function recordTelegramApiFailure(db, policy, now = Date.now()) {
     ).bind(policy.kind).run();
   }
 }
+
+
+const CHAT_CIRCUIT_FAILURE_THRESHOLD = 3;
+
+function normalizeCircuitChatId(chatId) {
+  if (Number.isSafeInteger(chatId) && chatId !== 0) return String(chatId);
+  if (typeof chatId === "string" && chatId.trim() && chatId.length <= 128) return chatId.trim();
+  throw new Error("telegram_chat_id_invalid");
+}
+
+export async function assertTelegramChatCircuitClosed(db, chatId) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  const key = normalizeCircuitChatId(chatId);
+  const state = await db.prepare(
+    "SELECT consecutive_failures, is_open, last_error_code FROM telegram_bot_chat_circuit_breaker WHERE chat_id = ?"
+  ).bind(key).first();
+  if (state?.is_open === 1 || state?.is_open === true) {
+    throw new TelegramSafetyGateError("chat_circuit_open");
+  }
+  return state ?? { consecutive_failures: 0, is_open: 0, last_error_code: null };
+}
+
+export async function recordTelegramChatApiFailure(db, chatId, policy, now = Date.now()) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  if (![400, 403].includes(policy?.errorCode)
+    || !["access_denied", "invalid_request"].includes(policy?.kind)) {
+    return { recorded: false, opened: false };
+  }
+  const key = normalizeCircuitChatId(chatId);
+  await db.prepare(
+    "INSERT INTO telegram_bot_chat_circuit_breaker (chat_id, updated_at_ms) VALUES (?, ?) ON CONFLICT(chat_id) DO NOTHING"
+  ).bind(key, now).run();
+  const current = await db.prepare(
+    "SELECT consecutive_failures, is_open FROM telegram_bot_chat_circuit_breaker WHERE chat_id = ?"
+  ).bind(key).first();
+  if (!current) throw new Error("telegram_chat_circuit_state_missing");
+  if (current.is_open === 1 || current.is_open === true) {
+    return { recorded: true, opened: true, consecutiveFailures: current.consecutive_failures };
+  }
+  const consecutiveFailures = Math.min(
+    CHAT_CIRCUIT_FAILURE_THRESHOLD,
+    Math.max(0, Number(current.consecutive_failures) || 0) + 1,
+  );
+  const isOpen = consecutiveFailures >= CHAT_CIRCUIT_FAILURE_THRESHOLD ? 1 : 0;
+  await db.prepare(
+    "UPDATE telegram_bot_chat_circuit_breaker SET consecutive_failures = ?, is_open = ?, last_error_code = ?, updated_at_ms = ? WHERE chat_id = ?"
+  ).bind(key, consecutiveFailures, isOpen, policy.errorCode, now).run();
+  return { recorded: true, opened: isOpen === 1, consecutiveFailures };
+}
+
+export async function recordTelegramChatApiSuccess(db, chatId, now = Date.now()) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  const key = normalizeCircuitChatId(chatId);
+  const current = await db.prepare(
+    "SELECT consecutive_failures, is_open FROM telegram_bot_chat_circuit_breaker WHERE chat_id = ?"
+  ).bind(key).first();
+  if (current?.is_open === 1 || current?.is_open === true) {
+    throw new TelegramSafetyGateError("chat_circuit_open");
+  }
+  if (current) {
+    await db.prepare(
+      "UPDATE telegram_bot_chat_circuit_breaker SET consecutive_failures = 0, last_error_code = NULL, updated_at_ms = ? WHERE chat_id = ?"
+    ).bind(now, key).run();
+  }
+  return { reset: Boolean(current) };
+}
