@@ -149,5 +149,28 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.active_user_count, 1)
 
 
+
+    async def test_rejects_noncanonical_user_identifiers_before_session_load(self):
+        class CountingManager(FakeSessionManager):
+            def __init__(self):
+                super().__init__({})
+                self.load_calls = 0
+
+            async def load_session(self, user_id):
+                self.load_calls += 1
+                return await super().load_session(user_id)
+
+        manager = CountingManager()
+        runtime = SessionRuntime(
+            session_manager=manager,
+            client_factory=lambda session: FakeClient(),
+        )
+        for invalid_user_id in (None, True, 123, "", " user-a", "user-a\\n", "用户-a"):
+            with self.subTest(user_id=repr(invalid_user_id)):
+                with self.assertRaises(ValueError):
+                    await runtime.connect_user(invalid_user_id)
+        self.assertEqual(manager.load_calls, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
