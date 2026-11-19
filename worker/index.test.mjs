@@ -1650,3 +1650,41 @@ test("manual webhook setup derives the webhook host from the incoming Worker ori
   assert.equal(response.status, 200);
   assert.equal(webhookUrl, "https://custom-worker.example/webhook");
 });
+
+
+test("durable manual review retry after resolution is idempotent and never reopens the review", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const connectionStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = {
+    idFromName: () => "connection-links-v1",
+    get: () => ({ fetch: (input, init) => connectionStore.fetch(new Request(input, init)) }),
+  };
+  const db = createFakeManualReviewDatabase();
+  const secret = "manual-review-core-secret-with-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const reviewId = "d".repeat(32);
+  const item = {
+    action: "create", review_id: reviewId, user_id: "12345",
+    spawn_id: 91, anime_name: "KonoSuba", candidates: ["Megumin", "Aqua"],
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  };
+
+  const created = await worker.fetch(await makeSignedManualReviewRequest(item, secret), env);
+  assert.equal(created.status, 201);
+  const approved = await worker.fetch(await makeSignedManualReviewRequest({
+    action: "approve", user_id: "12345", review_id: reviewId, candidate_index: 0,
+  }, secret), env);
+  assert.equal(approved.status, 200);
+
+  const retried = await worker.fetch(await makeSignedManualReviewRequest({
+    ...item,
+    created_at: new Date(Date.now() + 5_000).toISOString(),
+    expires_at: new Date(Date.now() + 65_000).toISOString(),
+  }, secret), env);
+  assert.equal(retried.status, 200);
+  assert.deepEqual(await retried.json(), { status: "created", idempotent: true });
+  assert.equal(db.rows.size, 1);
+  assert.equal(db.rows.get(reviewId).status, "approved");
+  assert.equal(db.rows.get(reviewId).selected_character, "Megumin");
+});
