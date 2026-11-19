@@ -1,3 +1,4 @@
+import { isTelegramSafetyStop } from "./telegram_safety.mjs";
 const QUEUE_PATH = "/internal/panel-requests";
 const MAX_QUEUE_BODY_BYTES = 4096;
 const PANEL_TTL_MINUTES = 10;
@@ -131,7 +132,13 @@ export async function processPanelQueue(env, sendTelegram) {
         "UPDATE panel_requests SET status = 'completed', panel_message_id = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
       ).bind(messageId, row.request_id).run();
       processed += 1;
-    } catch {
+    } catch (error) {
+      if (isTelegramSafetyStop(error)) {
+        await env.KAGECATCH_DB.prepare(
+          "UPDATE panel_requests SET status = 'pending', attempts = MAX(attempts - 1, 0), last_error_code = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
+        ).bind(error?.kind || "safety_gate", row.request_id).run();
+        break;
+      }
       const nextStatus = row.attempts >= 3 ? "failed" : "pending";
       await env.KAGECATCH_DB.prepare(
         "UPDATE panel_requests SET status = ?, last_error_code = 'telegram_delivery_failed', updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
