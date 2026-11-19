@@ -1,4 +1,4 @@
-import { TelegramSafetyGateError } from "./telegram_safety.mjs";
+import { isTelegramSafetyStop } from "./telegram_safety.mjs";
 const QUEUE_PATH = "/internal/panel-requests";
 const MAX_QUEUE_BODY_BYTES = 4096;
 const PANEL_TTL_MINUTES = 10;
@@ -133,7 +133,7 @@ export async function processPanelQueue(env, sendTelegram) {
       ).bind(messageId, row.request_id).run();
       processed += 1;
     } catch (error) {
-      if (error instanceof TelegramSafetyGateError || error?.kind === "rate_limited" || error?.kind === "invalid_credentials") {
+      if (isTelegramSafetyStop(error)) {
         await env.KAGECATCH_DB.prepare(
           "UPDATE panel_requests SET status = 'pending', attempts = MAX(attempts - 1, 0), last_error_code = ?, updated_at = CURRENT_TIMESTAMP WHERE request_id = ? AND status = 'processing'"
         ).bind(error?.kind || "safety_gate", row.request_id).run();
