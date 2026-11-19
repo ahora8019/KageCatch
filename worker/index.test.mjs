@@ -4,6 +4,39 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
+function createTelegramSafetyDb() {
+  const state = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null };
+  return {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async first() {
+          if (sql.includes("RETURNING")) {
+            const [now, intervalMs, pausedCheckNow, nextCheckNow] = values;
+            if (state.paused_until_ms > pausedCheckNow || state.next_allowed_at_ms > nextCheckNow) return null;
+            state.next_allowed_at_ms = now + intervalMs;
+            return { next_allowed_at_ms: state.next_allowed_at_ms };
+          }
+          if (sql.startsWith("SELECT")) return { ...state };
+          return null;
+        },
+        async run() {
+          if (sql.includes("paused_until_ms = MAX")) {
+            state.paused_until_ms = Math.max(state.paused_until_ms, values[0]);
+            state.pause_reason = "telegram_429";
+          } else if (sql.includes("paused_until_ms = 9223372036854775807")) {
+            state.paused_until_ms = Number.MAX_SAFE_INTEGER;
+            state.pause_reason = values[0];
+          }
+          return { meta: { changes: 1 } };
+        },
+      };
+    },
+  };
+}
+
+
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
   assert.equal(response.status, 200);
@@ -266,7 +299,7 @@ test("private connect callback launches the standalone secure login page", async
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const telegramCalls = [];
   const env = {
-    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
     CONNECT_LINKS: binding,
     FETCH: async (url, init) => {
