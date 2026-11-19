@@ -1656,6 +1656,10 @@ test("broadcast keeps its draft claim when Telegram pauses outbound delivery", a
   const state = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
   assert.equal(state.draft?.status, "awaiting_confirmation");
   assert.equal(state.draft?.text, "پیام آزمایشی همگانی");
+  assert.deepEqual(state.draft?.recipientIds, [2001, 2002]);
+  assert.equal(state.draft?.nextIndex, 0);
+  assert.equal(state.draft?.deliveredCount, 0);
+  assert.equal(state.draft?.failedCount, 0);
   assert.equal(calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 2001).length, 1);
 });
 
@@ -1693,6 +1697,10 @@ test("broadcast resumes after a pause without resending recipients already confi
   await webhook(501, firstEnv);
   const paused = await (await post("/broadcast", { ownerTelegramId: 1001, action: "get" })).json();
   assert.equal(paused.draft?.status, "awaiting_confirmation");
+  assert.deepEqual(paused.draft?.recipientIds, [2001, 2002]);
+  assert.equal(paused.draft?.nextIndex, 1);
+  assert.equal(paused.draft?.deliveredCount, 1);
+  assert.equal(paused.draft?.failedCount, 0);
 
   const resumedCalls = [];
   const resumedEnv = {
