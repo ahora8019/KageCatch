@@ -1,5 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
-import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, isTelegramMutatingMethod } from "./telegram_safety.mjs";
+import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, isTelegramMutatingMethod, isValidTelegramMethod, isTelegramSafetyStop } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -203,10 +203,21 @@ async function miniAppSession(request, env) {
 }
 
 async function telegramApi(env, method, payload = {}) {
+  if (!isValidTelegramMethod(method)) throw new Error("invalid_telegram_method");
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
+  const requestPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   if (isTelegramMutatingMethod(method)) {
-    if (Number.isSafeInteger(payload.chat_id) && payload.chat_id < 0) {
-      await waitForTelegramChatPermit(env.KAGECATCH_DB, payload.chat_id, 3100, 4000);
+    if (requestPayload.chat_id !== undefined) {
+      let chatId = requestPayload.chat_id;
+      let intervalMs = 3100;
+      if (Number.isSafeInteger(chatId)) {
+        intervalMs = chatId < 0 ? 3100 : 1000;
+      } else if (typeof chatId === "string" && chatId.trim()) {
+        chatId = chatId.trim();
+      } else {
+        throw new Error("telegram_chat_id_invalid");
+      }
+      await waitForTelegramChatPermit(env.KAGECATCH_DB, chatId, intervalMs, intervalMs + 900);
     }
     await waitForTelegramSendPermit(env.KAGECATCH_DB, 100, 1500);
   }
@@ -214,7 +225,7 @@ async function telegramApi(env, method, payload = {}) {
   const response = await requestFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(requestPayload),
   });
   const result = await response.json();
   if (!response.ok || !result.ok) {
@@ -745,7 +756,7 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/broadcast') {
       const { ownerTelegramId, action, text } = body || {};
-      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','release','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
       const key = 'broadcast:' + ownerTelegramId;
       if (action === 'begin') {
         await this.state.storage.put(key, { status: 'awaiting_text', text: null, updatedAt: Date.now() });
@@ -772,6 +783,16 @@ export class ConnectionLinkStore {
           return current;
         });
         return draft ? json({ draft }) : json({ error: 'no_confirmable_broadcast' }, 409);
+      }
+      if (action === 'release') {
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending') return null;
+          const released = { ...current, status: 'awaiting_confirmation', updatedAt: Date.now() };
+          await txn.put(key, released);
+          return released;
+        });
+        return draft ? json({ draft }) : json({ error: 'no_releasable_broadcast' }, 409);
       }
     }
     if (url.pathname === '/create') {
@@ -941,8 +962,32 @@ async function handleOwnerCallback(callback, env) {
     const recipients = users.filter((user) => user.role === 'MEMBER' && user.status === 'active' && Number.isSafeInteger(user.telegramUserId));
     let delivered = 0; let failed = 0;
     for (const recipient of recipients) {
-      try { await telegramApi(env, 'sendMessage', { chat_id: recipient.telegramUserId, text: messageText }); delivered += 1; }
-      catch { failed += 1; }
+      try {
+        await telegramApi(env, 'sendMessage', { chat_id: recipient.telegramUserId, text: messageText });
+        delivered += 1;
+      } catch (error) {
+        failed += 1;
+        const recipientSpecificFailure = error?.kind === "access_denied" || error?.kind === "invalid_request";
+        if (isTelegramSafetyStop(error) || !recipientSpecificFailure) {
+          await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'release' });
+          const retryAfterSeconds = Number.isSafeInteger(error?.retryAfterSeconds)
+            ? error.retryAfterSeconds
+            : Number.isFinite(error?.retryAfterMs) && error.retryAfterMs > 0
+              ? Math.ceil(error.retryAfterMs / 1000)
+              : null;
+          const pauseText = error?.kind === "invalid_credentials"
+            ? "اعتبار بات نیاز به بررسی Owner دارد."
+            : retryAfterSeconds
+              ? "حداقل " + retryAfterSeconds + " ثانیه مکث لازم است."
+              : "پس از رفع خطای موقت دوباره تلاش کن.";
+          return {
+            text: "⚠️ ارسال همگانی متوقف شد.\n\nموفق: " + delivered + "\nناموفق: " + failed
+              + "\nباقی‌مانده: " + Math.max(0, recipients.length - delivered - failed)
+              + "\n" + pauseText + "\nپیش‌نویس حفظ شد و می‌توانی بعداً دوباره تأیید کنی.",
+            keyboard: { inline_keyboard: [[{ text: "🔁 تلاش دوباره", callback_data: "owner:broadcast:confirm" }], ...BACK_MENU.inline_keyboard] },
+          };
+        }
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
