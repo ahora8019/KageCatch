@@ -279,7 +279,8 @@ async function miniAppOwnerSafety(request, env, operation) {
   return json({ error: "invalid_action" }, 400);
 }
 
-async function telegramApi(env, method, payload = {}) {
+// Export the central Bot API boundary so integration tests exercise the same safety gate used by webhook handlers.
+export async function telegramApi(env, method, payload = {}) {
   if (!isValidTelegramMethod(method)) throw new Error("invalid_telegram_method");
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
   const requestPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
