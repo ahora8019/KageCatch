@@ -1,4 +1,5 @@
 const MAX_RETRY_AFTER_SECONDS = 24 * 60 * 60;
+const OPERATOR_PAUSE_UNTIL = 9_007_199_254_740_991;
 
 export function classifyTelegramApiFailure(payload, httpStatus = 0) {
   const body = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
@@ -32,5 +33,48 @@ export class TelegramApiError extends Error {
     this.kind = policy.kind;
     this.retryAfterSeconds = policy.retryAfterSeconds;
     this.errorCode = policy.errorCode;
+  }
+}
+
+export class TelegramSafetyGateError extends Error {
+  constructor(kind, retryAfterMs = 0) {
+    super("Telegram send blocked by safety gate (" + kind + ")");
+    this.name = "TelegramSafetyGateError";
+    this.kind = kind;
+    this.retryAfterMs = Math.max(0, Math.ceil(retryAfterMs));
+  }
+}
+
+export async function acquireTelegramSendPermit(db, now = Date.now(), intervalMs = 100) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  const reserved = await db.prepare(
+    "UPDATE telegram_bot_safety SET next_allowed_at_ms = ? + ? WHERE singleton_id = 'control-bot' AND paused_until_ms <= ? AND next_allowed_at_ms <= ? RETURNING next_allowed_at_ms"
+  ).bind(now, intervalMs, now, now).first();
+  if (reserved) return { allowed: true, retryAfterMs: 0 };
+
+  const state = await db.prepare(
+    "SELECT paused_until_ms, next_allowed_at_ms FROM telegram_bot_safety WHERE singleton_id = 'control-bot'"
+  ).first();
+  if (!state) throw new Error("telegram_safety_state_missing");
+  if (state.paused_until_ms > now) {
+    if (state.paused_until_ms >= OPERATOR_PAUSE_UNTIL) {
+      throw new TelegramSafetyGateError("operator_action_required");
+    }
+    throw new TelegramSafetyGateError("rate_limited", state.paused_until_ms - now);
+  }
+  throw new TelegramSafetyGateError("cooldown", state.next_allowed_at_ms - now);
+}
+
+export async function recordTelegramApiFailure(db, policy, now = Date.now()) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  if (policy?.kind === "rate_limited") {
+    const delayMs = (policy.retryAfterSeconds ?? 60) * 1000;
+    await db.prepare(
+      "UPDATE telegram_bot_safety SET paused_until_ms = MAX(paused_until_ms, ?), pause_reason = 'telegram_429', updated_at = CURRENT_TIMESTAMP WHERE singleton_id = 'control-bot'"
+    ).bind(now + delayMs).run();
+  } else if (policy?.kind === "invalid_credentials" || policy?.kind === "access_denied") {
+    await db.prepare(
+      "UPDATE telegram_bot_safety SET paused_until_ms = 9223372036854775807, pause_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE singleton_id = 'control-bot'"
+    ).bind(policy.kind).run();
   }
 }
