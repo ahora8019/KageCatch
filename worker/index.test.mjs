@@ -1465,6 +1465,32 @@ test("webhook processing failures emit structured diagnostics without exposing e
 });
 
 
+test("webhook update claims are fenced and recover after the processing lease expires", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const post = (route, body) => store.fetch(new Request("https://do.internal/" + route, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }));
+  const originalNow = Date.now;
+  const updateId = 87654322;
+  const firstToken = "a".repeat(32);
+  const secondToken = "b".repeat(32);
+  try {
+    const first = await post("claim-update", { updateId, claimToken: firstToken });
+    assert.equal(first.status, 200);
+    assert.equal((await post("claim-update", { updateId, claimToken: secondToken })).status, 409);
+    assert.equal((await post("complete-update", { updateId, claimToken: secondToken })).status, 409);
+
+    Date.now = () => originalNow() + 180001;
+    const recovered = await post("claim-update", { updateId, claimToken: secondToken });
+    assert.equal(recovered.status, 200);
+    assert.equal((await post("complete-update", { updateId, claimToken: firstToken })).status, 409);
+    assert.equal((await post("complete-update", { updateId, claimToken: secondToken })).status, 200);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("Telegram webhook updates are deduplicated by the durable replay guard", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const state = createDurableObjectState();
