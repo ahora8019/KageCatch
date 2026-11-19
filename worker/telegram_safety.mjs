@@ -9,6 +9,10 @@ export function isTelegramMutatingMethod(method) {
   return typeof method !== "string" || !TELEGRAM_READ_ONLY_METHODS.has(method);
 }
 
+export function isValidTelegramMethod(method) {
+  return typeof method === "string" && /^[A-Za-z][A-Za-z0-9]*$/.test(method);
+}
+
 export function classifyTelegramApiFailure(payload, httpStatus = 0) {
   const body = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   const candidateCode = Number.isSafeInteger(body.error_code) ? body.error_code : httpStatus;
@@ -53,6 +57,14 @@ export class TelegramSafetyGateError extends Error {
   }
 }
 
+export function isTelegramSafetyStop(error) {
+  const message = typeof error?.message === "string" ? error.message : "";
+  return error instanceof TelegramSafetyGateError
+    || error?.kind === "rate_limited"
+    || error?.kind === "invalid_credentials"
+    || /^telegram_(?:safety|chat_pacing|chat_id)_/.test(message);
+}
+
 export async function acquireTelegramSendPermit(db, now = Date.now(), intervalMs = 100) {
   if (!db) throw new Error("telegram_safety_store_unavailable");
   const reserved = await db.prepare(
@@ -89,23 +101,27 @@ export async function waitForTelegramSendPermit(db, intervalMs = 100, maxWaitMs 
 
 export async function acquireTelegramChatPermit(db, chatId, now = Date.now(), intervalMs = 3100) {
   if (!db) throw new Error("telegram_safety_store_unavailable");
-  if (!Number.isSafeInteger(chatId) || chatId >= 0) return { allowed: true, retryAfterMs: 0 };
+  const chatKey = Number.isSafeInteger(chatId) && chatId !== 0
+    ? String(chatId)
+    : typeof chatId === "string" && chatId.trim() && chatId.length <= 128
+      ? chatId.trim()
+      : null;
+  if (!chatKey) throw new Error("telegram_chat_id_invalid");
   await db.prepare(
     "INSERT INTO telegram_bot_chat_pacing (chat_id, next_allowed_at_ms) VALUES (?, 0) ON CONFLICT(chat_id) DO NOTHING"
-  ).bind(String(chatId)).run();
+  ).bind(chatKey).run();
   const reserved = await db.prepare(
     "UPDATE telegram_bot_chat_pacing SET next_allowed_at_ms = ? + ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND next_allowed_at_ms <= ? RETURNING next_allowed_at_ms"
-  ).bind(now, intervalMs, String(chatId), now).first();
+  ).bind(now, intervalMs, chatKey, now).first();
   if (reserved) return { allowed: true, retryAfterMs: 0 };
   const state = await db.prepare(
     "SELECT next_allowed_at_ms FROM telegram_bot_chat_pacing WHERE chat_id = ?"
-  ).bind(String(chatId)).first();
+  ).bind(chatKey).first();
   if (!state) throw new Error("telegram_chat_pacing_state_missing");
   throw new TelegramSafetyGateError("chat_cooldown", state.next_allowed_at_ms - now);
 }
 
 export async function waitForTelegramChatPermit(db, chatId, intervalMs = 3100, maxWaitMs = 4000) {
-  if (!Number.isSafeInteger(chatId) || chatId >= 0) return { allowed: true, retryAfterMs: 0 };
   const deadline = Date.now() + maxWaitMs;
   while (true) {
     try {
