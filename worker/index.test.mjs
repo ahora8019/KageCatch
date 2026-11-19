@@ -2111,3 +2111,54 @@ test("broadcast alarm converts a stale in-flight attempt to Owner review after c
   assert.equal(draft.reviewRecipientId, 2001);
   assert.equal(sends, 0);
 });
+
+
+test("broadcast Owner review can mark an ambiguous recipient delivered with fenced state", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  await state.storage.put("broadcast:1001", {
+    status: "review_required", text: "notice", recipientIds: [2001, 2002], nextIndex: 0,
+    deliveredCount: 0, failedCount: 0, reviewIndex: 0, reviewRecipientId: 2001,
+    reviewAttemptId: "attempt-1234567890", reviewReason: "ambiguous_delivery",
+  });
+  const post = (extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action: "resolve", expectedIndex: 0,
+      expectedAttemptId: "attempt-1234567890", decision: "delivered", ...extra }),
+  }));
+  const response = await post();
+  assert.equal(response.status, 200);
+  const draft = (await response.json()).draft;
+  assert.equal(draft.status, "queued");
+  assert.equal(draft.nextIndex, 1);
+  assert.equal(draft.deliveredCount, 1);
+  assert.equal(draft.reviewAttemptId, null);
+  assert.ok(state.alarmAt > Date.now());
+  assert.equal((await post()).status, 409, "stale Owner callback must not resolve a later attempt");
+});
+
+test("broadcast Owner review retry keeps the cursor and requires the exact attempt token", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  await state.storage.put("broadcast:1001", {
+    status: "review_required", text: "notice", recipientIds: [2001, 2002], nextIndex: 0,
+    deliveredCount: 0, failedCount: 0, reviewIndex: 0, reviewRecipientId: 2001,
+    reviewAttemptId: "attempt-abcdefghijkl", reviewReason: "worker_crash_during_delivery",
+  });
+  const post = (expectedAttemptId) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action: "resolve", expectedIndex: 0,
+      expectedAttemptId, decision: "retry" }),
+  }));
+  assert.equal((await post("attempt-stale-000000")).status, 409);
+  const response = await post("attempt-abcdefghijkl");
+  assert.equal(response.status, 200);
+  const draft = (await response.json()).draft;
+  assert.equal(draft.status, "queued");
+  assert.equal(draft.nextIndex, 0);
+  assert.equal(draft.deliveredCount, 0);
+  assert.equal(draft.lastReviewResolution, "retry");
+  assert.ok(state.alarmAt > Date.now());
+});
