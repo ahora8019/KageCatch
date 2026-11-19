@@ -263,7 +263,7 @@ test("Telegram safety stops release the current lease without consuming retries 
   const accepted = await Promise.all([1105, 1106].map((messageId) =>
     enqueuePanelRequest(signedRequest(env, {
       owner_id: "12345", chat_id: -100123456 - messageId, source_message_id: messageId,
-    }, String(messageId).repeat(2)), env)
+    }, String(messageId).repeat(4)), env)
   ));
   const ids = await Promise.all(accepted.map(async (response) => (await response.json()).request_id));
   let sends = 0;
