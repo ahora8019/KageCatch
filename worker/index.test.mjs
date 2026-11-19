@@ -1047,7 +1047,8 @@ test("internal session store accepts Fernet-sized encrypted session payloads", a
   // Fernet + Base64 for the Core's bounded StringSession can exceed 8 KiB.
   const ciphertext = "A".repeat(12000);
   const request = await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret);
-  assert.ok(Number(request.headers.get("content-length") || 0) <= 16384 || request.body !== null);
+  const requestBody = await request.clone().arrayBuffer();
+  assert.ok(requestBody.byteLength > 8192 && requestBody.byteLength <= 16384);
   const response = await worker.fetch(request, env);
   assert.equal(response.status, 200);
   assert.equal(DB.rows.get("7135051954"), ciphertext);
@@ -1062,6 +1063,8 @@ test("internal auth challenge store accepts Fernet-sized encrypted checkpoint pa
   const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: DB };
   const ciphertext = "A".repeat(12000);
   const request = await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret, undefined, "auth-challenge");
+  const requestBody = await request.clone().arrayBuffer();
+  assert.ok(requestBody.byteLength > 8192 && requestBody.byteLength <= 16384);
   const response = await worker.fetch(request, env);
   assert.equal(response.status, 200);
   assert.equal(DB.challengeRows.get("7135051954"), ciphertext);
