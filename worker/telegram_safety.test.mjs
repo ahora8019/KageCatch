@@ -92,8 +92,9 @@ function safetyDb(initial = {}) {
             if (!state.chats.has(v[0])) state.chats.set(v[0], 0);
           } else if (sql.includes("paused_until_ms = MAX")) {
             const [until] = v;
+            const operatorPauseAlreadyActive = state.paused_until_ms >= Number.MAX_SAFE_INTEGER;
             state.paused_until_ms = Math.max(state.paused_until_ms, until);
-            state.pause_reason = "telegram_429";
+            if (!operatorPauseAlreadyActive) state.pause_reason = "telegram_429";
           } else if (sql.includes("paused_until_ms = 9223372036854775807")) {
             state.paused_until_ms = Number.MAX_SAFE_INTEGER;
             state.pause_reason = v[0];
@@ -130,6 +131,18 @@ test("401 persists an operator-required global pause", async () => {
   await recordTelegramApiFailure(db, { kind: "invalid_credentials", retryAfterSeconds: null }, 1000);
   await assert.rejects(
     () => acquireTelegramSendPermit(db, 2000, 1000),
+    (error) => error instanceof TelegramSafetyGateError && error.kind === "operator_action_required",
+  );
+});
+
+test("a later 429 cannot downgrade or clear an existing 401 operator pause", async () => {
+  const db = safetyDb();
+  await recordTelegramApiFailure(db, { kind: "invalid_credentials", retryAfterSeconds: null }, 1000);
+  await recordTelegramApiFailure(db, { kind: "rate_limited", retryAfterSeconds: 30 }, 2000);
+  assert.equal(db.state.pause_reason, "invalid_credentials");
+  assert.equal(db.state.paused_until_ms, Number.MAX_SAFE_INTEGER);
+  await assert.rejects(
+    () => acquireTelegramSendPermit(db, 3000, 100),
     (error) => error instanceof TelegramSafetyGateError && error.kind === "operator_action_required",
   );
 });
