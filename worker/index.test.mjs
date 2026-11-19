@@ -67,6 +67,29 @@ function createTelegramSafetyDb() {
   };
 }
 
+function createDurableObjectState() {
+  const values = new Map();
+  let tail = Promise.resolve();
+  let alarmAt = null;
+  const storage = {
+    async get(key) { return values.get(key); },
+    async put(key, value) { values.set(key, value); },
+    async delete(key) { return values.delete(key); },
+    async list({ prefix = "" } = {}) {
+      return new Map([...values.entries()].filter(([key]) => key.startsWith(prefix)));
+    },
+    async setAlarm(when) { alarmAt = when instanceof Date ? when.getTime() : when; },
+    async getAlarm() { return alarmAt === null ? null : new Date(alarmAt); },
+    async deleteAlarm() { alarmAt = null; },
+    async transaction(callback) {
+      const run = tail.then(() => callback(storage));
+      tail = run.catch(() => {});
+      return run;
+    },
+  };
+  return { storage, get alarmAt() { return alarmAt; } };
+}
+
 
 function createTelegramSafetyTestDb() { return createTelegramSafetyDb(); }
 
