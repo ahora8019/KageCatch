@@ -604,7 +604,7 @@ export class ConnectionLinkStore {
     catch { return json({ error: 'invalid_request' }, 400); }
     if (url.pathname === '/claim-nonce') {
       const { nonce, expiresAt } = body || {};
-      if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 86400000) return json({ error: 'invalid_request' }, 400);
+      if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
       const claimed = await this.state.storage.transaction(async (txn) => {
         const prefix = 'internal-nonce:';
         const entries = await txn.list({ prefix, limit: 1000 });
@@ -629,6 +629,38 @@ export class ConnectionLinkStore {
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return json({ error: 'invalid_request' }, 400);
       await this.state.storage.delete('internal-nonce:' + nonce);
       return json({ released: true });
+    }
+    if (url.pathname === '/claim-update') {
+      const { updateId, claimToken } = body || {};
+      if (!Number.isSafeInteger(updateId) || updateId < 0
+        || typeof claimToken !== 'string' || !/^[a-f0-9]{32}$/.test(claimToken)) return json({ error: 'invalid_request' }, 400);
+      const now = Date.now();
+      const result = await this.state.storage.transaction(async (txn) => {
+        const key = 'telegram-update:' + updateId;
+        const existing = await txn.get(key);
+        if (existing?.status === 'completed' && existing.expiresAt > now) return 'completed';
+        if (existing?.status === 'processing' && existing.leaseUntil > now) return 'processing';
+        await txn.put(key, { status: 'processing', claimToken, leaseUntil: now + 180000, expiresAt: now + 86400000 });
+        return 'claimed';
+      });
+      if (result === 'completed') return json({ status: 'completed' });
+      if (result === 'processing') return json({ error: 'update_in_progress' }, 409);
+      return json({ claimed: true });
+    }
+    if (url.pathname === '/complete-update' || url.pathname === '/release-update') {
+      const { updateId, claimToken } = body || {};
+      if (!Number.isSafeInteger(updateId) || updateId < 0
+        || typeof claimToken !== 'string' || !/^[a-f0-9]{32}$/.test(claimToken)) return json({ error: 'invalid_request' }, 400);
+      const key = 'telegram-update:' + updateId;
+      const completed = url.pathname === '/complete-update';
+      const changed = await this.state.storage.transaction(async (txn) => {
+        const existing = await txn.get(key);
+        if (!existing || existing.status !== 'processing' || existing.claimToken !== claimToken) return false;
+        if (completed) await txn.put(key, { status: 'completed', expiresAt: Date.now() + 86400000 });
+        else await txn.delete(key);
+        return true;
+      });
+      return changed ? json({ status: completed ? 'completed' : 'released' }) : json({ error: 'claim_not_owned' }, 409);
     }
     if (url.pathname === '/invite/create') {
       const { maxUses, ttlSeconds } = body || {};
@@ -1111,19 +1143,23 @@ async function handleWebhook(request, env) {
   if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) return new Response("Bad Request", { status: 400 });
   if (!env.CONNECT_LINKS) return new Response("Webhook replay guard unavailable", { status: 503 });
 
-  const nonce = "telegram-update-" + update.update_id;
   const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const claimToken = crypto.randomUUID().replaceAll("-", "");
+  const claimBody = JSON.stringify({ updateId: update.update_id, claimToken });
   let claim;
   try {
-    claim = await stub.fetch("https://connect-links.internal/claim-nonce", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ nonce, expiresAt: Date.now() + 86400000 }),
+    claim = await stub.fetch("https://connect-links.internal/claim-update", {
+      method: "POST", headers: { "content-type": "application/json" }, body: claimBody,
     });
   } catch {
     return new Response("Webhook replay guard unavailable", { status: 503 });
   }
-  if (claim.status === 409) return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  if (claim.status === 409) return new Response("Webhook update is already processing", { status: 503 });
   if (!claim.ok) return new Response("Webhook replay guard unavailable", { status: 503 });
+  const claimResult = await claim.json();
+  if (claimResult?.status === "completed") {
+    return new Response("OK", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
 
   let response;
   try {
@@ -1132,14 +1168,12 @@ async function handleWebhook(request, env) {
     logWebhookFailure("update", update.update_id, error);
     response = new Response("Webhook processing failed", { status: 502 });
   }
-  if (response.status >= 500) {
-    try {
-      await stub.fetch("https://connect-links.internal/release-nonce", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ nonce }),
-      });
-    } catch {}
-  }
+  try {
+    await stub.fetch("https://connect-links.internal/" + (response.status >= 500 ? "release-update" : "complete-update"), {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: claimBody,
+    });
+  } catch {}
   return response;
 }
 
