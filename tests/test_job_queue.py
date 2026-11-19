@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -117,7 +118,7 @@ if __name__ == "__main__":
     async def test_idempotent_enqueue_is_safe_across_queue_instances(self):
         other = SQLiteJobQueue(str(self.path), clock=lambda: self.now)
         try:
-            first, second = await __import__("asyncio").gather(
+            first, second = await asyncio.gather(
                 self.queue.enqueue("spawn.recognize", {"spawn_id": 21}, idempotency_key="shared-key"),
                 other.enqueue("spawn.recognize", {"spawn_id": 21}, idempotency_key="shared-key"),
             )
@@ -127,8 +128,6 @@ if __name__ == "__main__":
             await other.close()
 
     async def test_only_one_worker_across_queue_instances_can_claim_job(self):
-        import asyncio
-
         other = SQLiteJobQueue(str(self.path), clock=lambda: self.now)
         try:
             await self.queue.enqueue("spawn.recognize", {"spawn_id": 22})
