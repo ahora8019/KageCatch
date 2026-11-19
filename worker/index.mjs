@@ -285,7 +285,7 @@ async function miniAppOwnerControl(request, env) {
   }
   let body;
   try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
-  if (!env.TELEGRAM_BOT_TOKEN || !/^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ""))) {
+  if (!env.TELEGRAM_BOT_TOKEN || !/^\d+$/.test(String(env.OWNER_TELEGRAM_ID || ""))) {
     return json({ error: "owner_auth_not_configured" }, 503);
   }
   const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
