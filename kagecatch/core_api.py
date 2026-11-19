@@ -112,6 +112,7 @@ def create_app(
     review_store=None,
     review_queue=None,
     review_pipeline=None,
+    catch_pipeline=None,
     spawn_detector=None,
     character_resolver=None,
 ) -> FastAPI:
@@ -150,6 +151,7 @@ def create_app(
     app.state.review_store = review_store
     app.state.review_queue = review_queue
     app.state.review_pipeline = review_pipeline
+    app.state.catch_pipeline = catch_pipeline
 
     async def require_core_auth(request: Request) -> None:
         if not secret:
@@ -205,9 +207,10 @@ def create_app(
         # reads this handler dynamically.
         controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
         set_handler = getattr(controller, "set_incoming_handler", None)
-        if app.state.review_pipeline is not None and callable(set_handler):
+        incoming_pipeline = app.state.catch_pipeline or app.state.review_pipeline
+        if incoming_pipeline is not None and callable(set_handler):
             async def process_incoming(user_id: str, event) -> None:
-                await app.state.review_pipeline.process(event=event, user_id=user_id)
+                await incoming_pipeline.process(event=event, user_id=user_id)
             set_handler(process_incoming)
 
     async def close_review_runtime() -> None:

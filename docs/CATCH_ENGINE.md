@@ -46,6 +46,31 @@ Every admitted attempt consumes a quota slot, including a send that later times 
 
 An enabled `CatchEngine` requires an atomic `admission` implementation. The older split `QuotaGate` + `Deduplicator` arguments remain only for disabled/test compatibility and cannot activate dispatch. Missing or failing admission returns `admission_unavailable` without sending. Candidate lists are bounded to 30 entries; malformed spawn identities and receipts are rejected.
 
+## CatchPipeline — Core ingress integration
+
+`kagecatch/catch_pipeline.py` provides the guarded bridge from the existing per-account incoming listener to `CatchEngine`. It can be passed as `catch_pipeline=` to `create_app`; when present, Core routes incoming events through it before the legacy ReviewPipeline handler. Without it, the existing manual-review-only behavior is unchanged.
+
+Dispatch requires every gate below:
+- The engine is explicitly enabled and has an atomic admission store.
+- The current KageCatch user has explicitly enabled Catch (the injected `catch_is_enabled(user_id)` callback must return the boolean `True`).
+- The target detector supplied an explicit `character_name` and a finite `character_confidence` in the 0..1 range.
+- The target-specific adapter factory returns an adapter matching the spawn source and media kind.
+- The event has a valid chat ID; the CatchEngine revalidates the normalized Spawn and receipt.
+
+Anime title similarity, anime-level confidence, and title-to-cast mappings are never substituted for character confidence. If an individual character is not identified, confidence is below threshold, the user has not opted in, the engine is disabled, or a suitable adapter cannot be created, the same detected Spawn is passed directly to `ReviewPipeline.process_spawn` for human review. The detector is not run a second time.
+
+Ambiguous send failures are returned as `send_failed`; the pipeline does not automatically requeue or resend them. CatchEngine retains the atomic admission reservation because the target may already have received the command.
+
+### Current recognition boundary
+
+This integration is deliberately fail-closed, not a claim that character recognition is complete:
+- The built-in Senpai video adapter currently uses trace.moe for anime/episode scene matching. It leaves `character_name=None` and `character_confidence=0`; scene similarity is not character identity. Senpai is also frozen/disabled in the target registry.
+- The built-in image targets do not yet have target-specific character recognition adapters wired into SpawnDetector.
+- `anime_character_map.json` is currently empty, and even a populated anime-to-cast mapping is suitable only for suggestions, not frame-level character identity.
+- A target-specific response verifier/listener is still required before a sent command can be reported as verified.
+
+As a result, current built-in Spawn events continue to fall back to manual review. No live Catch is enabled by this Core ingress change.
+
 ## Session security and runtime
 
 SessionManager encrypts Telethon StringSession values with Fernet before handing them to a storage interface. The encryption key must come from a deployment secret manager and must never be committed or sent through Telegram.

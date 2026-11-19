@@ -313,3 +313,46 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "persistence_pending"})
         self.assertEqual(self.auth_flow.cancelled, ["2001"])
+
+
+    def test_catch_pipeline_takes_precedence_on_runtime_incoming_listener(self):
+        class SelfbotRegistry:
+            def __init__(self):
+                self.handler = None
+
+            def set_incoming_handler(self, handler):
+                self.handler = handler
+
+        class RuntimeWithSelfbot(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self._selfbot_controller = SelfbotRegistry()
+
+        class Pipeline:
+            def __init__(self, status):
+                self.status = status
+                self.events = []
+
+            async def process(self, *, event, user_id):
+                self.events.append((user_id, event))
+                return {"status": self.status}
+
+        runtime = RuntimeWithSelfbot()
+        review_pipeline = Pipeline("review_queued")
+        catch_pipeline = Pipeline("verified")
+        app = create_app(
+            core_secret=SECRET,
+            runtime=runtime,
+            session_manager=self.sessions,
+            auth_flow=self.auth_flow,
+            review_pipeline=review_pipeline,
+            catch_pipeline=catch_pipeline,
+        )
+        event = object()
+        with TestClient(app):
+            self.assertIsNotNone(runtime._selfbot_controller.handler)
+            asyncio.run(runtime._selfbot_controller.handler("2001", event))
+
+        self.assertEqual(catch_pipeline.events, [("2001", event)])
+        self.assertEqual(review_pipeline.events, [])
+
