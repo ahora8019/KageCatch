@@ -79,6 +79,38 @@ export async function waitForTelegramSendPermit(db, intervalMs = 100, maxWaitMs 
   }
 }
 
+export async function acquireTelegramChatPermit(db, chatId, now = Date.now(), intervalMs = 3100) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  if (!Number.isSafeInteger(chatId) || chatId >= 0) return { allowed: true, retryAfterMs: 0 };
+  await db.prepare(
+    "INSERT INTO telegram_bot_chat_pacing (chat_id, next_allowed_at_ms) VALUES (?, 0) ON CONFLICT(chat_id) DO NOTHING"
+  ).bind(String(chatId)).run();
+  const reserved = await db.prepare(
+    "UPDATE telegram_bot_chat_pacing SET next_allowed_at_ms = ? + ?, updated_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND next_allowed_at_ms <= ? RETURNING next_allowed_at_ms"
+  ).bind(now, intervalMs, String(chatId), now).first();
+  if (reserved) return { allowed: true, retryAfterMs: 0 };
+  const state = await db.prepare(
+    "SELECT next_allowed_at_ms FROM telegram_bot_chat_pacing WHERE chat_id = ?"
+  ).bind(String(chatId)).first();
+  if (!state) throw new Error("telegram_chat_pacing_state_missing");
+  throw new TelegramSafetyGateError("chat_cooldown", state.next_allowed_at_ms - now);
+}
+
+export async function waitForTelegramChatPermit(db, chatId, intervalMs = 3100, maxWaitMs = 4000) {
+  if (!Number.isSafeInteger(chatId) || chatId >= 0) return { allowed: true, retryAfterMs: 0 };
+  const deadline = Date.now() + maxWaitMs;
+  while (true) {
+    try {
+      return await acquireTelegramChatPermit(db, chatId, Date.now(), intervalMs);
+    } catch (error) {
+      if (!(error instanceof TelegramSafetyGateError) || error.kind !== "chat_cooldown") throw error;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0 || error.retryAfterMs > remaining) throw error;
+      await new Promise((resolve) => setTimeout(resolve, error.retryAfterMs));
+    }
+  }
+}
+
 export async function recordTelegramApiFailure(db, policy, now = Date.now()) {
   if (!db) throw new Error("telegram_safety_store_unavailable");
   if (policy?.kind === "rate_limited") {
