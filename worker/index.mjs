@@ -1,5 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
-import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, isTelegramMutatingMethod, isValidTelegramMethod, isTelegramSafetyStop } from "./telegram_safety.mjs";
+import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, isTelegramMutatingMethod, isValidTelegramMethod, isTelegramSafetyStop } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -217,6 +217,7 @@ async function telegramApi(env, method, payload = {}) {
       } else {
         throw new Error("telegram_chat_id_invalid");
       }
+      await assertTelegramChatCircuitClosed(env.KAGECATCH_DB, chatId);
       await waitForTelegramChatPermit(env.KAGECATCH_DB, chatId, intervalMs, intervalMs + 900);
     }
     await waitForTelegramSendPermit(env.KAGECATCH_DB, 100, 1500);
@@ -230,10 +231,16 @@ async function telegramApi(env, method, payload = {}) {
   const result = await response.json();
   if (!response.ok || !result.ok) {
     const error = new TelegramApiError(result, response.status);
+    if (requestPayload.chat_id !== undefined && [400, 403].includes(error.errorCode)) {
+      await recordTelegramChatApiFailure(env.KAGECATCH_DB, requestPayload.chat_id, error, Date.now());
+    }
     if (error.kind === "rate_limited" || error.kind === "invalid_credentials") {
       await recordTelegramApiFailure(env.KAGECATCH_DB, error, Date.now());
     }
     throw error;
+  }
+  if (isTelegramMutatingMethod(method) && requestPayload.chat_id !== undefined) {
+    await recordTelegramChatApiSuccess(env.KAGECATCH_DB, requestPayload.chat_id, Date.now());
   }
   return result.result;
 }
