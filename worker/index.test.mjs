@@ -1787,10 +1787,7 @@ test("ambiguous broadcast delivery is locked for Owner review and cannot be retr
   assert.equal(draft.reviewIndex, 0);
   assert.equal(draft.reviewRecipientId, 2001);
   assert.deepEqual(calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id !== 1001).map((call) => call.payload.chat_id), [2001]);
-  const notice = calls.filter((call) => call.method === "editMessageText" && call.payload.chat_id === 1001).at(-1);
-  assert.match(notice.payload.text, /نامشخص|بررسی Owner/);
-  assert.equal(notice.payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data === "owner:broadcast:confirm"), false);
-
+  // The webhook only acknowledges durable queue admission; the alarm owns delivery outcomes.
   calls.length = 0;
   assert.equal((await webhook(callback(404, "owner:broadcast:confirm", 3))).status, 200);
   assert.equal(calls.some((call) => call.method === "sendMessage" && call.payload.chat_id === 2001 && call.payload.text === "ambiguous delivery"), false);

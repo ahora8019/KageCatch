@@ -810,7 +810,7 @@ authPromise=authenticate();refresh();
 }
 
 export class ConnectionLinkStore {
-  constructor(state) { this.state = state; }
+  constructor(state, env) { this.state = state; this.env = env; }
   async fetch(request) {
     if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST' } });
     const url = new URL(request.url);
@@ -1144,7 +1144,7 @@ export class ConnectionLinkStore {
     return json({ error: 'not_found' }, 404);
   }
 
-  async alarm(controller, env) {
+  async alarm(controller, env = this.env) {
     const entries = await this.state.storage.list({ prefix: 'broadcast:' });
     const active = [...entries.entries()].find(([, draft]) =>
       draft && ['queued', 'sending'].includes(draft.status));
