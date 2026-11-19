@@ -322,6 +322,61 @@ test("standalone connect API rejects missing browser sessions and binds requests
   assert.ok(captured.init.headers["X-KageCatch-Signature"]);
 });
 
+
+test("standalone connection page reports persistence_pending truthfully and polls Core status", async () => {
+  const token = "B".repeat(43);
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/" + token), {});
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /persistence_pending/);
+  assert.match(html, /api\("auth-status"\)/);
+  assert.match(html, /auth-status/);
+  assert.doesNotMatch(html, /ورود تأیید و نشست ذخیره شد/);
+  assert.match(html, /ذخیره نشست هنوز تکمیل نشده/);
+  const scriptStart = html.indexOf("<script>");
+  const scriptEnd = html.indexOf("</script>");
+  const script = scriptStart >= 0 && scriptEnd > scriptStart ? html.slice(scriptStart + 8, scriptEnd) : "";
+  assert.ok(script, "standalone login script must be present");
+  assert.doesNotThrow(() => new Function(script), "standalone login script must parse");
+});
+
+test("standalone connect API proxies persistence status without resubmitting credentials", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const created = await store.fetch(new Request("https://do.internal/create", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 445566778, ttlSeconds: 300 }),
+  }));
+  const { token } = await created.json();
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const exchanged = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/exchange", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
+  }), { CONNECT_LINKS: binding });
+  const { sessionToken } = await exchanged.json();
+
+  let captured;
+  const env = {
+    CONNECT_LINKS: binding,
+    CORE_API_URL: "https://core.example",
+    CORE_API_SECRET: "x".repeat(40),
+    FETCH: async (url, init) => {
+      captured = { url, init };
+      return new Response(JSON.stringify({ status: "persistence_pending" }), { status: 200 });
+    },
+  };
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/api", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + sessionToken },
+    body: JSON.stringify({ action: "auth-status" }),
+  }), env);
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "persistence_pending" });
+  assert.equal(captured.url, "https://core.example/v1/accounts/445566778/connect/status");
+  assert.equal(captured.init.method, "GET");
+  assert.equal(captured.init.body, undefined);
+});
+
 test("private connect callback launches the standalone secure login page", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const store = new ConnectionLinkStore(createDurableObjectState());
