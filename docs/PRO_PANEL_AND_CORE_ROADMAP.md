@@ -59,9 +59,10 @@ The currently wired Core authorization path is the browser-based Phone Login flo
 - This authorization path has unit-level coverage only. No real Telegram account has been connected or validated; require explicit user approval and a controlled end-to-end security review before enabling real-account use.
 
 ### Phase E — Recognition and Catch
-- Spawn ingestion and media normalization.
-- Image/video frame recognition with confidence calibration and review gates.
-- Quotas, atomic deduplication, adapter dispatch, response listeners, and verified receipts.
+- Spawn Detector → Core incoming-listener routing → guarded CatchPipeline integration are implemented; when CatchPipeline is not injected, the prior manual-review-only pipeline remains the default.
+- CatchPipeline requires explicit character identity/confidence, atomic admission, an enabled engine, per-user opt-in, and a matching target adapter. Otherwise it routes the already-detected spawn to manual review.
+- Image/video frame recognition with calibrated character-level confidence remains incomplete. trace.moe scene similarity and anime-to-cast mappings must not be used as character identity.
+- Target-specific response listeners/verifiers are still required before any sent command can be trusted as verified.
 - Start in dry-run/paper mode; no live Catch until end-to-end tests pass.
 
 ## Deployment policy
