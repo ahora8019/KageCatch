@@ -1229,9 +1229,9 @@ function createFakeManualReviewDatabase() {
         bind(...values) {
           return {
             async run() {
-              if (sql.startsWith("INSERT INTO manual_review_items")) {
+              if (sql.startsWith("INSERT OR IGNORE INTO manual_review_items")) {
                 const [review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, quota_user_id] = values;
-                if (rows.has(review_id)) throw new Error("duplicate review id");
+                if (rows.has(review_id)) return { meta: { changes: 0 } };
                 if (quota_user_id && [...rows.values()].filter((row) => row.user_id === quota_user_id && row.status === "pending" && row.expires_at > values[8]).length >= 100) return { meta: { changes: 0 } };
                 rows.set(review_id, {
                   review_id, user_id, spawn_id, anime_name, candidates_json,
@@ -1270,6 +1270,10 @@ function createFakeManualReviewDatabase() {
               throw new Error("unexpected D1 run: " + sql);
             },
             async first() {
+              if (sql.startsWith("SELECT review_id, user_id, spawn_id, anime_name, candidates_json")) {
+                const row = rows.get(values[0]);
+                return row ? { ...row } : null;
+              }
               if (sql.startsWith("SELECT review_id, user_id")) {
                 const row = rows.get(values[0]);
                 return row && row.user_id === values[1] ? { ...row } : null;
@@ -1329,6 +1333,30 @@ test("durable manual review endpoint creates, lists, and atomically approves onl
     action: "approve", user_id: "12345", review_id: "a".repeat(32), candidate_index: 0,
   }, secret), env);
   assert.equal(secondApproval.status, 409);
+});
+
+test("durable manual review create is idempotent and rejects conflicting reuse", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const connectionStore = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => connectionStore.fetch(new Request(input, init)) }) };
+  const db = createFakeManualReviewDatabase();
+  const secret = "manual-review-core-secret-with-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const reviewId = "c".repeat(32);
+  const item = {
+    action: "create", review_id: reviewId, user_id: "12345",
+    spawn_id: 77, anime_name: "KonoSuba", candidates: ["Megumin", "Aqua"],
+    created_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  };
+  assert.equal((await worker.fetch(await makeSignedManualReviewRequest(item, secret), env)).status, 201);
+  const retry = { ...item, created_at: new Date(Date.now() + 5_000).toISOString(), expires_at: new Date(Date.now() + 65_000).toISOString() };
+  const replay = await worker.fetch(await makeSignedManualReviewRequest(retry, secret), env);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(await replay.json(), { status: "created", idempotent: true });
+  const conflict = await worker.fetch(await makeSignedManualReviewRequest({ ...item, spawn_id: 78 }, secret), env);
+  assert.equal(conflict.status, 409);
+  assert.equal(db.rows.size, 1);
 });
 
 test("durable manual review endpoint rejects invalid signatures and cross-user resolution", async () => {
