@@ -140,7 +140,7 @@ export async function recordTelegramApiFailure(db, policy, now = Date.now()) {
   if (policy?.kind === "rate_limited") {
     const delayMs = (policy.retryAfterSeconds ?? 60) * 1000;
     await db.prepare(
-      "UPDATE telegram_bot_safety SET paused_until_ms = MAX(paused_until_ms, ?), pause_reason = 'telegram_429', updated_at = CURRENT_TIMESTAMP WHERE singleton_id = 'control-bot'"
+      "UPDATE telegram_bot_safety SET paused_until_ms = MAX(paused_until_ms, ?), pause_reason = CASE WHEN paused_until_ms >= 9007199254740991 THEN pause_reason ELSE 'telegram_429' END, updated_at = CURRENT_TIMESTAMP WHERE singleton_id = 'control-bot'"
     ).bind(now + delayMs).run();
   } else if (policy?.kind === "invalid_credentials") {
     await db.prepare(
@@ -210,4 +210,155 @@ export async function recordTelegramChatApiSuccess(db, chatId, now = Date.now())
     ).bind(now, key).run();
   }
   return { reset: Boolean(current) };
+}
+
+
+function numericTimestamp(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function integerBigInt(value) {
+  try {
+    const text = String(value ?? 0);
+    if (!/^-?\d+$/.test(text)) throw new Error("invalid integer");
+    return BigInt(text);
+  } catch {
+    throw new Error("telegram_safety_state_invalid");
+  }
+}
+
+export async function getTelegramSafetySnapshot(db, now = Date.now()) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  const globalState = await db.prepare(
+    "SELECT paused_until_ms, next_allowed_at_ms, pause_reason, updated_at FROM telegram_bot_safety WHERE singleton_id = 'control-bot'"
+  ).first();
+  if (!globalState) throw new Error("telegram_safety_state_missing");
+
+  const [pacingResult, circuitResult] = await Promise.all([
+    db.prepare(
+      "SELECT chat_id, next_allowed_at_ms, updated_at FROM telegram_bot_chat_pacing ORDER BY updated_at DESC LIMIT 100"
+    ).all(),
+    db.prepare(
+      "SELECT chat_id, consecutive_failures, is_open, last_error_code, updated_at_ms FROM telegram_bot_chat_circuit_breaker ORDER BY updated_at_ms DESC LIMIT 100"
+    ).all(),
+  ]);
+  const pacingRows = Array.isArray(pacingResult?.results) ? pacingResult.results : [];
+  const circuitRows = Array.isArray(circuitResult?.results) ? circuitResult.results : [];
+
+  const pausedUntil = integerBigInt(globalState.paused_until_ms);
+  const nowBigInt = BigInt(Math.max(0, Math.trunc(now)));
+  const paused = pausedUntil > nowBigInt;
+  const operatorActionRequired = pausedUntil >= BigInt(OPERATOR_PAUSE_UNTIL);
+  const storedPauseReason = typeof globalState.pause_reason === "string" ? globalState.pause_reason : null;
+  const pauseReason = operatorActionRequired ? "invalid_credentials" : storedPauseReason;
+  const globalNextAllowed = numericTimestamp(globalState.next_allowed_at_ms);
+  const globalCooldownRemaining = Math.max(0, globalNextAllowed - now);
+  const lastErrorCode = operatorActionRequired ? 401 : pauseReason === "telegram_429" ? 429 : null;
+
+  const chats = new Map();
+  for (const row of pacingRows) {
+    if (row?.chat_id === undefined || row?.chat_id === null) continue;
+    const key = String(row.chat_id);
+    chats.set(key, {
+      chat_id: key,
+      next_allowed_at_ms: numericTimestamp(row.next_allowed_at_ms),
+      cooldown_remaining_ms: Math.max(0, numericTimestamp(row.next_allowed_at_ms) - now),
+      pacing_updated_at: row.updated_at ?? null,
+      consecutive_failures: 0,
+      is_open: false,
+      last_error_code: null,
+      circuit_updated_at_ms: null,
+    });
+  }
+  for (const row of circuitRows) {
+    if (row?.chat_id === undefined || row?.chat_id === null) continue;
+    const key = String(row.chat_id);
+    const chat = chats.get(key) || {
+      chat_id: key,
+      next_allowed_at_ms: 0,
+      cooldown_remaining_ms: 0,
+      pacing_updated_at: null,
+    };
+    chat.consecutive_failures = numericTimestamp(row.consecutive_failures);
+    chat.is_open = row.is_open === 1 || row.is_open === true;
+    chat.last_error_code = Number.isSafeInteger(row.last_error_code) ? row.last_error_code : null;
+    chat.circuit_updated_at_ms = numericTimestamp(row.updated_at_ms);
+    chat.updated_at = chat.circuit_updated_at_ms
+      ? new Date(chat.circuit_updated_at_ms).toISOString()
+      : chat.pacing_updated_at;
+    chat.cause_of_stop = chat.is_open
+      ? "chat_circuit_open"
+      : chat.cooldown_remaining_ms > 0
+        ? "chat_cooldown"
+        : null;
+    chats.set(key, chat);
+  }
+  for (const chat of chats.values()) {
+    if (chat.cause_of_stop === undefined) {
+      chat.updated_at = chat.pacing_updated_at;
+      chat.cause_of_stop = chat.cooldown_remaining_ms > 0 ? "chat_cooldown" : null;
+    }
+  }
+
+  const retryAfterSeconds = paused && !operatorActionRequired
+    ? Number((pausedUntil - nowBigInt + 999n) / 1000n)
+    : null;
+  const globalCause = paused
+    ? operatorActionRequired ? "operator_action_required" : pauseReason || "global_pause"
+    : globalCooldownRemaining > 0 ? "global_cooldown" : null;
+
+  return {
+    observed_at_ms: now,
+    global: {
+      paused,
+      operator_action_required: paused && operatorActionRequired,
+      pause_reason: pauseReason,
+      stored_pause_reason: storedPauseReason,
+      cause_of_stop: globalCause,
+      paused_until_ms: operatorActionRequired ? "9223372036854775807" : String(pausedUntil),
+      retry_after_seconds: retryAfterSeconds,
+      next_allowed_at_ms: globalNextAllowed,
+      cooldown_remaining_ms: globalCooldownRemaining,
+      last_error_code: lastErrorCode,
+      last_error: lastErrorCode === 401 ? "Telegram Bot API HTTP 401 — invalid credentials" : lastErrorCode === 429 ? "Telegram Bot API HTTP 429 — rate limited" : null,
+      updated_at: globalState.updated_at ?? null,
+    },
+    chats: [...chats.values()].sort((left, right) => {
+      const leftTime = left.circuit_updated_at_ms || Date.parse(left.pacing_updated_at || "") || 0;
+      const rightTime = right.circuit_updated_at_ms || Date.parse(right.pacing_updated_at || "") || 0;
+      return rightTime - leftTime;
+    }),
+    chats_truncated: pacingRows.length >= 100 || circuitRows.length >= 100,
+  };
+}
+
+export async function recoverTelegramGlobalPause(db, expectedPausedUntilMs, expectedPauseReason, now = Date.now()) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  const expected = String(expectedPausedUntilMs ?? "");
+  if (!/^\d{1,20}$/.test(expected)
+    || !["telegram_429", "invalid_credentials"].includes(expectedPauseReason)
+    || !Number.isSafeInteger(now) || now < 0) {
+    throw new Error("telegram_global_recovery_invalid");
+  }
+  const recovered = await db.prepare(
+    "UPDATE telegram_bot_safety SET paused_until_ms = 0, pause_reason = NULL, updated_at = CURRENT_TIMESTAMP " +
+    "WHERE singleton_id = 'control-bot' AND paused_until_ms = CAST(? AS INTEGER) AND pause_reason = ? AND paused_until_ms > ? " +
+    "RETURNING singleton_id"
+  ).bind(expected, expectedPauseReason, now).first();
+  return { recovered: Boolean(recovered), clearedReason: recovered ? expectedPauseReason : null };
+}
+
+export async function recoverTelegramChatCircuit(db, chatId, expectedUpdatedAtMs, now = Date.now()) {
+  if (!db) throw new Error("telegram_safety_store_unavailable");
+  if (!Number.isSafeInteger(expectedUpdatedAtMs) || expectedUpdatedAtMs < 0
+    || !Number.isSafeInteger(now) || now < 0) {
+    throw new Error("telegram_chat_circuit_recovery_invalid");
+  }
+  const key = normalizeCircuitChatId(chatId);
+  const recovered = await db.prepare(
+    "UPDATE telegram_bot_chat_circuit_breaker SET consecutive_failures = 0, is_open = 0, last_error_code = NULL, updated_at_ms = ? " +
+    "WHERE chat_id = ? AND is_open = 1 AND updated_at_ms = ? RETURNING chat_id"
+  ).bind(now, key, expectedUpdatedAtMs).first();
+  return { recovered: Boolean(recovered), chatId: recovered ? key : null };
 }
