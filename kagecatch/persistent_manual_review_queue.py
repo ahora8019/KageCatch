@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 from typing import Callable, Sequence
 from uuid import uuid4
 
@@ -31,7 +32,7 @@ class PersistentManualReviewQueue:
 
     async def enqueue(
         self, *, user_id: str, spawn_id: int, anime_name: str,
-        candidates: Sequence[str],
+        candidates: Sequence[str], idempotency_key: str | None = None,
     ) -> ReviewItem:
         ManualReviewQueue._validate_user_id(user_id)
         if isinstance(spawn_id, bool) or not isinstance(spawn_id, int) or not 0 <= spawn_id <= (2**53 - 1):
@@ -48,9 +49,18 @@ class PersistentManualReviewQueue:
             raise ValueError("candidates must contain 1 to 30 non-empty strings")
         if any(len(name) > 100 for name in names):
             raise ValueError("candidate names must not exceed 100 characters")
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or not idempotency_key.strip()
+            or len(idempotency_key) > 256
+        ):
+            raise ValueError("invalid idempotency_key")
         now = self._now()
+        review_id = (
+            hashlib.sha256(("kagecatch-review:" + idempotency_key).encode("utf-8")).hexdigest()[:32]
+            if idempotency_key is not None else uuid4().hex
+        )
         item = ReviewItem(
-            review_id=uuid4().hex, user_id=user_id, spawn_id=spawn_id,
+            review_id=review_id, user_id=user_id, spawn_id=spawn_id,
             anime_name=anime_name.strip(), candidates=names,
             created_at=now, expires_at=now + self._default_ttl,
         )
