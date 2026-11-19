@@ -1037,6 +1037,17 @@ test("internal session store rejects unsigned requests and replays", async () =>
 });
 
 
+
+test("internal session store retains a hard 16 KiB request body ceiling", async () => {
+  const secret = "test-core-session-store-secret-with-32-bytes-minimum";
+  const ciphertext = "A".repeat(17000);
+  const request = await makeSignedSessionStoreRequest("PUT", "7135051954", { ciphertext }, secret);
+  const requestBody = await request.clone().arrayBuffer();
+  assert.ok(requestBody.byteLength > 16 * 1024);
+  const response = await worker.fetch(request, { CORE_API_SECRET: secret });
+  assert.equal(response.status, 413);
+});
+
 test("internal session store accepts Fernet-sized encrypted session payloads", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const nonceStore = new ConnectionLinkStore(createDurableObjectState());
