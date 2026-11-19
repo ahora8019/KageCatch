@@ -50,7 +50,7 @@ test("error classification never copies Telegram descriptions into diagnostics",
   assert.deepEqual(result, { kind: "invalid_request", retryAfterSeconds: null, errorCode: 400 });
   assert.doesNotMatch(JSON.stringify(result), /sensitive upstream detail/);
 });
-import { acquireTelegramSendPermit, recordTelegramApiFailure, TelegramSafetyGateError } from "./telegram_safety.mjs";
+import { acquireTelegramSendPermit, waitForTelegramSendPermit, recordTelegramApiFailure, TelegramSafetyGateError } from "./telegram_safety.mjs";
 
 function safetyDb(initial = {}) {
   const state = {
@@ -125,4 +125,16 @@ test("403 access denial does not globally freeze the bot because it may be chat-
   const db = safetyDb();
   await recordTelegramApiFailure(db, { kind: "access_denied", retryAfterSeconds: null }, 1000);
   assert.deepEqual(await acquireTelegramSendPermit(db, 2000, 1000), { allowed: true, retryAfterMs: 0 });
+});
+
+
+test("concurrent outbound operations serialize through the shared permit instead of failing immediately", async () => {
+  const db = safetyDb();
+  const started = Date.now();
+  await Promise.all([
+    waitForTelegramSendPermit(db, 80, 1000),
+    waitForTelegramSendPermit(db, 80, 1000),
+  ]);
+  assert.ok(Date.now() - started >= 60);
+  assert.ok(db.state.next_allowed_at_ms >= started + 80);
 });
