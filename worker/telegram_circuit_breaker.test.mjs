@@ -21,13 +21,14 @@ function circuitDb() {
           return null;
         },
         async run() {
-          const [chatId, failureCount, isOpen, lastErrorCode, now] = values;
           if (sql.includes("INSERT INTO telegram_bot_chat_circuit_breaker")) {
+            const [chatId, now] = values;
             if (!chats.has(chatId)) chats.set(chatId, {
               chat_id: chatId, consecutive_failures: 0, is_open: 0,
               last_error_code: null, updated_at_ms: now,
             });
           } else if (sql.includes("UPDATE telegram_bot_chat_circuit_breaker")) {
+            const [chatId, failureCount, isOpen, lastErrorCode, now] = values;
             chats.set(chatId, {
               chat_id: chatId, consecutive_failures: failureCount,
               is_open: isOpen, last_error_code: lastErrorCode, updated_at_ms: now,
