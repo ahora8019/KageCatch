@@ -86,7 +86,7 @@ export async function recordTelegramApiFailure(db, policy, now = Date.now()) {
     await db.prepare(
       "UPDATE telegram_bot_safety SET paused_until_ms = MAX(paused_until_ms, ?), pause_reason = 'telegram_429', updated_at = CURRENT_TIMESTAMP WHERE singleton_id = 'control-bot'"
     ).bind(now + delayMs).run();
-  } else if (policy?.kind === "invalid_credentials" || policy?.kind === "access_denied") {
+  } else if (policy?.kind === "invalid_credentials") {
     await db.prepare(
       "UPDATE telegram_bot_safety SET paused_until_ms = 9223372036854775807, pause_reason = ?, updated_at = CURRENT_TIMESTAMP WHERE singleton_id = 'control-bot'"
     ).bind(policy.kind).run();
