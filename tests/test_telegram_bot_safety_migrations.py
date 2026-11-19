@@ -62,12 +62,12 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
         self.assertEqual(names, self.applied_migrations)
 
         manual_review = "0006_manual_review_spawn_context.sql"
-        chat_pacing = "0006_telegram_bot_chat_pacing.sql"
+        chat_pacing = "0007_telegram_bot_chat_pacing.sql"
         self.assertIn(manual_review, names)
         self.assertIn(chat_pacing, names)
         self.assertLess(names.index("0005_telegram_bot_safety.sql"), names.index(manual_review))
         self.assertLess(names.index(manual_review), names.index(chat_pacing))
-        self.assertLess(names.index(chat_pacing), names.index("0007_telegram_bot_chat_circuit_breaker.sql"))
+        self.assertLess(names.index(chat_pacing), names.index("0008_telegram_bot_chat_circuit_breaker.sql"))
 
         review_columns = {
             row[1] for row in self.db.execute("PRAGMA table_info(manual_review_items)").fetchall()
@@ -105,8 +105,8 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
                 pending,
                 [
                     "0005_telegram_bot_safety.sql",
-                    "0006_telegram_bot_chat_pacing.sql",
-                    "0007_telegram_bot_chat_circuit_breaker.sql",
+                    "0007_telegram_bot_chat_pacing.sql",
+                    "0008_telegram_bot_chat_circuit_breaker.sql",
                 ],
             )
             review_columns = {
