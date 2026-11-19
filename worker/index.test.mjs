@@ -2058,6 +2058,35 @@ test("broadcast review state cannot be reclaimed or overwritten by a new draft",
 });
 
 
+test("abandoned broadcast preparation returns to confirmation without sending", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+  await post("begin");
+  await post("save", { text: "prepare then crash" });
+  const claimed = await post("claim");
+  assert.equal(claimed.status, 200);
+  assert.ok(state.alarmAt > Date.now(), "claim must arm recovery before preparation");
+  const stored = await state.storage.get("broadcast:1001");
+  await state.storage.put("broadcast:1001", { ...stored, updatedAt: Date.now() - 61_000 });
+  let sends = 0;
+  await store.alarm({}, {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async () => { sends += 1; throw new Error("must not send during preparation recovery"); },
+  });
+  const draft = (await (await post("get")).json()).draft;
+  assert.equal(draft.status, "awaiting_confirmation");
+  assert.equal(draft.recipientIds, null);
+  assert.equal(draft.nextIndex, 0);
+  assert.equal(sends, 0);
+  assert.equal(state.alarmAt, null);
+});
+
 test("broadcast enqueue durably schedules the Durable Object alarm", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
   const state = createDurableObjectState();
