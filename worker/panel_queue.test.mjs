@@ -58,7 +58,7 @@ class FakeD1 {
         if (sql.startsWith("INSERT INTO panel_requests")) {
           const [request_id, idempotency_key, owner_id, chat_id, source_message_id] = v;
           if (![...db.rows.values()].some((r) => r.idempotency_key === idempotency_key)) {
-            db.rows.set(request_id, { request_id, idempotency_key, owner_id, chat_id, source_message_id, status: "pending", attempts: 0, panel_message_id: null, expires_at: new Date(Date.now() + 600000).toISOString().replace("T", " ").slice(0, 19) });
+            db.rows.set(request_id, { request_id, idempotency_key, owner_id, chat_id, source_message_id, status: "pending", attempts: 0, lease_token: null, lease_expires_at: null, panel_message_id: null, expires_at: new Date(Date.now() + 600000).toISOString().replace("T", " ").slice(0, 19) });
           }
           return { meta: { changes: 1 } };
         }
