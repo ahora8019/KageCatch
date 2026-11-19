@@ -113,3 +113,52 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    async def test_idempotent_enqueue_is_safe_across_queue_instances(self):
+        other = SQLiteJobQueue(str(self.path), clock=lambda: self.now)
+        try:
+            first, second = await __import__("asyncio").gather(
+                self.queue.enqueue("spawn.recognize", {"spawn_id": 21}, idempotency_key="shared-key"),
+                other.enqueue("spawn.recognize", {"spawn_id": 21}, idempotency_key="shared-key"),
+            )
+            self.assertEqual(first.job_id, second.job_id)
+            self.assertEqual(await self.queue.pending_count(), 1)
+        finally:
+            await other.close()
+
+    async def test_only_one_worker_across_queue_instances_can_claim_job(self):
+        import asyncio
+
+        other = SQLiteJobQueue(str(self.path), clock=lambda: self.now)
+        try:
+            await self.queue.enqueue("spawn.recognize", {"spawn_id": 22})
+            first, second = await asyncio.gather(
+                self.queue.claim_next("worker-a"),
+                other.claim_next("worker-b"),
+            )
+            claims = [claim for claim in (first, second) if claim is not None]
+            self.assertEqual(len(claims), 1)
+            self.assertIn(claims[0].worker_id, {"worker-a", "worker-b"})
+        finally:
+            await other.close()
+
+    async def test_scheduled_job_is_not_claimed_before_run_after(self):
+        job = await self.queue.enqueue("spawn.recognize", {"spawn_id": 23}, run_after=self.now + 30)
+        self.assertIsNone(await self.queue.claim_next("worker"))
+        self.now += 30
+        claimed = await self.queue.claim_next("worker")
+        self.assertEqual(claimed.job_id, job.job_id)
+
+    async def test_job_survives_queue_reopen(self):
+        job = await self.queue.enqueue(
+            "spawn.recognize", {"spawn_id": 24}, idempotency_key="durable-reopen"
+        )
+        await self.queue.close()
+        reopened = SQLiteJobQueue(str(self.path), clock=lambda: self.now)
+        try:
+            claimed = await reopened.claim_next("restarted-worker")
+            self.assertEqual(claimed.job_id, job.job_id)
+            self.assertEqual(claimed.payload, {"spawn_id": 24})
+        finally:
+            await reopened.close()
+
