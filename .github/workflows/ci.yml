@@ -36,4 +36,4 @@ jobs:
         with:
           node-version: "22"
       - name: Run Worker tests
-        run: node --test worker/index.test.mjs
+        run: node --test worker/*.test.mjs
