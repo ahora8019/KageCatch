@@ -5,7 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .models.spawn import CharacterMetadata, SpawnContext
+from .models.spawn import CharacterMetadata
 
 
 RECOGNITION_JOB_TYPES = ("spawn.recognize",)
@@ -67,25 +67,22 @@ class RecognitionWorker:
             if not isinstance(anime_name, str) or not anime_name.strip():
                 await self.queue.dead_letter(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("invalid_metadata", job.job_id)
-
-            context = SpawnContext(source=origin["source"], chat_id=origin["chat_id"],
-                message_id=origin["message_id"], media_kind=origin["media_kind"])
-            metadata = CharacterMetadata(anime_name=anime_name.strip(),
+            metadata = CharacterMetadata(
+                anime_name=anime_name.strip(),
                 source=str(recognition.get("recognition_source") or "unknown")[:80],
-                character_name=None, anime_confidence=self._confidence(recognition.get("anime_confidence")),
-                character_confidence=0.0, additional={})
+                character_name=None,
+                anime_confidence=self._confidence(recognition.get("anime_confidence")),
+                character_confidence=0.0,
+                additional={},
+            )
             resolved = await self.resolver.resolve(metadata)
             candidates = getattr(resolved, "candidates", ()) if resolved is not None else ()
             if not candidates:
                 await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("no_candidates", job.job_id)
-
-            # A stable key is passed to durable review stores to make retries idempotent.
             review_item = await self.review_queue.enqueue(
-                user_id=user_id, spawn_id=context.message_id,
+                user_id=user_id, spawn_id=origin["message_id"],
                 anime_name=anime_name.strip(), candidates=tuple(candidates),
-                spawn_context=context,
-                idempotency_key=f"review:{user_id}:{context.source}:{context.chat_id}:{context.message_id}",
             )
             await self.queue.complete(job.job_id, self.worker_id, lease_generation=generation)
             return RecognitionWorkResult("review_queued", job.job_id, review_item)
