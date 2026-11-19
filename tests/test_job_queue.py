@@ -112,9 +112,6 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         await self.queue.complete(job.job_id, "reused-worker", lease_generation=second.lease_generation)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
     async def test_idempotent_enqueue_is_safe_across_queue_instances(self):
         other = SQLiteJobQueue(str(self.path), clock=lambda: self.now)
         try:
@@ -190,3 +187,23 @@ if __name__ == "__main__":
         finally:
             await reopened.close()
 
+
+
+    async def test_recovery_exhaustion_moves_crashed_job_to_dead_letter(self):
+        job = await self.queue.enqueue(
+            "spawn.recognize", {"spawn_id": 101}, max_attempts=2
+        )
+        first = await self.queue.claim_next("crashing-worker", lease_seconds=5)
+        self.assertEqual(first.job_id, job.job_id)
+        self.now += 6
+        self.assertEqual(await self.queue.recover_expired(), 1)
+        second = await self.queue.claim_next("recovery-worker", lease_seconds=5)
+        self.assertEqual(second.attempts, 2)
+        self.now += 6
+        self.assertEqual(await self.queue.recover_expired(), 1)
+        self.assertEqual(await self.queue.pending_count(), 0)
+        self.assertEqual(await self.queue.dead_letter_count(), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
