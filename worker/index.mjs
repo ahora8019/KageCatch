@@ -1213,7 +1213,7 @@ async function handleOwnerCallback(callback, env) {
       };
     }
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'begin' });
-    return { text: '📣 پیام همگانی\\n\\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.', keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] } };
+    return { text: '📣 پیام همگانی\n\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.', keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] } };
   }
   if (data === 'owner:broadcast:cancel') {
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
@@ -1275,7 +1275,7 @@ async function handleOwnerCallback(callback, env) {
               ? "حداقل " + retryAfterSeconds + " ثانیه مکث لازم است."
               : "پس از بازشدن Safety Gate می‌توان با تأیید Owner ادامه داد.";
           return {
-            text: "⚠️ ارسال همگانی متوقف شد.\\n\\nموفق: " + (saved.deliveredCount || 0)
+            text: "⚠️ ارسال همگانی متوقف شد.\n\nموفق: " + (saved.deliveredCount || 0)
               + "\\nناموفق: " + (saved.failedCount || 0)
               + "\\nباقی‌مانده: " + Math.max(0, recipients.length - saved.nextIndex)
               + "\\n" + pauseText + "\\nپیش‌نویس و نقطهٔ ادامه حفظ شدند.",
@@ -1289,7 +1289,7 @@ async function handleOwnerCallback(callback, env) {
             ownerTelegramId: callback.from.id, action: 'review', expectedIndex: index,
           });
           return {
-            text: "⚠️ نتیجهٔ ارسال برای مخاطب " + recipientId + " نامشخص است.\\n\\n"
+            text: "⚠️ نتیجهٔ ارسال برای مخاطب " + recipientId + " نامشخص است.\n\n"
               + "برای جلوگیری از ارسال تکراری، ارسال همگانی متوقف و در وضعیت review_required قفل شد. "
               + "نقطهٔ ادامه روی همین مخاطب باقی مانده؛ Owner باید نتیجه را بررسی کند. "
               + "هیچ تلاش مجدد خودکاری انجام نمی‌شود.",
