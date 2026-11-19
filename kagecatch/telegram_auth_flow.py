@@ -21,6 +21,7 @@ class _PendingAuthorization:
     phone_code_hash: str
     expires_at: float
     attempts: int = 0
+    session_authorized: bool = False
 
 
 class TelegramAuthorizationFlow:
@@ -68,6 +69,7 @@ class TelegramAuthorizationFlow:
                 "session_string": session_string,
                 "expires_at": pending.expires_at,
                 "attempts": pending.attempts,
+                "session_authorized": pending.session_authorized,
             },
         )
 
@@ -83,6 +85,7 @@ class TelegramAuthorizationFlow:
             session_string = payload["session_string"]
             expires_at = float(payload["expires_at"])
             attempts = int(payload.get("attempts", 0))
+            session_authorized = payload.get("session_authorized", False)
             if (
                 not isinstance(phone, str)
                 or not re.fullmatch(r"\+[1-9]\d{7,14}", phone)
@@ -91,24 +94,38 @@ class TelegramAuthorizationFlow:
                 or not isinstance(session_string, str)
                 or not session_string
                 or attempts < 0
+                or not isinstance(session_authorized, bool)
             ):
                 raise ValueError
         except (KeyError, TypeError, ValueError) as exc:
             await self._session_manager.delete_pending_authorization(user_id)
             raise ValueError("stored authorization challenge is invalid") from exc
-        if self._clock() >= expires_at or attempts >= self._max_attempts:
+
+        # The login challenge expires, but an already-authorized session awaiting
+        # durable persistence must remain recoverable after that timestamp.
+        if not session_authorized and (
+            self._clock() >= expires_at or attempts >= self._max_attempts
+        ):
             await self._session_manager.delete_pending_authorization(user_id)
             return None
+
         client = self._new_client(session_string)
         try:
             await client.connect()
+            if session_authorized and not await client.is_user_authorized():
+                await self._session_manager.delete_pending_authorization(user_id)
+                await client.disconnect()
+                return None
         except Exception:
             try:
                 await client.disconnect()
             except Exception:
                 pass
             raise
-        pending = _PendingAuthorization(client, phone, phone_hash, expires_at, attempts)
+
+        pending = _PendingAuthorization(
+            client, phone, phone_hash, expires_at, attempts, session_authorized
+        )
         self._pending[user_id] = pending
         return pending
 
@@ -124,6 +141,8 @@ class TelegramAuthorizationFlow:
             if current is None:
                 current = await self._restore(user_id)
             if current is not None:
+                if current.session_authorized:
+                    return await self._persist_authorized_session(user_id, current)
                 raise RuntimeError("an authorization attempt is already pending")
 
             normalized_phone = phone.strip() if isinstance(phone, str) else ""
@@ -159,6 +178,8 @@ class TelegramAuthorizationFlow:
         lock = await self._lock_for(user_id)
         async with lock:
             pending = await self._get_pending(user_id)
+            if pending.session_authorized:
+                return await self._persist_authorized_session(user_id, pending)
             if not isinstance(code, str) or not re.fullmatch(r"\d{4,8}", code.strip()):
                 raise ValueError("Telegram login code must contain 4 to 8 digits")
             try:
@@ -179,6 +200,8 @@ class TelegramAuthorizationFlow:
         lock = await self._lock_for(user_id)
         async with lock:
             pending = await self._get_pending(user_id)
+            if pending.session_authorized:
+                return await self._persist_authorized_session(user_id, pending)
             if not isinstance(password, str) or not password or len(password) > 256:
                 raise ValueError("Telegram 2FA password is required")
             try:
@@ -196,6 +219,8 @@ class TelegramAuthorizationFlow:
                 pending = await self._restore(user_id)
             if pending is None:
                 return {"status": "not_pending"}
+            if pending.session_authorized:
+                return {"status": await self._persist_authorized_session(user_id, pending)}
             if self._clock() >= pending.expires_at:
                 await self._discard(user_id)
                 return {"status": "expired"}
@@ -216,7 +241,7 @@ class TelegramAuthorizationFlow:
             pending = await self._restore(user_id)
         if pending is None:
             raise LookupError("no pending Telegram authorization for this user")
-        if self._clock() >= pending.expires_at:
+        if not pending.session_authorized and self._clock() >= pending.expires_at:
             await self._discard(user_id)
             raise TimeoutError("Telegram authorization attempt expired")
         return pending
@@ -233,17 +258,42 @@ class TelegramAuthorizationFlow:
     async def _complete(
         self, user_id: str, pending: _PendingAuthorization
     ) -> str:
+        if not await pending.client.is_user_authorized():
+            await self._discard(user_id)
+            raise PermissionError("Telegram did not authorize this account")
+        pending.session_authorized = True
+        return await self._persist_authorized_session(user_id, pending)
+
+    async def _persist_authorized_session(
+        self, user_id: str, pending: _PendingAuthorization
+    ) -> str:
+        if not await pending.client.is_user_authorized():
+            await self._discard(user_id)
+            raise PermissionError("Telegram did not authorize this account")
+
+        session_string = pending.client.session.save()
+        if not isinstance(session_string, str) or not session_string:
+            return "persistence_pending"
+
         try:
-            if not await pending.client.is_user_authorized():
-                raise PermissionError("Telegram did not authorize this account")
-            session_string = pending.client.session.save()
-            if not session_string:
-                raise RuntimeError("Telethon did not produce a reusable session")
             await self._session_manager.save_authorized_session(
                 user_id, session_string
             )
-        finally:
+        except Exception:
+            # Preserve a resumable encrypted StringSession checkpoint. If the
+            # storage outage also blocks this write, retain the authorized client
+            # in memory so status polling can retry without another login code.
+            try:
+                await self._persist(user_id, pending)
+            except Exception:
+                pass
+            return "persistence_pending"
+
+        # The durable session exists now. Cleanup failure must not reverse success.
+        try:
             await self._discard(user_id)
+        except Exception:
+            pass
         return "connected"
 
     async def _discard(self, user_id: str) -> None:
