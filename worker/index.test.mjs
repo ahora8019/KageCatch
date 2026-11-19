@@ -329,7 +329,7 @@ test("standalone connection page reports persistence_pending truthfully and poll
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /persistence_pending/);
-  assert.match(html, /api\("status"\)/);
+  assert.match(html, /api\("auth-status"\)/);
   assert.match(html, /connect-status|connect\/status/);
   assert.doesNotMatch(html, /ورود تأیید و نشست ذخیره شد/);
   assert.match(html, /ذخیره نشست هنوز تکمیل نشده/);
@@ -362,7 +362,7 @@ test("standalone connect API proxies persistence status without resubmitting cre
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/api", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer " + sessionToken },
-    body: JSON.stringify({ action: "status" }),
+    body: JSON.stringify({ action: "auth-status" }),
   }), env);
 
   assert.equal(response.status, 200);
