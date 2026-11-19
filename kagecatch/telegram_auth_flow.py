@@ -230,10 +230,19 @@ class TelegramAuthorizationFlow:
                 "attempts_remaining": max(0, self._max_attempts - pending.attempts),
             }
 
-    async def cancel(self, *, user_id: str) -> None:
+    async def cancel(self, *, user_id: str) -> str:
         lock = await self._lock_for(user_id)
         async with lock:
+            pending = self._pending.get(user_id)
+            if pending is None:
+                pending = await self._restore(user_id)
+            if pending is None:
+                return "cancelled"
+            if pending.session_authorized:
+                # Never discard a Telegram-authorized session due to a cancel action.
+                return await self._persist_authorized_session(user_id, pending)
             await self._discard(user_id)
+            return "cancelled"
 
     async def _get_pending(self, user_id: str) -> _PendingAuthorization:
         pending = self._pending.get(user_id)

@@ -81,6 +81,7 @@ class FakeAuthFlow:
 
     async def cancel(self, *, user_id):
         self.cancelled.append(user_id)
+        return getattr(self, "cancel_result", None)
 
 
 class CoreApiTests(unittest.TestCase):
@@ -304,3 +305,11 @@ class CoreApiTests(unittest.TestCase):
         body = json.dumps({"enabled": True}).encode()
         response = self.client.put(path, content=body, headers=signed_headers("PUT", path, body))
         self.assertEqual(response.status_code, 409)
+
+    def test_cancel_reports_persistence_pending_instead_of_claiming_cancelled(self):
+        self.auth_flow.cancel_result = "persistence_pending"
+        path = "/v1/accounts/2001/connect/cancel"
+        response = self.client.post(path, headers=signed_headers("POST", path))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "persistence_pending"})
+        self.assertEqual(self.auth_flow.cancelled, ["2001"])
