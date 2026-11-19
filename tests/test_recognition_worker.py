@@ -12,6 +12,8 @@ class FakeQueue:
         self.failed = []
         self.quarantined = []
         self.claim_filters = []
+        self.renewals = []
+        self.renew_error = None
     async def claim_next(self, worker_id, *, lease_seconds=60, job_types=None):
         self.claim_filters.append(tuple(job_types or ()))
         job, self.job = self.job, None
@@ -23,6 +25,11 @@ class FakeQueue:
     async def fail(self, job_id, worker_id, *, lease_generation, retry_delay=0):
         self.failed.append((job_id, worker_id, retry_delay, lease_generation))
         return "queued"
+    async def renew_lease(self, job_id, worker_id, *, lease_generation, lease_seconds=60):
+        self.renewals.append((job_id, worker_id, lease_generation, lease_seconds))
+        if self.renew_error:
+            raise self.renew_error
+        return 999999.0
     async def recover_expired(self):
         return 0
 
@@ -150,6 +157,51 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
                     review_queue=FakeReviewQueue(), worker_id="recognizer",
                     retry_delay=value,
                 )
+
+
+    async def test_long_running_handler_renews_lease(self):
+        import asyncio
+        queue = FakeQueue(Job())
+        started = asyncio.Event()
+        class SlowResolver(FakeResolver):
+            async def resolve(self, metadata):
+                started.set()
+                await asyncio.sleep(0.08)
+                return SimpleNamespace(candidates=())
+        worker = RecognitionWorker(
+            queue=queue, resolver=SlowResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer", lease_seconds=1,
+        )
+        result = await worker.run_once()
+        self.assertEqual(result.status, "no_candidates")
+        self.assertGreaterEqual(len(queue.renewals), 1)
+        self.assertEqual(queue.completed, [("job-1", "recognizer", 1)])
+
+    async def test_lease_renewal_failure_cancels_processing_without_ack(self):
+        import asyncio
+        queue = FakeQueue(Job())
+        queue.renew_error = PermissionError("lease was reclaimed")
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        class SlowResolver(FakeResolver):
+            async def resolve(self, metadata):
+                started.set()
+                try:
+                    await asyncio.sleep(5)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+        worker = RecognitionWorker(
+            queue=queue, resolver=SlowResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer", lease_seconds=1,
+        )
+        result = await worker.run_once()
+        self.assertEqual(result.status, "lease_lost")
+        self.assertTrue(started.is_set())
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(queue.completed, [])
+        self.assertEqual(queue.failed, [])
+        self.assertEqual(queue.quarantined, [])
 
     async def test_empty_queue_is_idle(self):
         worker = RecognitionWorker(queue=FakeQueue(None), resolver=FakeResolver(),
