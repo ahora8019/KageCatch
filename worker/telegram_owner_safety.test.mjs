@@ -165,6 +165,18 @@ test("Owner Safety API rejects missing or forged Mini App authentication for rea
   };
   const status = await post("/api/owner/safety/status", {}, env);
   assert.equal(status.status, 401);
+  const forged = await post("/api/owner/safety/status", {
+    initData: "user=%7B%22id%22%3A" + OWNER_ID + "%7D&auth_date=" + Math.floor(Date.now() / 1000) + "&hash=deadbeef",
+  }, env);
+  assert.equal(forged.status, 401);
+  const forgedRecovery = await post("/api/owner/safety/recover", {
+    initData: "user=%7B%22id%22%3A" + OWNER_ID + "%7D&auth_date=" + Math.floor(Date.now() / 1000) + "&hash=deadbeef",
+    action: "global_pause",
+    confirmation: "RESET_GLOBAL_PAUSE",
+    expected_paused_until_ms: "9223372036854775807",
+    expected_pause_reason: "invalid_credentials",
+  }, env);
+  assert.equal(forgedRecovery.status, 401);
   const recovery = await post("/api/owner/safety/recover", {
     action: "global_pause",
     confirmation: "RESET_GLOBAL_PAUSE",
