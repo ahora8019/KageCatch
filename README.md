@@ -46,6 +46,8 @@ Group commands `.panel` and `.پنل` are accepted only from the authorized acco
 
 Every callback is bound to the stored request, owner Telegram ID, exact group ID, exact panel message ID, and active expiry. Non-owners receive an alert. Catch remains disabled in the panel; buttons currently expose status/configuration placeholders only.
 
+Delivery semantics: the D1 claim prevents two processors from claiming the same pending row at once, and abandoned claims are retried at least once. Telegram `sendMessage` does not accept an idempotency key, so a timeout or Worker crash after Telegram accepted a message but before D1 records `completed` can produce a duplicate panel on retry. The two-minute stale-claim recovery is a liveness fallback, not a proof that the previous sender stopped; long-running sends may also overlap a reclaimed attempt. Do not describe panel delivery as exactly-once until a durable fencing/lease design and an external-send reconciliation strategy are implemented.
+
 The schema is in `migrations/0004_panel_requests.sql`. The additive table has been created in the existing `kagecatch-sessions-preview` D1 database; the existing `telegram_sessions` table was not modified. The Core uses `KAGECATCH_PANEL_QUEUE_URL`, falling back to `KAGECATCH_SESSION_STORE_URL`, and the existing `KAGECATCH_CORE_SECRET` for HMAC signing. The Worker route and scheduled delivery code are committed but not deployed. Do not enable real group delivery until the Worker deployment and a controlled test group verification are explicitly approved.
 
 ## Durable session storage (Cloudflare D1)
