@@ -5,13 +5,23 @@ import assert from "node:assert/strict";
 import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
 
 function createTelegramSafetyDb() {
-  const state = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null };
+  const state = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null, chats: new Map() };
   return {
     prepare(sql) {
       let values = [];
       return {
         bind(...args) { values = args; return this; },
         async first() {
+          if (sql.includes("UPDATE telegram_bot_chat_pacing")) {
+            const [now, intervalMs, chatId, checkNow] = values;
+            const current = state.chats.get(chatId) ?? 0;
+            if (current > checkNow) return null;
+            state.chats.set(chatId, now + intervalMs);
+            return { next_allowed_at_ms: now + intervalMs };
+          }
+          if (sql.includes("SELECT next_allowed_at_ms FROM telegram_bot_chat_pacing")) {
+            return { next_allowed_at_ms: state.chats.get(values[0]) ?? 0 };
+          }
           if (sql.includes("RETURNING")) {
             const [now, intervalMs, pausedCheckNow, nextCheckNow] = values;
             if (state.paused_until_ms > pausedCheckNow || state.next_allowed_at_ms > nextCheckNow) return null;
@@ -22,7 +32,9 @@ function createTelegramSafetyDb() {
           return null;
         },
         async run() {
-          if (sql.includes("paused_until_ms = MAX")) {
+          if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
+            if (!state.chats.has(values[0])) state.chats.set(values[0], 0);
+          } else if (sql.includes("paused_until_ms = MAX")) {
             state.paused_until_ms = Math.max(state.paused_until_ms, values[0]);
             state.pause_reason = "telegram_429";
           } else if (sql.includes("paused_until_ms = 9223372036854775807")) {
