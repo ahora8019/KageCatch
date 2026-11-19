@@ -30,7 +30,7 @@ class PanelRequestLeasesMigrationTests(unittest.TestCase):
                  "2099-01-01 00:00:00"),
             )
 
-            migration = MIGRATIONS / "0007_panel_request_leases.sql"
+            migration = MIGRATIONS / "0009_panel_request_leases.sql"
             self.assertTrue(migration.is_file(), "the D1 lease migration must be present in source control")
             db.executescript(migration.read_text(encoding="utf-8"))
 

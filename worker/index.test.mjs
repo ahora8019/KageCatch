@@ -79,6 +79,116 @@ test("status and help remain available as slash-command shortcuts", () => {
 });
 
 
+function createTelegramSafetyDb() {
+  const state = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null, chats: new Map(), circuits: new Map() };
+  return {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async first() {
+          if (sql.includes("INSERT INTO telegram_bot_chat_circuit_breaker")) {
+            const [chatId, errorCode, now] = values;
+            const current = state.circuits.get(chatId) ?? {
+              consecutive_failures: 0, is_open: 0, last_error_code: null, updated_at_ms: now,
+            };
+            current.consecutive_failures = Math.min(3, current.consecutive_failures + 1);
+            current.is_open = current.consecutive_failures >= 3 ? 1 : current.is_open;
+            current.last_error_code = errorCode;
+            current.updated_at_ms = now;
+            state.circuits.set(chatId, current);
+            return { consecutive_failures: current.consecutive_failures, is_open: current.is_open };
+          }
+          if (sql.includes("SELECT consecutive_failures")) {
+            return state.circuits.get(values[0]) ?? null;
+          }
+          if (sql.includes("UPDATE telegram_bot_chat_pacing")) {
+            const [now, intervalMs, chatId, checkNow] = values;
+            const current = state.chats.get(chatId) ?? 0;
+            if (current > checkNow) return null;
+            state.chats.set(chatId, now + intervalMs);
+            return { next_allowed_at_ms: now + intervalMs };
+          }
+          if (sql.includes("SELECT next_allowed_at_ms FROM telegram_bot_chat_pacing")) {
+            return { next_allowed_at_ms: state.chats.get(values[0]) ?? 0 };
+          }
+          if (sql.includes("RETURNING")) {
+            const [now, intervalMs, pausedCheckNow, nextCheckNow] = values;
+            if (state.paused_until_ms > pausedCheckNow || state.next_allowed_at_ms > nextCheckNow) return null;
+            state.next_allowed_at_ms = now + intervalMs;
+            return { next_allowed_at_ms: state.next_allowed_at_ms };
+          }
+          if (sql.startsWith("SELECT")) return { ...state };
+          return null;
+        },
+        async run() {
+          if (sql.includes("UPDATE telegram_bot_chat_circuit_breaker") && sql.includes("consecutive_failures = 0")) {
+            const [now, chatId] = values;
+            const current = state.circuits.get(chatId);
+            if (current) state.circuits.set(chatId, { ...current, consecutive_failures: 0, last_error_code: null, updated_at_ms: now });
+          } else if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
+            if (!state.chats.has(values[0])) state.chats.set(values[0], 0);
+          } else if (sql.includes("paused_until_ms = MAX")) {
+            state.paused_until_ms = Math.max(state.paused_until_ms, values[0]);
+            state.pause_reason = "telegram_429";
+          } else if (sql.includes("paused_until_ms = 9223372036854775807")) {
+            state.paused_until_ms = Number.MAX_SAFE_INTEGER;
+            state.pause_reason = values[0];
+          }
+          return { meta: { changes: 1 } };
+        },
+      };
+    },
+  };
+}
+
+
+function createTelegramSafetyTestDb() {
+  const globalState = { paused_until_ms: 0, next_allowed_at_ms: 0, pause_reason: null };
+  const pacing = new Map();
+  const circuits = new Map();
+  return {
+    prepare(sql) {
+      let values = [];
+      return {
+        bind(...args) { values = args; return this; },
+        async run() {
+          if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
+            const key = String(values[0]);
+            if (!pacing.has(key)) pacing.set(key, { next_allowed_at_ms: 0 });
+          }
+          return { meta: { changes: 1 } };
+        },
+        async first() {
+          if (sql.startsWith("SELECT consecutive_failures, is_open, last_error_code FROM telegram_bot_chat_circuit_breaker")) return circuits.get(String(values[0])) || null;
+          if (sql.startsWith("SELECT consecutive_failures, is_open FROM telegram_bot_chat_circuit_breaker")) return circuits.get(String(values[0])) || null;
+          if (sql.startsWith("UPDATE telegram_bot_chat_pacing")) {
+            const [now, interval, key, cutoff] = values;
+            const row = pacing.get(String(key)) || { next_allowed_at_ms: 0 };
+            if (row.next_allowed_at_ms <= cutoff) {
+              row.next_allowed_at_ms = now + interval;
+              pacing.set(String(key), row);
+              return { next_allowed_at_ms: row.next_allowed_at_ms };
+            }
+            return null;
+          }
+          if (sql.startsWith("SELECT next_allowed_at_ms FROM telegram_bot_chat_pacing")) return pacing.get(String(values[0])) || null;
+          if (sql.startsWith("UPDATE telegram_bot_safety SET next_allowed_at_ms")) {
+            const [now, interval, pausedAt, nextAt] = values;
+            if (globalState.paused_until_ms <= pausedAt && globalState.next_allowed_at_ms <= nextAt) {
+              globalState.next_allowed_at_ms = now + interval;
+              return { next_allowed_at_ms: globalState.next_allowed_at_ms };
+            }
+            return null;
+          }
+          if (sql.startsWith("SELECT paused_until_ms, next_allowed_at_ms FROM telegram_bot_safety")) return { ...globalState };
+          return null;
+        },
+      };
+    },
+  };
+}
+
 function createDurableObjectState() {
   const values = new Map();
   let tail = Promise.resolve();
@@ -265,7 +375,7 @@ test("private connect callback launches the standalone secure login page", async
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const telegramCalls = [];
   const env = {
-    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
     CONNECT_LINKS: binding,
     FETCH: async (url, init) => {
@@ -372,7 +482,7 @@ test("member cannot invoke owner-only callbacks through the webhook", async () =
   await post("/register", { telegramUserId: 2002, ownerTelegramId: "1001" });
   const calls = [];
   const env = {
-    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
     OWNER_TELEGRAM_ID: "1001",
     CONNECT_LINKS: binding,
@@ -413,7 +523,7 @@ test("owner broadcast collects a draft, previews it, and sends only to active me
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const calls = [];
   const env = {
-    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
     OWNER_TELEGRAM_ID: "1001",
     CONNECT_LINKS: binding,
@@ -566,7 +676,7 @@ test("Mini App session API trusts only signed Telegram identity and server-side 
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ initData }),
-  }), { TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
+  }), { KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.role, "OWNER");
@@ -578,7 +688,7 @@ test("Mini App session API rejects forged Telegram identity", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ initData: "user=%7B%22id%22%3A7135051954%7D&auth_date=1&hash=deadbeef" }),
-  }), { TELEGRAM_BOT_TOKEN: "test-bot-token" });
+  }), { KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token" });
   assert.equal(response.status, 401);
 });
 
@@ -597,7 +707,7 @@ test("Mini App session role is read from the registry, not from client-supplied 
   const initData = makeWebAppInitData(token, { id: 2001, first_name: "Member", role: "OWNER" });
   const request = () => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ initData, role: "OWNER" }),
-  }), { TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
+  }), { KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
   const memberResponse = await request();
   assert.equal(memberResponse.status, 200);
   assert.equal((await memberResponse.json()).role, "MEMBER");
@@ -619,7 +729,7 @@ test("Worker proxies account status to Core with an HMAC signature and trusted T
   const initData = makeWebAppInitData(botToken, { id: 2001, first_name: "Member" });
   let coreRequest;
   const env = {
-    TELEGRAM_BOT_TOKEN: botToken,
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: botToken,
     OWNER_TELEGRAM_ID: "7135051954",
     CONNECT_LINKS: binding,
     CORE_API_URL: "https://core.example.test",
@@ -653,7 +763,7 @@ test("Worker does not call Core for forged Mini App identity", async () => {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ initData: "user=%7B%22id%22%3A2001%7D&auth_date=1&hash=deadbeef" }),
   }), {
-    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token",
     CORE_API_URL: "https://core.example.test",
     CORE_API_SECRET: "kagecatch-core-test-secret-32-bytes",
     FETCH: async () => { called = true; return new Response("{}", { status: 200 }); },
@@ -678,7 +788,7 @@ test("Worker exposes the Telegram deep-link flow only to a verified Mini App use
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/connect", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ initData }),
   }), {
-    TELEGRAM_BOT_TOKEN: botToken, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding,
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: botToken, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding,
     CORE_API_URL: "https://core.example.test", CORE_API_SECRET: coreSecret,
     FETCH: async (url, init) => {
       observed = { url, method: init.method };
@@ -719,7 +829,7 @@ test("Mini App account UI uses accessible inline login steps instead of blocking
 test("health distinguishes a reachable but unconfigured Python Core from an unreachable Core", async () => {
   const calls = [];
   const env = {
-    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
     CORE_API_URL: "https://core.example.test",
     CORE_API_SECRET: "kagecatch-core-test-secret-32-bytes",
@@ -797,7 +907,7 @@ test("Mini App forwards phone login payloads only to the signed Python Core endp
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const calls = [];
   const env = {
-    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token",
     CONNECT_LINKS: binding,
     CORE_API_URL: "https://core.example",
     CORE_API_SECRET: "test-core-secret-with-more-than-thirty-two-bytes",
@@ -1058,7 +1168,7 @@ test("new Telegram users cannot self-register without a valid invitation", async
   const store = new ConnectionLinkStore(createDurableObjectState());
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   const calls = [];
-  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "bot-token",
     FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
   const denied = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
@@ -1091,7 +1201,7 @@ test("Owner can create an invitation from the private owner menu", async () => {
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }) }));
   const calls = [];
-  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token",
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "bot-token",
     FETCH: async (url, init) => { calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
@@ -1112,7 +1222,7 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
   const created = await store.fetch(new Request("https://do.internal/invite/create", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxUses: 1, ttlSeconds: 86400 }) }));
   const invite = await created.json();
   const calls = [];
-  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", TELEGRAM_BOT_TOKEN: "bot-token",
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_WEBHOOK_SECRET: "hook-secret", KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "bot-token",
     FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
@@ -1136,7 +1246,7 @@ test("Owner invite screen renders real line breaks and keeps creation and back b
   const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
   await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 999001, ownerTelegramId: "999001" }) }));
   const calls = [];
-  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
     FETCH: async (url, init) => { calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) }); return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
@@ -1178,7 +1288,7 @@ test("Owner menu exposes user monitoring and monitor screen distinguishes online
   await store.fetch(new Request("https://do.internal/activity/record", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 500002, action: "account:list", firstName: "TestUser" }) }));
   const calls = [];
   const sequence = [];
-  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+  const env = { CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001", KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
     CORE_API_URL: "https://core.example", CORE_API_SECRET: "a".repeat(40),
     FETCH: async (url, init) => {
       if (String(url).endsWith("/v1/accounts/500002")) { sequence.push("core"); return new Response(JSON.stringify({ status: "authorized", session_saved: true, connected: false }), { status: 200 }); }
@@ -1429,7 +1539,7 @@ test("webhook processing failures emit structured diagnostics without exposing e
   try {
     const env = {
       CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001",
-      TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+      KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
       FETCH: async () => { throw Object.assign(new Error("token=must-not-appear"), { status: 502 }); },
     };
     const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
@@ -1503,6 +1613,7 @@ test("Telegram webhook updates are deduplicated by the durable replay guard", as
   let sends = 0;
   const env = {
     CONNECT_LINKS: binding, OWNER_TELEGRAM_ID: "999001",
+    KAGECATCH_DB: createTelegramSafetyTestDb(),
     TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
     FETCH: async () => {
       sends += 1;
@@ -1583,7 +1694,7 @@ test("manual webhook setup endpoint requires the Core admin secret and repairs t
   const calls = [];
   const env = {
     CORE_API_SECRET: secret,
-    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token",
     TELEGRAM_WEBHOOK_SECRET: "test_webhook_secret_123",
     FETCH: async (url, init) => {
       const method = String(url).split("/").pop();
@@ -1616,7 +1727,7 @@ test("manual webhook setup endpoint rejects wrong methods without exposing confi
     method: "GET",
   }), {
     CORE_API_SECRET: "core-admin-secret-with-at-least-32-bytes",
-    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token",
     TELEGRAM_WEBHOOK_SECRET: "test_webhook_secret_123",
   });
   assert.equal(response.status, 405);
@@ -1630,7 +1741,7 @@ test("manual webhook setup derives the webhook host from the incoming Worker ori
   let webhookUrl = "";
   const env = {
     CORE_API_SECRET: secret,
-    TELEGRAM_BOT_TOKEN: "test-bot-token",
+    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token",
     TELEGRAM_WEBHOOK_SECRET: "test_webhook_secret_123",
     FETCH: async (url, init) => {
       const method = String(url).split("/").pop();

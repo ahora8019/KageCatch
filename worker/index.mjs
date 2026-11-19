@@ -1,4 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
+import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, getTelegramSafetySnapshot, recoverTelegramGlobalPause, recoverTelegramChatCircuit, isTelegramMutatingMethod, isValidTelegramMethod } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -211,16 +212,114 @@ async function miniAppSession(request, env) {
   });
 }
 
-async function telegramApi(env, method, payload = {}) {
+async function miniAppOwnerSafety(request, env, operation) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) {
+    return json({ error: "unsupported_media_type" }, 415);
+  }
+  let body;
+  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
+  if (!env.TELEGRAM_BOT_TOKEN || !/^\d+$/.test(String(env.OWNER_TELEGRAM_ID || ""))) {
+    return json({ error: "owner_auth_not_configured" }, 503);
+  }
+  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
+  if (!verified) return json({ error: "unauthorized" }, 401);
+  let actor;
+  try { actor = await getTelegramUser(env, verified.user.id); }
+  catch { return json({ error: "identity_service_unavailable" }, 503); }
+  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
+  if (role !== "OWNER") return json({ error: "forbidden" }, 403);
+  if (!env.KAGECATCH_DB) return json({ error: "safety_store_unavailable" }, 503);
+
+  if (operation === "status") {
+    try {
+      return json(await getTelegramSafetySnapshot(env.KAGECATCH_DB, Date.now()));
+    } catch {
+      return json({ error: "safety_state_unavailable" }, 503);
+    }
+  }
+  if (operation !== "recover") return json({ error: "invalid_action" }, 400);
+
+  if (body.action === "global_pause") {
+    if (body.confirmation !== "RESET_GLOBAL_PAUSE") return json({ error: "explicit_confirmation_required" }, 400);
+    const expectedUntil = typeof body.expected_paused_until_ms === "string"
+      ? body.expected_paused_until_ms
+      : "";
+    const expectedReason = body.expected_pause_reason;
+    if (!/^\d{1,20}$/.test(expectedUntil)
+      || !["telegram_429", "invalid_credentials"].includes(expectedReason)) {
+      return json({ error: "invalid_global_recovery_snapshot" }, 400);
+    }
+    try {
+      const result = await recoverTelegramGlobalPause(env.KAGECATCH_DB, expectedUntil, expectedReason, Date.now());
+      if (!result.recovered) return json({ error: "safety_state_changed_refresh_required" }, 409);
+      return json({ status: "recovered", scope: "global_pause", cleared_reason: result.clearedReason });
+    } catch {
+      return json({ error: "safety_recovery_unavailable" }, 503);
+    }
+  }
+
+  if (body.action === "chat_circuit") {
+    if (body.confirmation !== "RESET_CHAT_CIRCUIT") return json({ error: "explicit_confirmation_required" }, 400);
+    const chatIdValid = (typeof body.chat_id === "string"
+      && (/^-?\d{1,20}$/.test(body.chat_id.trim()) || /^@[A-Za-z0-9_]{5,32}$/.test(body.chat_id.trim())))
+      || (Number.isSafeInteger(body.chat_id) && body.chat_id !== 0);
+    if (!chatIdValid || !Number.isSafeInteger(body.expected_updated_at_ms) || body.expected_updated_at_ms < 0) {
+      return json({ error: "invalid_chat_recovery_snapshot" }, 400);
+    }
+    try {
+      const result = await recoverTelegramChatCircuit(env.KAGECATCH_DB, body.chat_id, body.expected_updated_at_ms, Date.now());
+      if (!result.recovered) return json({ error: "circuit_state_changed_refresh_required" }, 409);
+      return json({ status: "recovered", scope: "chat_circuit", chat_id: result.chatId });
+    } catch {
+      return json({ error: "safety_recovery_unavailable" }, 503);
+    }
+  }
+  return json({ error: "invalid_action" }, 400);
+}
+
+// Export the central Bot API boundary so integration tests exercise the same safety gate used by webhook handlers.
+
+export async function telegramApi(env, method, payload = {}) {
+  if (!isValidTelegramMethod(method)) throw new Error("invalid_telegram_method");
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
+  const requestPayload = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  if (isTelegramMutatingMethod(method)) {
+    if (requestPayload.chat_id !== undefined) {
+      let chatId = requestPayload.chat_id;
+      let intervalMs = 3100;
+      if (Number.isSafeInteger(chatId)) {
+        intervalMs = chatId < 0 ? 3100 : 1000;
+      } else if (typeof chatId === "string" && chatId.trim()) {
+        chatId = chatId.trim();
+      } else {
+        throw new Error("telegram_chat_id_invalid");
+      }
+      await assertTelegramChatCircuitClosed(env.KAGECATCH_DB, chatId);
+      await waitForTelegramChatPermit(env.KAGECATCH_DB, chatId, intervalMs, intervalMs + 900);
+    }
+    await waitForTelegramSendPermit(env.KAGECATCH_DB, 100, 1500);
+  }
   const requestFetch = env.FETCH || fetch;
   const response = await requestFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(requestPayload),
   });
   const result = await response.json();
-  if (!response.ok || !result.ok) throw new Error(`Telegram API ${method} failed`);
+  if (!response.ok || !result.ok) {
+    const error = new TelegramApiError(result, response.status);
+    if (requestPayload.chat_id !== undefined && [400, 403].includes(error.errorCode)) {
+      await recordTelegramChatApiFailure(env.KAGECATCH_DB, requestPayload.chat_id, error, Date.now());
+    }
+    if (error.kind === "rate_limited" || error.kind === "invalid_credentials") {
+      await recordTelegramApiFailure(env.KAGECATCH_DB, error, Date.now());
+    }
+    throw error;
+  }
+  if (isTelegramMutatingMethod(method) && requestPayload.chat_id !== undefined) {
+    await recordTelegramChatApiSuccess(env.KAGECATCH_DB, requestPayload.chat_id, Date.now());
+  }
   return result.result;
 }
 
@@ -1599,6 +1698,8 @@ export default {
     if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
     if (url.pathname === "/connect/api") return standaloneConnectApi(request, env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
+    if (url.pathname === "/api/owner/safety/status") return miniAppOwnerSafety(request, env, "status");
+    if (url.pathname === "/api/owner/safety/recover") return miniAppOwnerSafety(request, env, "recover");
     if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
     if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
     if (url.pathname === "/api/account/connect/code") return miniAppCoreProxy(request, env, "connect-code");
