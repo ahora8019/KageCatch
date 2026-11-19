@@ -325,6 +325,7 @@ export function buildRoleMenu(role = "MEMBER") {
     [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
     [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
     [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
+    [{ text: "🛡️ Safety Monitor", web_app: { url: PANEL_URL } }],
     [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
     ...memberRows,
   ] };
