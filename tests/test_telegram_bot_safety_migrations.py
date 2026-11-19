@@ -7,6 +7,10 @@ ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS = ROOT / "migrations"
 
 
+def apply_migration(connection: sqlite3.Connection, name: str) -> None:
+    connection.executescript((MIGRATIONS / name).read_text(encoding="utf-8"))
+
+
 def migration_sort_key(path: Path) -> tuple[int, int, str]:
     """Mirror Wrangler's D1 ordering: numeric prefix, then lexical filename tie-break."""
     prefix = path.name.split("_", 1)[0]
