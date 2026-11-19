@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .models.spawn import CharacterMetadata
 
+logger = logging.getLogger(__name__)
 
 RECOGNITION_JOB_TYPES = ("spawn.recognize",)
 
@@ -33,8 +36,9 @@ class RecognitionWorker:
             raise ValueError("worker_id must contain 1 to 128 characters")
         if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float)) or not 1 <= lease_seconds <= 3600:
             raise ValueError("lease_seconds must be between 1 and 3600")
-        if isinstance(retry_delay, bool) or not isinstance(retry_delay, (int, float)) or retry_delay < 0:
-            raise ValueError("retry_delay must be non-negative")
+        if (isinstance(retry_delay, bool) or not isinstance(retry_delay, (int, float))
+                or not math.isfinite(float(retry_delay)) or retry_delay < 0):
+            raise ValueError("retry_delay must be a finite non-negative number")
         self.queue, self.resolver, self.review_queue = queue, resolver, review_queue
         self.worker_id, self.lease_seconds, self.retry_delay = worker_id, float(lease_seconds), float(retry_delay)
 
@@ -101,17 +105,25 @@ class RecognitionWorker:
             raise ValueError("idle_sleep must be between 0 and 60 seconds")
         processed = 0
         while not stop_event.is_set():
-            await self.queue.recover_expired()
-            if stop_event.is_set():
-                break
-            result = await self.run_once()
-            if result.status == "review_queued":
-                processed += 1
-            elif result.status == "idle":
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=float(idle_sleep))
-                except asyncio.TimeoutError:
-                    pass
+            try:
+                await self.queue.recover_expired()
+                if stop_event.is_set():
+                    break
+                result = await self.run_once()
+                if result.status == "review_queued":
+                    processed += 1
+                if result.status != "idle":
+                    continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A transient SQLite/storage error must not silently kill the
+                # application-owned worker task. Keep logs free of job payloads.
+                logger.exception("Recognition worker iteration failed")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=float(idle_sleep))
+            except asyncio.TimeoutError:
+                pass
         return processed
 
     @staticmethod
