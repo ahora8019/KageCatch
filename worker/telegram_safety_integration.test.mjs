@@ -347,3 +347,40 @@ test("future valid Bot API methods fail closed behind the global gate; malformed
   );
   assert.equal(networkCalls, 0);
 });
+
+
+test("mutating Telegram methods fail closed before network access when the durable safety store is missing", async () => {
+  let networkCalls = 0;
+  const env = {
+    TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+    FETCH: async () => {
+      networkCalls += 1;
+      return Response.json({ ok: true, result: {} });
+    },
+  };
+
+  await assert.rejects(
+    () => telegramApi(env, "sendMessage", { chat_id: 2001, text: "must not send" }),
+    /telegram_safety_store_unavailable/,
+  );
+  assert.equal(networkCalls, 0);
+});
+
+test("only explicitly allowlisted read-only Bot API methods bypass the durable safety store", async () => {
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: BOT_TOKEN,
+    FETCH: async (url) => {
+      calls.push(String(url).split("/").pop());
+      return Response.json({ ok: true, result: {} });
+    },
+  };
+
+  await telegramApi(env, "getMe");
+  await telegramApi(env, "getWebhookInfo");
+  await assert.rejects(
+    () => telegramApi(env, "getChat", { chat_id: 2001 }),
+    /telegram_safety_store_unavailable/,
+  );
+  assert.deepEqual(calls, ["getMe", "getWebhookInfo"]);
+});
