@@ -15,12 +15,36 @@ Senpai remains registered but disabled because it is currently unavailable.
 1. A source adapter supplies a normalized spawn event and ranked candidates.
 2. The engine rejects adapter/source mismatches and invalid candidates.
 3. Candidates below the configured confidence threshold are sent to review.
-4. A per-user quota gate is checked before sending.
-5. A per-user/source/chat/message dedupe key prevents duplicate attempts.
-6. The source adapter sends the command.
-7. Only a confirmed target-bot response may produce a verified result.
+4. An atomic per-user/source rolling quota and deduplication reservation is acquired.
+5. The source adapter sends the command only after admission succeeds.
+6. Only a valid receipt and a confirmed target-bot response may produce a verified result.
 
-Recognition is not implemented yet: the engine consumes candidate names and confidence scores from a future recognition component.
+The engine consumes normalized candidate names and confidence scores. Anime-scene similarity is never treated as character confidence.
+
+## Catch admission and duplicate protection
+
+`kagecatch/catch_admission.py` provides `SQLiteCatchAdmissionStore`. It performs the dedupe check, rolling quota count, and reservation insert in one SQLite `BEGIN IMMEDIATE` transaction. Concurrent Core workers using the same durable SQLite file therefore cannot both reserve the same spawn.
+
+The quota is explicitly configured by the execution layer; no arbitrary production limit is hard-coded:
+
+```python
+admission = SQLiteCatchAdmissionStore(
+    "/var/lib/kagecatch/catch-admission.sqlite3",
+    max_attempts=OPERATOR_CONFIGURED_LIMIT,
+    window_seconds=OPERATOR_CONFIGURED_WINDOW_SECONDS,
+)
+engine = CatchEngine(
+    confidence_threshold=OPERATOR_CONFIGURED_CONFIDENCE,
+    admission=admission,
+    enabled=False,
+)
+```
+
+The database is intended for one persistent Python host with a durable local volume, not multiple hosts sharing an ephemeral filesystem. It stores admission metadata only (user, source, dedupe key, attempt timestamp), never Telegram session material. The dedupe key is retained indefinitely, even after the rolling quota window expires, so replaying an old update cannot become a fresh catch. This table grows over time; define and review a privacy/retention/archive policy before high-volume production use.
+
+Every admitted attempt consumes a quota slot, including a send that later times out or has an ambiguous outcome. The engine deliberately does not release the reservation or automatically retry: Telegram may already have accepted the first command. Such cases require manual investigation before any new attempt.
+
+An enabled `CatchEngine` requires an atomic `admission` implementation. The older split `QuotaGate` + `Deduplicator` arguments remain only for disabled/test compatibility and cannot activate dispatch. Missing or failing admission returns `admission_unavailable` without sending. Candidate lists are bounded to 30 entries; malformed spawn identities and receipts are rejected.
 
 ## Session security and runtime
 
@@ -54,7 +78,7 @@ No real Telegram account has been authorized or tested. The bot-driven flow has 
 
 - Design and review a secure local authorization handoff that does not transmit OTPs, 2FA passwords, or StringSessions through the bot chat.
 - Add key rotation and session access/revocation auditing.
-- Add persistent quotas and atomic deduplication.
+- Add a deployment composition that injects a durable `SQLiteCatchAdmissionStore` and operator-approved quota/confidence values; live dispatch must remain disabled until this is reviewed.
 - Add live Telegram response listeners and verifiers for each target bot.
 - Add spawn ingestion and recognition (image/video frame extraction, catalog lookup, confidence calibration).
 - Add an authenticated, retry-safe Worker-to-Python queue contract and a deployed execution process.
@@ -62,7 +86,8 @@ No real Telegram account has been authorized or tested. The bot-driven flow has 
 
 ## Current implementation checkpoint
 
-- `CatchEngine` is disabled by default. It returns `disabled` without sending any command until an explicit enable flag is supplied by the execution layer.
+- `CatchEngine` is disabled by default. An enabled instance must receive an atomic `SQLiteCatchAdmissionStore` (or equivalent implementation); separate quota and dedupe callbacks cannot enable live dispatch.
+- Atomic admission and rolling per-user/source quotas are implemented in `kagecatch/catch_admission.py`. An admitted reservation remains consumed after ambiguous send errors, preventing automatic duplicate retries.
 - `TelethonCatchAdapter` dispatches the configured `/catch {name}` command through an already-authorized user session. It rejects source/media mismatches and frozen targets.
 - Dispatch and success verification are separate. Without a target-specific response verifier, the adapter always reports the receipt as unverified; a sent command is never presented as a successful catch.
 - Target-specific response formats have not yet been validated against live bot replies. No catch command has been sent to a real target during this implementation.
