@@ -294,5 +294,42 @@ class AuthorizationPersistenceRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(restored_clients[0].connected)
 
 
+
+    async def test_cancel_cannot_discard_a_telegram_authorized_session_awaiting_persistence(self):
+        class FailOnceManager(FakeManager):
+            def __init__(self):
+                super().__init__()
+                self.save_failures = 1
+
+            async def save_authorized_session(self, user_id, session_string):
+                if self.save_failures:
+                    self.save_failures -= 1
+                    raise OSError("temporary storage outage")
+                await super().save_authorized_session(user_id, session_string)
+
+        manager = FailOnceManager()
+        client = FakeClient()
+        flow = TelegramAuthorizationFlow(
+            client_factory=lambda: client,
+            session_manager=manager,
+        )
+
+        await flow.start(user_id="tg-1", phone="+10000000000")
+        self.assertEqual(
+            await flow.submit_code(user_id="tg-1", code="12345"),
+            "persistence_pending",
+        )
+
+        cancel_result = await flow.cancel(user_id="tg-1")
+
+        self.assertEqual(cancel_result, "persistence_pending")
+        self.assertTrue(client.connected)
+        self.assertTrue(manager.pending["tg-1"]["session_authorized"])
+        self.assertEqual(manager.saved, [])
+
+        self.assertEqual((await flow.get_status(user_id="tg-1"))["status"], "connected")
+        self.assertFalse(client.connected)
+        self.assertEqual(manager.saved, [("tg-1", "partial-telethon-session")])
+
 if __name__ == "__main__":
     unittest.main()
