@@ -575,7 +575,7 @@ function safetyFormatTime(value){
   if(value===null||value===undefined||value==="")return "—";
   let date;
   if(typeof value==="number")date=new Date(value);
-  else if(typeof value==="string"&&/^\d{4}-\d\d-\d\d \d\d/.test(value))date=new Date(value.replace(" ","T")+"Z");
+  else if(typeof value==="string"&&/^\\d{4}-\\d\\d-\\d\\d \\d\\d/.test(value))date=new Date(value.replace(" ","T")+"Z");
   else date=new Date(value);
   if(Number.isNaN(date.getTime()))return String(value);
   return new Intl.DateTimeFormat("fa-IR",{timeZone:"Asia/Tehran",dateStyle:"short",timeStyle:"medium"}).format(date);
