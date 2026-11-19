@@ -9,6 +9,7 @@ import asyncio
 from contextlib import closing
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import sqlite3
 import time
@@ -106,8 +107,9 @@ class SQLiteJobQueue:
             raise ValueError("invalid idempotency_key")
         if run_after is not None and (
             isinstance(run_after, bool) or not isinstance(run_after, (int, float))
+            or not math.isfinite(float(run_after))
         ):
-            raise ValueError("run_after must be a timestamp")
+            raise ValueError("run_after must be a finite timestamp")
         try:
             payload_json = json.dumps(
                 payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
@@ -242,8 +244,11 @@ class SQLiteJobQueue:
         lease_generation: int,
         retry_delay: float = 0,
     ) -> str:
-        if isinstance(retry_delay, bool) or not isinstance(retry_delay, (int, float)) or retry_delay < 0:
-            raise ValueError("retry_delay must be non-negative")
+        if (
+            isinstance(retry_delay, bool) or not isinstance(retry_delay, (int, float))
+            or not math.isfinite(float(retry_delay)) or retry_delay < 0
+        ):
+            raise ValueError("retry_delay must be a finite non-negative number")
         now = float(self._clock())
         async with self._lock:
             with closing(self._connect()) as db:
