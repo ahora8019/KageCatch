@@ -1148,7 +1148,10 @@ export class ConnectionLinkStore {
     const entries = await this.state.storage.list({ prefix: 'broadcast:' });
     const active = [...entries.entries()].find(([, draft]) =>
       draft && ['queued', 'sending'].includes(draft.status));
-    if (!active) return;
+    if (!active) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     const [key, existing] = active;
     const ownerTelegramId = Number(key.slice('broadcast:'.length));
     if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0) return;
@@ -1175,6 +1178,8 @@ export class ConnectionLinkStore {
       return;
     }
 
+    // Arm recovery before persisting an in-flight marker, closing the crash window between the two writes.
+    await this.state.storage.setAlarm(Date.now() + 60_000);
     const attempt = await this.state.storage.transaction(async (txn) => {
       const current = await txn.get(key);
       if (!current || current.status !== 'queued'
@@ -1193,14 +1198,14 @@ export class ConnectionLinkStore {
       await txn.put(key, inFlight);
       return { attemptId, index: current.nextIndex, recipientId: current.recipientIds[current.nextIndex], text: current.text };
     });
-    if (!attempt) return;
+    if (!attempt) {
+      await this.state.storage.deleteAlarm();
+      return;
+    }
     if (attempt.completed) {
       await this.state.storage.deleteAlarm();
       return;
     }
-
-    // Persist a watchdog before crossing the external Telegram side-effect boundary.
-    await this.state.storage.setAlarm(Date.now() + 60_000);
     let outcome = 'delivered';
     try {
       await telegramApi(env, 'sendMessage', { chat_id: attempt.recipientId, text: attempt.text });
