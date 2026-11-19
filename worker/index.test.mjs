@@ -147,18 +147,22 @@ test("status and help remain available as slash-command shortcuts", () => {
 function createDurableObjectState() {
   const values = new Map();
   let tail = Promise.resolve();
+  let alarmAt = null;
   const storage = {
     async get(key) { return values.get(key); },
     async put(key, value) { values.set(key, value); },
     async delete(key) { return values.delete(key); },
     async list({ prefix = "" } = {}) { return new Map([...values.entries()].filter(([key]) => key.startsWith(prefix))); },
+    async setAlarm(when) { alarmAt = when instanceof Date ? when.getTime() : when; },
+    async getAlarm() { return alarmAt === null ? null : new Date(alarmAt); },
+    async deleteAlarm() { alarmAt = null; },
     async transaction(callback) {
       const run = tail.then(() => callback(storage));
       tail = run.catch(() => {});
       return run;
     },
   };
-  return { storage };
+  return { storage, get alarmAt() { return alarmAt; } };
 }
 
 test("connection link store creates an opaque, short-lived token bound to one Telegram user", async () => {
@@ -1796,4 +1800,113 @@ test("broadcast review state cannot be reclaimed or overwritten by a new draft",
   assert.equal((await post({ ownerTelegramId, action: "begin" })).status, 409);
   const current = await post({ ownerTelegramId, action: "get" });
   assert.equal((await current.json()).draft.status, "review_required");
+});
+
+
+test("broadcast enqueue durably schedules the Durable Object alarm", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+  await post("begin");
+  await post("save", { text: "queued broadcast" });
+  await post("claim");
+  await post("initialize", { recipientIds: [2001, 2002] });
+  const queued = await post("enqueue");
+  assert.equal(queued.status, 200);
+  assert.equal((await queued.json()).draft.status, "queued");
+  assert.ok(state.alarmAt > Date.now());
+});
+
+test("broadcast alarm sends one recipient and durably advances before scheduling the next alarm", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+  await post("begin");
+  await post("save", { text: "queued broadcast" });
+  await post("claim");
+  await post("initialize", { recipientIds: [2001, 2002] });
+  await post("enqueue");
+  const calls = [];
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async (url, init) => {
+      calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: calls.length } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  await store.alarm({}, env);
+  let draft = (await (await post("get")).json()).draft;
+  assert.equal(draft.status, "queued");
+  assert.equal(draft.nextIndex, 1);
+  assert.equal(draft.deliveredCount, 1);
+  assert.equal(calls.filter((call) => call.method === "sendMessage").length, 1);
+  assert.ok(state.alarmAt > Date.now());
+  await store.alarm({}, env);
+  draft = (await (await post("get")).json()).draft;
+  assert.equal(draft.status, "completed");
+  assert.equal(draft.nextIndex, 2);
+  assert.equal(draft.deliveredCount, 2);
+});
+
+test("broadcast alarm locks an ambiguous send for Owner review without automatic retry", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+  await post("begin");
+  await post("save", { text: "uncertain" });
+  await post("claim");
+  await post("initialize", { recipientIds: [2001] });
+  await post("enqueue");
+  let sends = 0;
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async () => { sends += 1; throw new TypeError("connection reset"); },
+  };
+  await store.alarm({}, env);
+  const draft = (await (await post("get")).json()).draft;
+  assert.equal(draft.status, "review_required");
+  assert.equal(draft.nextIndex, 0);
+  assert.equal(draft.reviewRecipientId, 2001);
+  assert.equal(sends, 1);
+  assert.equal(state.alarmAt, null);
+  await store.alarm({}, env);
+  assert.equal(sends, 1);
+});
+
+test("broadcast alarm converts a stale in-flight attempt to Owner review after crash recovery", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  await state.storage.put("broadcast:1001", {
+    status: "sending", text: "uncertain", recipientIds: [2001], nextIndex: 0,
+    deliveredCount: 0, failedCount: 0, inFlightIndex: 0,
+    inFlightAttemptId: "attempt-1", inFlightAt: Date.now() - 60_000,
+  });
+  let sends = 0;
+  await store.alarm({}, {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async () => { sends += 1; return new Response(JSON.stringify({ ok: true, result: {} })); },
+  });
+  const draft = await state.storage.get("broadcast:1001");
+  assert.equal(draft.status, "review_required");
+  assert.equal(draft.reviewIndex, 0);
+  assert.equal(draft.reviewRecipientId, 2001);
+  assert.equal(sends, 0);
 });
