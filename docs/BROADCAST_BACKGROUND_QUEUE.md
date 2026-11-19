@@ -1,18 +1,18 @@
 # Broadcast Background Queue — Design and Safety Notes
 
-**Status:** Implemented on PR #44 (source-only; not deployed). Broadcast confirmation now hands off to the existing `ConnectionLinkStore` Durable Object alarm queue.
+**Status:** Implemented on PR #46 (source-only; not deployed). Owner confirmation hands off to the existing `ConnectionLinkStore` Durable Object alarm queue; the webhook does not iterate recipients.
 
 ## 1. Current execution path and limits
 
-The Owner confirmation callback is handled by `handleWebhook()` → `handleCallback()` → `handleOwnerCallback()`. The `owner:broadcast:confirm` branch currently:
+The Owner confirmation callback is handled by `handleWebhook()` → `handleCallback()` → `handleOwnerCallback()`. The `owner:broadcast:confirm` branch:
 
 1. Claims the Owner's draft in the `ConnectionLinkStore` Durable Object.
 2. Snapshots active MEMBER Telegram IDs, sorted and deduplicated, if the recipient snapshot does not already exist.
-3. Sends each message sequentially from the webhook callback.
-4. Advances the Durable Object cursor after each confirmed Telegram API success or recipient-specific 400/403 rejection.
-5. Sleeps 50 ms between recipients and returns only after the whole loop stops or finishes.
+3. Persists the queue state and arms a Durable Object alarm before returning the webhook response.
+4. The alarm processes one recipient per invocation through the central `telegramApi()` safety gate.
+5. Confirmed success or a definite recipient-specific 400/403 rejection advances the durable cursor; ambiguous delivery is locked for Owner review.
 
-The recipient snapshot is capped at 5,000 IDs. The draft, cursor, and counters survive Worker restarts because they are stored in Durable Object storage. However, the webhook request remains open for the entire loop. The early `answerCallbackQuery` only dismisses Telegram's spinner; it does not detach the work from the webhook response. A large audience can therefore exceed practical webhook/Worker execution windows, cause Telegram to retry the update, and leave a durable draft in `sending` if the invocation terminates before its release/clear path.
+The recipient snapshot is capped at 5,000 IDs. The draft, cursor, counters, and in-flight attempt marker survive Worker restarts because they are stored in Durable Object storage. The webhook no longer remains open for the recipient loop. The queue uses the existing single `ConnectionLinkStore` Durable Object alarm, so the current design supports one active broadcast at a time for the configured Owner; multiple independent Owners would require a separately designed scheduler.
 
 ## 2. Existing idempotency and resume semantics
 
@@ -68,9 +68,9 @@ Durable Object alarms are preferable to using `ctx.waitUntil()` as the queue its
 - Production D1 migrations, bindings, secrets, webhook configuration, live Telegram tests, merge, and deploy remain outside this PR's scope.
 
 
-## 7. Incremental safeguard now present on PR #44
+## 7. Earlier synchronous-path safeguard (superseded by the alarm queue)
 
-The full alarm-driven queue remains a follow-up, but the current synchronous path now has a narrow duplicate-prevention guard:
+Before the alarm queue was introduced, the synchronous path gained a narrow duplicate-prevention guard. The `review_required` transition remains part of the durable state model and is also used by the alarm worker:
 
 - A non-recipient-specific, non-Safety-Gate failure during a recipient send is treated as ambiguous. This includes a rejected network fetch and Telegram 5xx/unknown responses.
 - The Durable Object compare-and-set transition stores `status = review_required`, `reviewIndex`, and the exact `reviewRecipientId`; `nextIndex` and counters do not advance.
@@ -78,7 +78,7 @@ The full alarm-driven queue remains a follow-up, but the current synchronous pat
 - A 400/403 recipient-specific rejection remains a definite failure and advances the cursor. A closed Safety Gate, 429, or 401 follows the existing pause/release path and does not advance the cursor.
 - The Owner can explicitly discard the draft. There is not yet a UI action to mark the uncertain attempt delivered or intentionally retry it; those resolution controls belong in the dedicated queue/review phase.
 
-This guard reduces duplicate risk but does not make the current webhook loop asynchronous or recover an invocation that is terminated before it can persist the review transition.
+The alarm-driven implementation supersedes the synchronous recipient loop described in this historical section. The guard's key invariant remains: an ambiguous recipient is never automatically resent.
 
 
 ## 8. Alarm queue implementation on PR #44
