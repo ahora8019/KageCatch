@@ -119,6 +119,38 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.completed, [("job-1", "recognizer", 1)])
         self.assertEqual(reviews.calls, [])
 
+    async def test_worker_loop_survives_transient_queue_recovery_error(self):
+        class RecoveringQueue(FakeQueue):
+            def __init__(self, stop_event):
+                super().__init__(None)
+                self.calls = 0
+                self.stop_event = stop_event
+            async def recover_expired(self):
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError("temporary storage error")
+                self.stop_event.set()
+                return 0
+
+        import asyncio
+        stop = asyncio.Event()
+        queue = RecoveringQueue(stop)
+        worker = RecognitionWorker(
+            queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer",
+        )
+        self.assertEqual(await worker.run_forever(stop_event=stop, idle_sleep=0.001), 0)
+        self.assertEqual(queue.calls, 2)
+
+    async def test_non_finite_retry_delay_is_rejected(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ValueError):
+                RecognitionWorker(
+                    queue=FakeQueue(None), resolver=FakeResolver(),
+                    review_queue=FakeReviewQueue(), worker_id="recognizer",
+                    retry_delay=value,
+                )
+
     async def test_empty_queue_is_idle(self):
         worker = RecognitionWorker(queue=FakeQueue(None), resolver=FakeResolver(),
                                    review_queue=FakeReviewQueue(), worker_id="recognizer")
