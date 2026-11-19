@@ -2272,3 +2272,60 @@ test("Owner bot requires a second explicit callback before blocking or unblockin
   assert.equal((await (await post("/user", { telegramUserId: 2002 })).json()).user.status, "blocked");
 });
 
+
+
+test("Owner broadcast cancellation cannot clear a recipient claimed by an alarm during Telegram I/O", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const post = (action, extra = {}) => store.fetch(new Request("https://do.internal/broadcast", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ownerTelegramId: 1001, action, ...extra }),
+  }));
+
+  await post("begin");
+  await post("save", { text: "race-safe cancellation" });
+  await post("claim");
+  await post("initialize", { recipientIds: [2001] });
+  await post("enqueue");
+
+  let notifySendStarted;
+  let releaseTelegram;
+  const sendStarted = new Promise((resolve) => { notifySendStarted = resolve; });
+  const sendGate = new Promise((resolve) => { releaseTelegram = resolve; });
+  const env = {
+    TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    FETCH: async () => {
+      notifySendStarted();
+      await sendGate;
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 7101 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+
+  const alarmRun = store.alarm({}, env);
+  await sendStarted;
+
+  const cancellation = await post("clear");
+  assert.equal(cancellation.status, 409);
+  assert.deepEqual(await cancellation.json(), { error: "broadcast_delivery_in_flight" });
+
+  const inFlight = (await (await post("get")).json()).draft;
+  assert.equal(inFlight.status, "sending");
+  assert.equal(inFlight.inFlightIndex, 0);
+  assert.equal(typeof inFlight.inFlightAttemptId, "string");
+  assert.ok(state.alarmAt > Date.now(), "the watchdog alarm must remain armed during delivery");
+
+  releaseTelegram();
+  await alarmRun;
+
+  const completed = (await (await post("get")).json()).draft;
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.nextIndex, 1);
+  assert.equal(completed.deliveredCount, 1);
+  assert.equal(completed.inFlightAttemptId, null);
+});
