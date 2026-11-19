@@ -301,3 +301,23 @@ test("Owner broadcast cancel is explicit and does not clear an in-flight recipie
   assert.equal(inFlight.status, 409);
   assert.equal((await state.storage.get("broadcast:" + OWNER_ID)).status, "sending");
 });
+
+test("Owner Mini App exposes the management surface and its inline script parses", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel", {
+    method: "GET",
+  }), {});
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  for (const id of [
+    "admin-nav", "view-admin", "owner-summary", "owner-members",
+    "owner-invites", "owner-broadcast", "safety-status", "safety-chats",
+  ]) assert.ok(html.includes('id="' + id + '"'), "missing Owner panel element: " + id);
+  assert.match(html, /مدیریت اعضا/);
+  assert.match(html, /مدیریت دعوت‌ها/);
+  assert.match(html, /وضعیت پیام همگانی/);
+  assert.match(html, /initData/);
+
+  const inline = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)];
+  assert.equal(inline.length, 1, "the panel should contain one nonce-protected inline controller script");
+  assert.doesNotThrow(() => new Function(inline[0][1]), "the embedded Owner panel script must parse before browser execution");
+});
