@@ -946,9 +946,13 @@ export class ConnectionLinkStore {
     }
     if (url.pathname === '/broadcast') {
       const { ownerTelegramId, action, text } = body || {};
-      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      if (!Number.isSafeInteger(ownerTelegramId) || ownerTelegramId <= 0 || !['begin','get','save','claim','initialize','advance','release','review','clear'].includes(action)) return json({ error: 'invalid_request' }, 400);
       const key = 'broadcast:' + ownerTelegramId;
       if (action === 'begin') {
+        const current = await this.state.storage.get(key);
+        if (current && ['awaiting_confirmation', 'sending', 'review_required'].includes(current.status)) {
+          return json({ error: 'broadcast_already_active', status: current.status }, 409);
+        }
         await this.state.storage.put(key, { status: 'awaiting_text', text: null, updatedAt: Date.now() });
         return json({ status: 'awaiting_text' });
       }
@@ -992,6 +996,26 @@ export class ConnectionLinkStore {
           return initialized;
         });
         return draft ? json({ draft }) : json({ error: 'broadcast_not_claimed' }, 409);
+      }
+      if (action === 'review') {
+        const { expectedIndex } = body || {};
+        if (!Number.isSafeInteger(expectedIndex)) return json({ error: 'invalid_broadcast_review' }, 400);
+        const draft = await this.state.storage.transaction(async (txn) => {
+          const current = await txn.get(key);
+          if (!current || current.status !== 'sending' || !Array.isArray(current.recipientIds)
+            || current.nextIndex !== expectedIndex || expectedIndex >= current.recipientIds.length) return null;
+          const reviewed = {
+            ...current,
+            status: 'review_required',
+            reviewIndex: expectedIndex,
+            reviewRecipientId: current.recipientIds[expectedIndex],
+            reviewReason: 'ambiguous_delivery',
+            updatedAt: Date.now(),
+          };
+          await txn.put(key, reviewed);
+          return reviewed;
+        });
+        return draft ? json({ draft }) : json({ error: 'broadcast_review_conflict' }, 409);
       }
       if (action === 'advance') {
         const { expectedIndex, outcome } = body || {};
@@ -1177,14 +1201,41 @@ async function handleOwnerCallback(callback, env) {
   }
   if (data === 'owner:settings') return { text: '⚙️ تنظیمات سراسری\n\nاین بخش فقط در اختیار Owner است. تغییرات عملیاتی تا اتصال Python Core غیرفعال‌اند.', keyboard: BACK_MENU };
   if (data === 'owner:broadcast') {
+    const { draft: current } = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'get' });
+    if (current && ['awaiting_confirmation', 'sending', 'review_required'].includes(current.status)) {
+      const reviewRequired = current.status === 'review_required';
+      return {
+        text: reviewRequired
+          ? '⚠️ یک نتیجهٔ ارسال نامشخص برای بررسی Owner قفل شده است. هیچ ارسال مجددی انجام نمی‌شود؛ پیش‌نویس را بررسی یا صریحاً لغو کن.'
+          : '⚠️ یک پیش‌نویس یا ارسال قبلی هنوز تعیین‌تکلیف نشده است. ابتدا همان مورد را ادامه بده یا لغو کن.',
+        keyboard: { inline_keyboard: [[{ text: '🗑️ لغو پیش‌نویس', callback_data: 'owner:broadcast:cancel' }], ...BACK_MENU.inline_keyboard] },
+        alert: true,
+      };
+    }
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'begin' });
-    return { text: '📣 پیام همگانی\n\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.', keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] } };
+    return { text: '📣 پیام همگانی\\n\\nمتن پیام را در همین چت بفرست. قبل از ارسال، پیش‌نمایش می‌بینی و باید تأیید کنی.', keyboard: { inline_keyboard: [[{ text: 'لغو', callback_data: 'owner:broadcast:cancel' }]] } };
   }
   if (data === 'owner:broadcast:cancel') {
     await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'clear' });
     return { text: 'ارسال همگانی لغو شد.', keyboard: BACK_MENU };
   }
   if (data === 'owner:broadcast:confirm') {
+    const { draft: current } = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'get' });
+    if (current?.status === 'review_required') {
+      return {
+        text: '⚠️ نتیجهٔ ارسال برای مخاطب ' + current.reviewRecipientId
+          + ' نامشخص است. برای جلوگیری از ارسال تکراری، پیش‌نویس در وضعیت review_required قفل شده و فقط با بررسی Owner قابل تعیین‌تکلیف است.',
+        keyboard: { inline_keyboard: [[{ text: '🗑️ لغو پیش‌نویس', callback_data: 'owner:broadcast:cancel' }], ...BACK_MENU.inline_keyboard] },
+        alert: true,
+      };
+    }
+    if (current?.status === 'sending') {
+      return {
+        text: '⏳ این ارسال هنوز در وضعیت پردازش است. برای جلوگیری از ارسال تکراری، تأیید دیگری اجرا نشد.',
+        keyboard: BACK_MENU,
+        alert: true,
+      };
+    }
     const claimed = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'claim' });
     const messageText = claimed.draft?.text;
     if (typeof messageText !== 'string') return { text: 'پیش‌نویس معتبری برای ارسال وجود ندارد.', keyboard: BACK_MENU, alert: true };
@@ -1210,7 +1261,7 @@ async function handleOwnerCallback(callback, env) {
         await telegramApi(env, 'sendMessage', { chat_id: recipientId, text: messageText });
       } catch (error) {
         const recipientSpecificFailure = error?.kind === "access_denied" || error?.kind === "invalid_request";
-        if (isTelegramSafetyStop(error) || !recipientSpecificFailure) {
+        if (isTelegramSafetyStop(error)) {
           const released = await registryRequest(env, '/broadcast', { ownerTelegramId: callback.from.id, action: 'release' });
           const saved = released.draft || draft;
           const retryAfterSeconds = Number.isSafeInteger(error?.retryAfterSeconds)
@@ -1222,16 +1273,29 @@ async function handleOwnerCallback(callback, env) {
             ? "اعتبار بات نیاز به بررسی Owner دارد."
             : retryAfterSeconds
               ? "حداقل " + retryAfterSeconds + " ثانیه مکث لازم است."
-              : "پس از رفع خطای موقت دوباره تلاش کن.";
+              : "پس از بازشدن Safety Gate می‌توان با تأیید Owner ادامه داد.";
           return {
-            text: "⚠️ ارسال همگانی متوقف شد.\n\nموفق: " + (saved.deliveredCount || 0)
-              + "\nناموفق: " + (saved.failedCount || 0)
-              + "\nباقی‌مانده: " + Math.max(0, recipients.length - saved.nextIndex)
-              + "\n" + pauseText + "\nپیش‌نویس و نقطهٔ ادامه حفظ شدند.",
+            text: "⚠️ ارسال همگانی متوقف شد.\\n\\nموفق: " + (saved.deliveredCount || 0)
+              + "\\nناموفق: " + (saved.failedCount || 0)
+              + "\\nباقی‌مانده: " + Math.max(0, recipients.length - saved.nextIndex)
+              + "\\n" + pauseText + "\\nپیش‌نویس و نقطهٔ ادامه حفظ شدند.",
             keyboard: { inline_keyboard: [[{ text: "🔁 ادامهٔ ارسال", callback_data: "owner:broadcast:confirm" }], ...BACK_MENU.inline_keyboard] },
           };
         }
-        outcome = "failed";
+        if (recipientSpecificFailure) {
+          outcome = "failed";
+        } else {
+          await registryRequest(env, '/broadcast', {
+            ownerTelegramId: callback.from.id, action: 'review', expectedIndex: index,
+          });
+          return {
+            text: "⚠️ نتیجهٔ ارسال برای مخاطب " + recipientId + " نامشخص است.\\n\\n"
+              + "برای جلوگیری از ارسال تکراری، ارسال همگانی متوقف و در وضعیت review_required قفل شد. "
+              + "نقطهٔ ادامه روی همین مخاطب باقی مانده؛ Owner باید نتیجه را بررسی کند. "
+              + "هیچ تلاش مجدد خودکاری انجام نمی‌شود.",
+            keyboard: { inline_keyboard: [[{ text: "🗑️ لغو پیش‌نویس", callback_data: "owner:broadcast:cancel" }], ...BACK_MENU.inline_keyboard] },
+          };
+        }
       }
       const progress = await registryRequest(env, '/broadcast', {
         ownerTelegramId: callback.from.id, action: 'advance', expectedIndex: index, outcome,
