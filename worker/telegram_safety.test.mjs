@@ -95,7 +95,7 @@ function safetyDb(initial = {}) {
 test("global send permit is stored in D1 and enforces a shared cooldown", async () => {
   const db = safetyDb();
   assert.deepEqual(await acquireTelegramSendPermit(db, 1000, 1000), { allowed: true, retryAfterMs: 0 });
-  assert.deepEqual(await acquireTelegramSendPermit(db, 1500, 1000), { allowed: false, retryAfterMs: 500 });
+  await assert.rejects(() => acquireTelegramSendPermit(db, 1500, 1000), (error) => error instanceof TelegramSafetyGateError && error.kind === "cooldown" && error.retryAfterMs === 500);
   assert.deepEqual(await acquireTelegramSendPermit(db, 2000, 1000), { allowed: true, retryAfterMs: 0 });
 });
 
