@@ -2,6 +2,8 @@ name: KageCatch CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 # Keep only the newest run for this PR/branch. Older queued runs are waste.
 concurrency:
@@ -36,4 +38,4 @@ jobs:
         with:
           node-version: "22"
       - name: Run Worker tests
-        run: node --test worker/index.test.mjs worker/keepalive.test.mjs
+        run: node --test worker/*.test.mjs
