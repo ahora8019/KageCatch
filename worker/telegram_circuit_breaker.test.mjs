@@ -28,11 +28,17 @@ function circuitDb() {
               last_error_code: null, updated_at_ms: now,
             });
           } else if (sql.includes("UPDATE telegram_bot_chat_circuit_breaker")) {
-            const [chatId, failureCount, isOpen, lastErrorCode, now] = values;
-            chats.set(chatId, {
-              chat_id: chatId, consecutive_failures: failureCount,
-              is_open: isOpen, last_error_code: lastErrorCode, updated_at_ms: now,
-            });
+            if (sql.includes("consecutive_failures = 0")) {
+              const [now, chatId] = values;
+              const current = chats.get(chatId);
+              if (current) chats.set(chatId, { ...current, consecutive_failures: 0, last_error_code: null, updated_at_ms: now });
+            } else {
+              const [chatId, failureCount, isOpen, lastErrorCode, now] = values;
+              chats.set(chatId, {
+                chat_id: chatId, consecutive_failures: failureCount,
+                is_open: isOpen, last_error_code: lastErrorCode, updated_at_ms: now,
+              });
+            }
           }
           return { meta: { changes: 1 } };
         },
