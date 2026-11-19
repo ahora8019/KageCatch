@@ -20,17 +20,22 @@ class FakeD1 {
           return { meta: { changes: 1 } };
         }
         if (sql.startsWith("UPDATE panel_requests SET status = 'completed'")) {
-          const [panel_message_id, request_id] = v;
-          const row = db.rows.get(request_id); if (row) Object.assign(row, { status: "completed", panel_message_id });
-          return { meta: { changes: row ? 1 : 0 } };
+          const [panel_message_id, request_id, lease_token] = v;
+          const row = db.rows.get(request_id);
+          const changed = Boolean(row && row.status === "processing" && row.lease_token === lease_token);
+          if (changed) Object.assign(row, { status: "completed", panel_message_id, lease_token: null, lease_expires_at: null });
+          return { meta: { changes: changed ? 1 : 0 } };
         }
         if (sql.startsWith("UPDATE panel_requests SET status = 'closed'")) {
           const [request_id] = v; const row = db.rows.get(request_id); if (row) row.status = "closed";
           return { meta: { changes: row ? 1 : 0 } };
         }
-        if (sql.startsWith("UPDATE panel_requests SET status = ?, last_error_code")) {
-          const [status, request_id] = v; const row = db.rows.get(request_id); if (row) row.status = status;
-          return { meta: { changes: row ? 1 : 0 } };
+        if (sql.startsWith("UPDATE panel_requests SET status = ?, lease_token")) {
+          const [status, request_id, lease_token] = v;
+          const row = db.rows.get(request_id);
+          const changed = Boolean(row && row.status === "processing" && row.lease_token === lease_token);
+          if (changed) Object.assign(row, { status, lease_token: null, lease_expires_at: null });
+          return { meta: { changes: changed ? 1 : 0 } };
         }
         return { meta: { changes: 0 } };
       },
@@ -38,9 +43,11 @@ class FakeD1 {
         const v = this.values;
         if (sql.includes("WHERE idempotency_key = ?")) return [...db.rows.values()].find((r) => r.idempotency_key === v[0]) || null;
         if (sql.includes("WHERE request_id = ?") && sql.startsWith("UPDATE")) {
-          const row = db.rows.get(v[0]);
+          const [lease_token, request_id] = v;
+          const row = db.rows.get(request_id);
           if (!row || row.status !== "pending") return null;
-          row.status = "processing"; row.attempts += 1; return { ...row };
+          Object.assign(row, { status: "processing", attempts: row.attempts + 1, lease_token, lease_expires_at: "2099-01-01 00:00:00" });
+          return { ...row };
         }
         if (sql.includes("WHERE request_id = ?")) return db.rows.get(v[0]) || null;
         return null;
