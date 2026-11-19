@@ -129,7 +129,7 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             queue._deserialize(record)
 
-    async def test_rejects_inverted_stored_expiry_window(self):
+    async def test_rejects_non_positive_stored_expiry_window(self):
         store = FakeDurableStore()
         queue = PersistentManualReviewQueue(store=store)
         item = await queue.enqueue(
@@ -137,9 +137,10 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
             candidates=("Megumin",),
         )
         record = dict(store.records[item.review_id])
-        record["expires_at"] = "2026-11-08T11:59:59+00:00"
-        with self.assertRaises(RuntimeError):
-            queue._deserialize(record)
+        for expires_at in ("2026-11-08T12:00:00+00:00", "2026-11-08T11:59:59+00:00"):
+            record["expires_at"] = expires_at
+            with self.assertRaises(RuntimeError):
+                queue._deserialize(record)
 
     async def test_expiry_delegates_to_durable_store(self):
         class ExpiringStore(FakeDurableStore):
