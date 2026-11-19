@@ -1,5 +1,5 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
-import { TelegramApiError } from "./telegram_safety.mjs";
+import { TelegramApiError, acquireTelegramSendPermit, recordTelegramApiFailure } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -202,8 +202,20 @@ async function miniAppSession(request, env) {
   });
 }
 
+const TELEGRAM_MUTATING_METHODS = new Set([
+  "sendMessage", "sendPhoto", "sendDocument", "sendVideo", "sendAnimation", "sendAudio", "sendVoice",
+  "sendLocation", "sendVenue", "sendContact", "sendPoll", "sendDice", "sendChatAction",
+  "editMessageText", "editMessageCaption", "editMessageMedia", "editMessageReplyMarkup",
+  "deleteMessage", "answerCallbackQuery", "answerInlineQuery", "pinChatMessage", "unpinChatMessage",
+  "setWebhook", "deleteWebhook", "banChatMember", "unbanChatMember", "restrictChatMember",
+  "promoteChatMember", "setChatTitle", "setChatDescription", "leaveChat",
+]);
+
 async function telegramApi(env, method, payload = {}) {
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
+  if (TELEGRAM_MUTATING_METHODS.has(method)) {
+    await acquireTelegramSendPermit(env.KAGECATCH_DB, Date.now(), 100);
+  }
   const requestFetch = env.FETCH || fetch;
   const response = await requestFetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: "POST",
@@ -211,7 +223,13 @@ async function telegramApi(env, method, payload = {}) {
     body: JSON.stringify(payload),
   });
   const result = await response.json();
-  if (!response.ok || !result.ok) throw new TelegramApiError(result, response.status);
+  if (!response.ok || !result.ok) {
+    const error = new TelegramApiError(result, response.status);
+    if (error.kind === "rate_limited" || error.kind === "invalid_credentials") {
+      await recordTelegramApiFailure(env.KAGECATCH_DB, error, Date.now());
+    }
+    throw error;
+  }
   return result.result;
 }
 
