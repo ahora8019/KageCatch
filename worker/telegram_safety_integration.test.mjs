@@ -21,28 +21,23 @@ class FakeSafetyDb {
   }
 
   prepare(sql) {
+    const db = this;
     let values = [];
     return {
-      bind: (...args) => { values = args; return this.prepareBound(sql, values); },
-    };
-  }
-
-  prepareBound(sql, boundValues) {
-    const db = this;
-    return {
+      bind(...args) { values = args; return this; },
       async first() {
-        const values = boundValues;
         if (sql.includes("INSERT INTO telegram_bot_chat_circuit_breaker")) {
           const [chatId, errorCode, now] = values;
-          const current = db.circuits.get(String(chatId)) || {
-            chat_id: String(chatId), consecutive_failures: 0, is_open: 0,
+          const key = String(chatId);
+          const current = db.circuits.get(key) || {
+            chat_id: key, consecutive_failures: 0, is_open: 0,
             last_error_code: null, updated_at_ms: now,
           };
           current.consecutive_failures = Math.min(3, current.consecutive_failures + 1);
           current.is_open = current.consecutive_failures >= 3 ? 1 : current.is_open;
           current.last_error_code = errorCode;
           current.updated_at_ms = now;
-          db.circuits.set(String(chatId), current);
+          db.circuits.set(key, current);
           return { consecutive_failures: current.consecutive_failures, is_open: current.is_open };
         }
         if (sql.startsWith("SELECT") && sql.includes("FROM telegram_bot_chat_circuit_breaker") && sql.includes("WHERE chat_id = ?")) {
@@ -88,7 +83,6 @@ class FakeSafetyDb {
         return null;
       },
       async run() {
-        const values = boundValues;
         if (sql.startsWith("INSERT INTO telegram_bot_chat_pacing")) {
           const [chatId] = values;
           if (!db.pacing.has(String(chatId))) db.pacing.set(String(chatId), 0);
@@ -121,7 +115,6 @@ class FakeSafetyDb {
     };
   }
 }
-
 function createDurableObjectState() {
   const values = new Map();
   let tail = Promise.resolve();
@@ -289,6 +282,17 @@ test("real Telegram send path opens only the failing chat circuit and Owner alon
   );
   assert.equal(networkCalls, 3);
 
+  env.FETCH = async () => {
+    networkCalls += 1;
+    return new Response(JSON.stringify({ ok: true, result: { message_id: 98 } }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  };
+  const independentChatSend = await telegramApi(env, "sendMessage", { chat_id: 2002, text: "other chat remains independent" });
+  assert.equal(independentChatSend.message_id, 98);
+  assert.equal(networkCalls, 4);
+  assert.equal(db.circuits.has("2002"), false);
+
   const member = await createOwnerContext(db, 2002);
   const denied = await worker.fetch(
     recoveryRequest(member.initData, 2001, db.circuits.get("2001").updated_at_ms),
@@ -313,7 +317,7 @@ test("real Telegram send path opens only the failing chat circuit and Owner alon
   };
   const sent = await telegramApi(env, "sendMessage", { chat_id: 2001, text: "after Owner recovery" });
   assert.equal(sent.message_id, 99);
-  assert.equal(networkCalls, 4);
+  assert.equal(networkCalls, 5);
 });
 
 test("future valid Bot API methods fail closed behind the global gate; malformed names never reach fetch", async () => {
