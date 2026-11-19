@@ -130,6 +130,23 @@ test("scheduler claims a queued request once and stores the delivered panel mess
   assert.match(calls[0].payload.reply_markup.inline_keyboard[0][0].callback_data, /^kp:[a-f0-9]{32}:stats$/);
 });
 
+test("stale panel sender cannot complete a request after its lease token is replaced", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(signedRequest(env, {
+    owner_id: "12345", chat_id: -100123456, source_message_id: 998,
+  }), env);
+  const requestId = (await accepted.json()).request_id;
+  const result = await processPanelQueue(env, async () => {
+    // Simulate another processor reclaiming the row after the original lease expired.
+    env.db.rows.get(requestId).lease_token = "new-owner-token";
+    return { message_id: 777 };
+  });
+  assert.deepEqual(result, { processed: 0 });
+  assert.equal(env.db.rows.get(requestId).status, "processing");
+  assert.equal(env.db.rows.get(requestId).panel_message_id, null);
+  assert.equal(env.db.rows.get(requestId).lease_token, "new-owner-token");
+});
+
 test("panel callback is bound to owner, exact group and exact message", async () => {
   const env = envWithDb();
   env.CORE_API_URL = "https://core.example";
