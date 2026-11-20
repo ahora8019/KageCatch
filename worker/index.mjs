@@ -728,6 +728,23 @@ export class ConnectionLinkStore {
       }
       return json({ state: stored });
     }
+    if (url.pathname === '/auth-state') {
+      const { telegramUserId, action, state: authState } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !['get', 'set', 'delete'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      const key = 'telegram-auth-state:' + telegramUserId;
+      if (action === 'delete') { await this.state.storage.delete(key); return json({ status: 'deleted' }); }
+      if (action === 'set') {
+        if (!authState || !Array.isArray(authState.iv) || authState.iv.length !== 12 || !Array.isArray(authState.ciphertext) || authState.ciphertext.length < 16 || authState.ciphertext.length > 2048 || !Number.isSafeInteger(authState.expiresAt) || authState.expiresAt <= Date.now() || authState.expiresAt > Date.now() + 300000) return json({ error: 'invalid_auth_state' }, 400);
+        await this.state.storage.put(key, authState);
+        return json({ status: 'saved' });
+      }
+      const stored = await this.state.storage.get(key);
+      if (!stored || stored.expiresAt <= Date.now()) {
+        if (stored) await this.state.storage.delete(key);
+        return json({ state: null });
+      }
+      return json({ state: stored });
+    }
     if (url.pathname === '/claim-nonce') {
       const { nonce, expiresAt } = body || {};
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
