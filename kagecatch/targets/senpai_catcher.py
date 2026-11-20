@@ -1,18 +1,20 @@
-"""SenpaiCatcher video-spawn recognition using trace.moe scene matching.
+"""SenpaiCatcher video-spawn recognition with independent anime and character lookup.
 
-trace.moe identifies anime scenes. Its response is not treated as a character
-recognition result; character_name therefore remains None unless a future,
-separately validated character recognizer is integrated.
+trace.moe supplies anime-scene context only. A separately injected character
+recognizer may attach a catalog-verified identity; ambiguous or unknown results
+never become catchable character names.
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 from types import SimpleNamespace
 from typing import Any, Mapping, Protocol
 
 from ..models.spawn import CharacterMetadata
+from ..recognition.character_catalog import CharacterRecord, CharacterRecognitionResult
 from .base import BaseTargetAdapter
 
 SPAWN_PHRASE = "A New Character Has Appeared!"
@@ -192,6 +194,7 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
     def __init__(self, *, sender_id: int | None = None, sender_username: str | None = None,
                  frame_extractor: FrameExtractor | None = None,
                  trace_client: TraceMoeClient | None = None,
+                 character_recognizer: Any = None,
                  catch_command_template: str | None = None) -> None:
         if sender_id is None and not sender_username:
             raise ValueError("Configure sender_id or sender_username for SenpaiCatcher")
@@ -199,6 +202,11 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         self.sender_username = sender_username.lstrip("@").casefold() if sender_username else None
         self.frame_extractor = frame_extractor or TelethonFrameExtractor()
         self.trace_client = trace_client or HttpxTraceMoeClient()
+        if character_recognizer is not None and not callable(
+            getattr(character_recognizer, "recognize", None)
+        ):
+            raise ValueError("character_recognizer must expose async recognize(image, media_type=...)")
+        self.character_recognizer = character_recognizer
         if catch_command_template is not None:
             if not isinstance(catch_command_template, str) or "{character_name}" not in catch_command_template:
                 raise ValueError("catch_command_template must contain {character_name}")
@@ -269,12 +277,10 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         results = payload.get("result") if isinstance(payload, Mapping) else None
         if not isinstance(results, list):
             raise MetadataLookupError("trace.moe returned an invalid response")
-        if not results:
-            return CharacterMetadata(anime_name=None, source="trace.moe", character_name=None,
-                                     character_confidence=0.0)
-        first = results[0]
+        first = results[0] if results else {}
         if not isinstance(first, Mapping):
             raise MetadataLookupError("trace.moe result entry is invalid")
+
         anilist = first.get("anilist")
         title = anilist.get("title") if isinstance(anilist, Mapping) else None
         if not isinstance(title, Mapping):
@@ -292,11 +298,52 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         episode = first.get("episode")
         if not isinstance(episode, (int, float, str)) or isinstance(episode, bool):
             episode = None
+
+        character_name = None
+        character_confidence = 0.0
+        recognition_status = (
+            "not_run_no_scene_match" if not results else "not_configured"
+        )
+        recognition_reason = None
+        if self.character_recognizer is not None:
+            try:
+                recognition = await self.character_recognizer.recognize(
+                    bytes(frame), media_type="image/jpeg"
+                )
+                if isinstance(recognition, CharacterRecognitionResult):
+                    recognition_status = recognition.status
+                    recognition_reason = recognition.reason
+                    confidence = recognition.confidence
+                    record = recognition.character
+                    if (
+                        recognition.status == "known"
+                        and isinstance(record, CharacterRecord)
+                        and isinstance(confidence, (int, float))
+                        and not isinstance(confidence, bool)
+                        and math.isfinite(float(confidence))
+                        and 0.0 <= float(confidence) <= 1.0
+                    ):
+                        character_name = record.canonical_name
+                        character_confidence = float(confidence)
+                else:
+                    recognition_status = "invalid_model_output"
+            except Exception:
+                # Anime-scene metadata remains useful; character identity fails closed.
+                recognition_status = "model_unavailable"
+                recognition_reason = None
+
+        additional = {
+            key: first[key] for key in ("from", "to", "anilist") if key in first
+        }
+        additional["character_recognition_status"] = recognition_status
+        if recognition_reason is not None:
+            additional["character_recognition_reason"] = recognition_reason
         return CharacterMetadata(
-            anime_name=anime_name, source="trace.moe", character_name=None,
-            episode=episode, similarity=similarity, anime_confidence=similarity,
-            character_confidence=0.0,
-            additional={key: first[key] for key in ("from", "to", "anilist") if key in first},
+            anime_name=anime_name, source=self.target_name,
+            character_name=character_name, episode=episode,
+            similarity=similarity, anime_confidence=similarity,
+            character_confidence=character_confidence,
+            additional=additional,
         )
 
     def get_catch_command(self, character_name: str) -> str:
