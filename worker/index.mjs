@@ -460,7 +460,7 @@ async function registryRequest(env, path, payload) {
   return response.json();
 }
 
-async function authStateRequest(env, telegramUserId, action, state = null) {
+// OTP state is encrypted at rest with AES-GCM and authenticated to its Telegram user ID.\nasync function authStateRequest(env, telegramUserId, action, state = null) {
   if (!env.CONNECT_LINKS) throw new Error("Temporary auth state store unavailable");
   const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
   let encrypted = null;
