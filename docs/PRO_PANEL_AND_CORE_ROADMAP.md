@@ -19,17 +19,17 @@ This branch introduces the first professional Mini App UI and its initial identi
 
 ## Implementation status on `work/stages-5-9`
 
-The following is repository/test status, not a deployment claim:
+The following is repository implementation status, not a deployment claim:
 
 | Roadmap area | Implemented in this branch | Remaining gate |
 |---|---|---|
 | Stage 5 — Queue Engine | SQLite durable job queue, idempotency keys, priority/run-after scheduling, bounded retries/dead-letter handling, lease-generation fencing and renewal; recognition worker heartbeat and deterministic review handoff | SQLite queue is single-host only; production needs a shared durable backend and persistent Core host |
 | Stage 6 — Telegram Control Bot | Role-aware member/Owner menus, invitation-gated registration, signed webhook replay guard, durable group-panel request queue, durable broadcast queue using Durable Object alarms, Telegram API pacing/rate-limit/circuit safety | No production Worker deployment or live Telegram broadcast; external `sendMessage` is not exactly-once |
 | Stage 7 — Owner Panel | Owner-only responsive Persian RTL panel with member block/unblock, invite creation/revocation, broadcast progress/review, and Safety Monitor recovery controls; every Owner API rechecks signed Mini App identity and server-side role | Member list is intentionally capped to the 30 most recently active records in the current dashboard response; broader pagination/search remains future work |
-| Stage 8 — Integration/security tests | Worker webhook, Owner authorization, broadcast crash recovery/review, panel queue leases, Telegram safety gates, Python queue/worker/session tests | Unit/integration tests do not replace controlled end-to-end testing with a real Telegram account and deployed preview |
+| Stage 8 — Integration/security tests | Worker webhook, Owner authorization, broadcast crash recovery/review, panel queue leases, Telegram safety gates, Python queue/worker/session tests; Catch ingress and manual-review queue integration regressions | Unit/integration tests do not replace controlled end-to-end testing with a real Telegram account and deployed preview |
 | Stage 9 — Production preparation | Deployment and hosting constraints documented; migrations and environment bindings identified | Persistent Core hosting, secret rotation, deployment review, live controlled verification, monitoring and rollback plan are still required |
 
-Latest verified CI for this branch: Worker tests and Python tests both passed on the current PR head. This is CI evidence only; it does not mean the branch is merged, deployed, or production-ready.
+Latest confirmed green CI run: `2d1aac2d88379df033d173d1bf422c213e2d4783`. It predates the current branch HEAD and does not validate the latest changes. The current HEAD has no reported check runs; do not treat this branch as CI-verified, merged, deployed, or production-ready.
 
 ## Security rules
 
@@ -73,9 +73,10 @@ The currently wired Core authorization path is the browser-based Phone Login flo
 - This authorization path has unit-level coverage only. No real Telegram account has been connected or validated; require explicit user approval and a controlled end-to-end security review before enabling real-account use.
 
 ### Phase E — Recognition and Catch
-- Spawn ingestion and media normalization.
-- Image/video frame recognition with confidence calibration and review gates.
-- Quotas, atomic deduplication, adapter dispatch, response listeners, and verified receipts.
+- Spawn Detector → Core incoming-listener routing → guarded CatchPipeline integration are implemented; when CatchPipeline is not injected, the prior manual-review-only pipeline remains the default.
+- CatchPipeline requires explicit character identity/confidence, atomic admission, an enabled engine, per-user opt-in, and a matching target adapter. Otherwise it routes the already-detected spawn to manual review.
+- Image/video frame recognition with calibrated character-level confidence remains incomplete. trace.moe scene similarity and anime-to-cast mappings must not be used as character identity.
+- Target-specific response listeners/verifiers are still required before any sent command can be trusted as verified.
 - Start in dry-run/paper mode; no live Catch until end-to-end tests pass.
 
 ## Deployment policy
