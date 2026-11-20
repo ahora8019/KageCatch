@@ -168,17 +168,25 @@ class HttpxTraceMoeClient:
         except ImportError as exc:  # pragma: no cover - environment-specific
             raise MetadataLookupError("Install the project API dependencies to use trace.moe") from exc
         try:
+            import json
+
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False,
                                          transport=self.transport) as client:
-                response = await client.post(
+                async with client.stream(
+                    "POST",
                     self.endpoint,
                     files={"image": ("frame.jpg", image, "image/jpeg")},
                     headers={"Accept": "application/json"},
-                )
-                response.raise_for_status()
-                if len(response.content) > self.max_response_bytes:
-                    raise MetadataLookupError("trace.moe response exceeded the configured size limit")
-                payload = response.json()
+                ) as response:
+                    response.raise_for_status()
+                    response_body = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        if len(chunk) > self.max_response_bytes - len(response_body):
+                            raise MetadataLookupError(
+                                "trace.moe response exceeded the configured size limit"
+                            )
+                        response_body.extend(chunk)
+                payload = json.loads(response_body)
         except MetadataLookupError:
             raise
         except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
