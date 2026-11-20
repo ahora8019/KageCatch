@@ -83,7 +83,7 @@ class RecognitionJobProducerTests(unittest.IsolatedAsyncioTestCase):
         producer = RecognitionJobProducer(detector=detector, queue=queue)
 
         result = await producer.process_spawn(
-            user_id="12345", spawn=spawn(), chat_id=-1001,
+            user_id="12345", spawn=spawn(), chat_id=-1001, media_kind="photo",
         )
 
         self.assertEqual(result, {"status": "queued", "job_id": "job-123"})
@@ -92,6 +92,7 @@ class RecognitionJobProducerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job_type, "spawn.recognize")
         self.assertEqual(options["idempotency_key"], "spawn:12345:-1001:91")
         self.assertEqual(payload["origin"]["source"], "SenpaiCatcherBot")
+        self.assertEqual(payload["origin"]["media_kind"], "photo")
         self.assertNotIn("event", payload)
         self.assertNotIn("session", payload)
 
