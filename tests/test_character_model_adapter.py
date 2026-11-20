@@ -82,6 +82,29 @@ class CharacterModelAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.reason, "unsupported_media_type")
         self.assertEqual(model.calls, [])
 
+    async def test_rejects_non_string_media_type_without_calling_model(self):
+        model = FakeVisionModel([RecognitionCandidate("Sakura", 0.99)])
+        adapter = CharacterModelAdapter(self.engine, model)
+
+        result = await adapter.recognize(b"image-bytes", media_type=[])
+
+        self.assertEqual(result.status, "review")
+        self.assertEqual(result.reason, "unsupported_media_type")
+        self.assertEqual(model.calls, [])
+
+    async def test_candidate_iterator_failure_fails_closed(self):
+        def broken_candidates():
+            yield RecognitionCandidate("Sakura", 0.99)
+            raise RuntimeError("broken candidate stream")
+
+        model = FakeVisionModel(broken_candidates())
+        adapter = CharacterModelAdapter(self.engine, model)
+
+        result = await adapter.recognize(b"image-bytes", media_type="image/jpeg")
+
+        self.assertEqual(result.status, "review")
+        self.assertEqual(result.reason, "invalid_model_output")
+
     async def test_rejects_images_over_configured_byte_limit(self):
         model = FakeVisionModel([RecognitionCandidate("Sakura", 0.99)])
         adapter = CharacterModelAdapter(self.engine, model, max_image_bytes=4)
