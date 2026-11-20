@@ -85,5 +85,17 @@ class CharacterCatalogTests(unittest.TestCase):
         self.assertIsNone(result.character)
 
 
+    def test_alias_candidates_for_same_character_are_not_ambiguous(self):
+        engine = CharacterRecognitionEngine(
+            self.catalog, confidence_threshold=0.8, min_margin=0.1
+        )
+        result = engine.recognize([
+            RecognitionCandidate(name="Sakura", confidence=0.92),
+            RecognitionCandidate(name="Haruno Sakura", confidence=0.89),
+        ])
+        self.assertEqual(result.status, "known")
+        self.assertEqual(result.character.character_id, "sakura-001")
+
+
 if __name__ == "__main__":
     unittest.main()
