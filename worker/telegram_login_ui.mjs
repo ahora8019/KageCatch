@@ -1,10 +1,10 @@
 export function maskLoginCode(code) {
-  if (typeof code !== "string" || !/^\\d{0,8}$/.test(code)) throw new TypeError("Invalid login code");
+  if (typeof code !== "string" || !/^\d{0,8}$/.test(code)) throw new TypeError("Invalid login code");
   return code ? Array.from(code, () => "●").join(" ") : "○ ○ ○ ○ ○";
 }
 
 export function validatePhoneNumber(phone) {
-  return typeof phone === "string" && /^\\+[1-9]\\d{7,14}$/.test(phone.trim());
+  return typeof phone === "string" && /^\+[1-9]\d{7,14}$/.test(phone.trim());
 }
 
 export function buildLoginCodeKeyboard() {
