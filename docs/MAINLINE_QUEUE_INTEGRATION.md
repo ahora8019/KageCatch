@@ -77,3 +77,8 @@ the queue branch must remain unmerged.
 ## Recognition payload media classification
 
 The already-detected Spawn model does not itself carry a media-kind field. The producer therefore accepts an explicit media kind at the enqueue seam and allowlists `video`, `photo`, `image`, `document`, or `unknown`; it no longer labels every job as `video`. When no trustworthy classification is available, the payload must say `unknown`, not guess. The worker independently validates this enum and dead-letters unsupported values. The future CatchPipeline adapter should pass a media kind only when it can derive it from a trusted normalized adapter/event field.
+
+
+## Core ingress guard implemented on the queue branch
+
+The branch Core wiring has been hardened: `create_app` accepts an optional `catch_pipeline`, stores it separately, and selects it ahead of the direct review pipeline for the selfbot incoming handler. The recognition producer and worker may be initialized when the queue is configured, but the producer is no longer bound to raw Telegram events. A regression test configures both a Catch pipeline and the queue and asserts the Catch pipeline remains the only incoming handler. This is a defensive wiring change, not yet the complete queue-to-review adapter: the CatchPipeline manual-review seam still needs to pass validated chat/media origin to `process_spawn` and the worker-to-review delivery path must be tested end-to-end.
