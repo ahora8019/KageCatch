@@ -7,7 +7,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from kagecatch.core_api import InMemoryNonceStore, create_app
+from kagecatch.core_api import InMemoryNonceStore, _stop_recognition_worker, create_app
 
 
 SECRET = "core-test-secret-0123456789abcdef"
@@ -364,3 +364,54 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "persistence_pending"})
         self.assertEqual(self.auth_flow.cancelled, ["2001"])
+
+
+class RecognitionWorkerShutdownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shutdown_drains_active_job_before_returning(self):
+        stop_event = asyncio.Event()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        cancelled = False
+
+        async def worker():
+            nonlocal cancelled
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        task = asyncio.create_task(worker())
+        await started.wait()
+        shutdown = asyncio.create_task(
+            _stop_recognition_worker(stop_event, task, grace_seconds=1.0)
+        )
+        await asyncio.sleep(0)
+        self.assertTrue(stop_event.is_set())
+        release.set()
+        await shutdown
+
+        self.assertTrue(task.done())
+        self.assertFalse(cancelled)
+
+    async def test_shutdown_cancels_worker_after_grace_deadline(self):
+        stop_event = asyncio.Event()
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def worker():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        task = asyncio.create_task(worker())
+        await started.wait()
+        await _stop_recognition_worker(stop_event, task, grace_seconds=0.01)
+
+        self.assertTrue(stop_event.is_set())
+        self.assertTrue(cancelled.is_set())
+        self.assertTrue(task.done())
