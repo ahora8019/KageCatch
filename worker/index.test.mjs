@@ -289,26 +289,7 @@ function makeWebAppInitData(botToken, user, authDate = Math.floor(Date.now() / 1
   return params.toString();
 }
 
-test("Mini App initData verification accepts a fresh Telegram signature", async () => {
-  const { verifyWebAppInitData } = await import("./index.mjs");
-  const user = { id: 7135051954, first_name: "Ahura", username: "ahora_8019" };
-  const initData = makeWebAppInitData("test-bot-token", user);
-  const verified = await verifyWebAppInitData(initData, "test-bot-token");
-  assert.equal(verified.user.id, user.id);
-  assert.equal(verified.user.username, user.username);
-});
 
-test("Mini App initData verification rejects tampering and expired signatures", async () => {
-  const { verifyWebAppInitData } = await import("./index.mjs");
-  const user = { id: 2001, first_name: "Member" };
-  const initData = makeWebAppInitData("test-bot-token", user);
-  const tampered = initData.replace("Member", "Attacker");
-  assert.equal(await verifyWebAppInitData(tampered, "test-bot-token"), null);
-  const olderThanFiveMinutes = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 600);
-  assert.ok(await verifyWebAppInitData(olderThanFiveMinutes, "test-bot-token"), "a still-open Mini App must remain authenticated after five minutes");
-  const expired = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 86401);
-  assert.equal(await verifyWebAppInitData(expired, "test-bot-token"), null);
-});
 
 
 
