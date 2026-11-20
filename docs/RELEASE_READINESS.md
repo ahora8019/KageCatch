@@ -68,10 +68,10 @@
 - [ ] Define an operator contact and incident response path for credential pauses, queue stalls, and uncertain Telegram delivery.
 - [ ] Obtain explicit Owner approval for production migration, Worker deployment, Core deployment, and any live Telegram test. These are separate approvals.
 
-## Known blockers at the time this checklist was added
+## Known blockers — refreshed 2026-11-20
 
-- The current branch has not been synchronized with the latest `main` and PR #46 remains Draft.
-- The latest Broadcast preparation-recovery commit has no reported CI result yet.
+- `main` is at `644af294f776a921bb5dbfec6f51a427a6fd6734`; PR #46 head is `4de9fe91dac73255a3222cdaf000d698d66e3295`. The branch diverged from the common base `b0c4f0fedfb09cc0049d11235dc9ec592396e267`: it is 176 commits ahead and 4 commits behind. The four main-only commits add guarded CatchPipeline ingress, strict fail-closed Catch verification, a bounded sent-message verification cache, and validation that recognition metadata belongs to the detected target. These changes must be reconciled before release; do not treat the old green run on `2d1aac2` as validation of the current head.
+- PR #46 remains Draft. No pull-request workflow run is currently reported for head `4de9fe91dac73255a3222cdaf000d698d66e3295`; the Broadcast preparation-recovery regression test therefore remains unverified by CI on this exact commit.
 - The documented D1 resource is Preview; production database/bindings have not been established here.
 - The Python Core still requires a verified persistent host and durable storage.
 - Real-account authorization and live Catch/Broadcast end-to-end verification have not been performed.
