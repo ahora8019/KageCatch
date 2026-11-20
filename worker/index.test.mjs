@@ -1575,6 +1575,18 @@ test("native account login completes in private Telegram chat with optional 2FA 
 
   const keypadMessage = telegramCalls.find((call) => call.method === "sendMessage" && call.payload.reply_markup?.inline_keyboard?.flat().some((button) => button.callback_data === "auth:submit"));
   assert.ok(keypadMessage);
+  // Malformed auth callbacks must not cancel or clear a valid login flow.
+  assert.equal((await webhook(30, callback(30, "auth:unknown", 77))).status, 200);
+  // A callback originating from another private chat must not act on that user's account.
+  assert.equal((await webhook(31, {
+    callback_query: {
+      id: "cb-31",
+      data: "auth:cancel",
+      from: { id: 500124 },
+      message: { message_id: 77, chat: { id: 500123, type: "private" } },
+    },
+  })).status, 200);
+  assert.equal(coreCalls.some((call) => call.url.endsWith("/connect/cancel")), false);
   const keypadButtons = keypadMessage.payload.reply_markup.inline_keyboard.flat();
   assert.ok(keypadButtons.every((button) => !/[0-9]{4,}/.test(button.callback_data)));
 
