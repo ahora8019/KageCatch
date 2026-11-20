@@ -128,21 +128,33 @@ class CloudflareWorkersAIVisionModel:
             "max_tokens": 64,
         }
 
+        response_body = bytearray()
         try:
-            response = await self._client.post(
+            async with self._client.stream(
+                "POST",
                 self._url,
                 json=payload,
                 headers={"Authorization": f"Bearer {self._api_token}"},
-            )
-            response.raise_for_status()
-            if len(response.content) > _MAX_RESPONSE_BYTES:
-                raise VisionModelProviderError("Cloudflare vision response exceeded its size limit")
-            data = response.json()
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    if len(response_body) + len(chunk) > _MAX_RESPONSE_BYTES:
+                        raise VisionModelProviderError(
+                            "Cloudflare vision response exceeded its size limit"
+                        )
+                    response_body.extend(chunk)
         except VisionModelProviderError:
             raise
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPError as exc:
             # Never include request headers, token values, or raw provider bodies.
             raise VisionModelProviderError("Cloudflare Workers AI request failed") from exc
+
+        try:
+            data = json.loads(response_body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise VisionModelProviderError(
+                "Cloudflare Workers AI returned an invalid response envelope"
+            ) from exc
 
         if not isinstance(data, dict) or data.get("success") is not True:
             raise VisionModelProviderError("Cloudflare Workers AI reported an unsuccessful inference")
