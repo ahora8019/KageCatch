@@ -8,7 +8,7 @@ test("keypad callback data contains actions only, never the typed code", () => {
   assert.deepEqual(buttons.slice(0, 3).map((button) => button.text), ["1", "2", "3"]);
   assert.equal(buttons[9].text, "⌫");
   assert.equal(buttons[11].text, "✅");
-  assert.ok(buttons.every((button) => !/\\d{4,}/.test(button.callback_data)));
+  assert.ok(buttons.every((button) => !/\d{4,}/.test(button.callback_data)));
   assert.ok(buttons.every((button) => button.callback_data.length <= 64));
   assert.equal(maskLoginCode("12345"), "● ● ● ● ●");
 });
