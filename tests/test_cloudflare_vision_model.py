@@ -90,6 +90,23 @@ class CloudflareWorkersAIVisionModelTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.aclose()
 
+    async def test_rejects_unsuccessful_cloudflare_envelope_even_with_response_text(self):
+        async def handler(request):
+            return httpx.Response(
+                200,
+                json={"success": False, "result": {
+                    "response": '{"character_name":"Sakura"}'
+                }},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        model = CloudflareWorkersAIVisionModel(ACCOUNT_ID, API_TOKEN, client=client)
+        try:
+            with self.assertRaises(VisionModelProviderError):
+                await model.predict(b"jpeg-bytes", media_type="image/jpeg")
+        finally:
+            await client.aclose()
+
     async def test_rejects_invalid_input_before_network_request(self):
         called = False
 
