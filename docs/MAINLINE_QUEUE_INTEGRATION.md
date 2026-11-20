@@ -1,101 +1,67 @@
-# Mainline Integration Notes — Queue and CatchPipeline
+# Mainline Integration — Queue, CatchPipeline, and Core
 
-**Status:** design constraint for reconciling `work/stages-5-9` with `main`; no runtime behavior is changed by this document.
+**Purpose:** record the implemented queue/Catch boundary and the remaining merge/validation gates. This document does not authorize deployment or live Telegram operations.
 
-## Verified architectural difference
+## Required architecture
 
-The current `main` branch contains `kagecatch/catch_pipeline.py` and its guarded Core ingress integration. The pipeline:
+- Core routes each incoming Telegram event through exactly one pipeline.
+- `CatchPipeline` remains the sole owner of detection and Catch safety decisions.
+- Immediate Catch remains behind the mainline checks: trusted character identity, metadata/target match, explicit per-user opt-in, enabled engine with atomic admission, valid origin, matching adapter, and receipt verification.
+- If immediate Catch is not eligible, CatchPipeline passes the same already-detected Spawn to the recognition queue. It does not re-run detection.
+- The queue stores bounded recognition metadata and origin identifiers only. It never stores Telethon event objects, media bytes, message text, session strings, OTPs, or 2FA passwords.
+- RecognitionWorker resolves candidate suggestions and creates a durable human-review item. It never auto-selects a character or sends a Catch command.
+- Queue failures fail closed. They do not trigger an inline resolver retry or bypass Catch safety checks.
 
-- Detects a spawn once.
-- Validates that character identity metadata belongs to the detected target.
-- Requires explicit Catch enablement, an enabled engine with atomic admission, valid chat identity, and a matching target adapter before dispatch.
-- Sends the same already-detected Spawn to `ReviewPipeline.process_spawn` when any dispatch gate fails.
-- Keeps ambiguous Catch sends out of automatic retry.
+## Implemented changes on `work/stages-5-9`
 
-The `work/stages-5-9` branch instead adds `SQLiteJobQueue`, `RecognitionJobProducer`, and `RecognitionWorker`. Its producer runs its own detector and its worker resolves candidates and creates a durable human-review record. It does not call CatchEngine.
+### Core and ingress
 
-The two ingress implementations are therefore not interchangeable. Replacing main's incoming `CatchPipeline` handler with the branch's `RecognitionJobProducer` would bypass guarded Catch dispatch. Running both independently on the same raw event would run detection twice and could create duplicate review work.
+- `core_api.py` was rebuilt from the latest checked mainline version (`2a5366cbee1240fc459bd3dc7d921cbb30086ac8`) and then given the queue lifecycle additions. The guarded `catch_pipeline or review_pipeline` routing is preserved.
+- The raw-event RecognitionJobProducer is not installed as the incoming-event handler.
+- Core constructs the producer/worker only when queue, review queue, detector, and resolver dependencies are all available.
+- CatchPipeline receives the producer only after queue initialization; the producer is called only from CatchPipeline's manual-review branch.
+- Core shutdown signals the worker, allows up to ten seconds for an active job to drain, cancels only after the deadline, then closes the queue and review-store resources.
 
-## Required integration boundary
+### Recognition and review
 
-Preserve `CatchPipeline` as the single owner of incoming-event detection and Catch safety decisions.
+- CatchPipeline detects once and passes the already-detected Spawn, validated chat ID, and allowlisted media kind to `process_spawn`.
+- Malformed event media kinds are normalized to `unknown`; the producer independently rejects malformed media values.
+- The worker validates queued origin metadata and dead-letters invalid payloads, including non-string media kinds, zero chat IDs, and non-positive message IDs.
+- Queue leases are renewed while long work is running. A renewal failure cancels processing and prevents acknowledgement.
+- Review persistence uses a deterministic ID derived from the recognition job ID. If D1 commits the review but queue acknowledgement fails, retrying the job reuses the same review ID; conflicting reuse is rejected.
+- The latest mainline `ReviewPipeline.process_spawn` fallback has been restored, so CatchPipeline's non-queue fallback remains valid.
 
-The safe future queue integration point is after the single detector result exists:
+### Mainline security and media changes restored
 
-1. `CatchPipeline` calls its detector exactly once.
-2. If the spawn is eligible for immediate Catch, retain the existing explicit opt-in, source/metadata match, confidence, adapter, atomic admission, and receipt-verification gates unchanged.
-3. If the spawn must go to human review, pass that already-detected Spawn to a queue producer (rather than passing the raw Telegram event and detecting again).
-4. The queued payload contains only bounded, validated metadata and origin identifiers. Do not serialize Telethon event objects, media bytes, session strings, OTPs, or message contents.
-5. A lease-fenced worker resolves candidates and persists a review item with a deterministic idempotency key derived from the job ID.
-6. If queue creation or processing is unavailable, do not fall back to unbounded inline retries or automatic Catch dispatch. Return a clear review-persistence failure and preserve the existing fail-closed behavior.
-7. Keep the Worker/D1 panel request queue and the Durable Object connection-link/broadcast alarm queue separate from this Python recognition queue; they have different ownership and delivery guarantees.
+- `TelethonCatchAdapter` uses a bounded 256-entry sent-message cache and verifies the exact receipt/target context. Verifier exceptions and non-literal-true results fail closed.
+- `TelethonFrameExtractor` uses bounded streaming downloads (64 KiB chunks), enforces the 25 MiB default media limit while streaming, and applies a download timeout. The previous unbounded `download_media(..., file=bytes)` path is not retained.
+- The corresponding mainline regression tests were restored on the branch.
 
-## Required tests before porting the queue into main
+## Regression coverage added or preserved
 
-- Incoming event detection is called exactly once for both Catch and review paths.
-- A trusted, opted-in, high-confidence spawn still reaches CatchEngine and verifies its receipt; queue availability must not change this path.
-- Low confidence, source mismatch, disabled engine, missing opt-in, invalid chat, and adapter failure never dispatch Catch and route the same detected Spawn to review.
-- Review enqueue is idempotent across job retries and process restarts.
-- Lease expiry and heartbeat loss fence stale workers; a stale worker cannot complete or create a second review record.
-- Queue unavailable / invalid payload remains fail-closed and never triggers a Catch command.
-- Ambiguous Catch send remains reserved and is never automatically re-enqueued.
-- Shutdown cancels the worker and closes queue resources without losing durable jobs.
+- Queue configuration never replaces the guarded CatchPipeline incoming handler.
+- CatchPipeline calls the detector once and enqueues the same detected Spawn for manual review.
+- Queue failure does not fall back to synchronous review.
+- Invalid chat origin fails closed.
+- Malformed media kind is normalized/rejected safely.
+- Worker dead-letters malformed origin metadata rather than retrying it forever.
+- Worker lease loss cancels processing without acknowledgement.
+- Review write remains idempotent if acknowledgement fails after persistence.
+- Core shutdown drains active work within a bounded grace period and cancels only after the deadline.
+- Mainline Catch precedence, strict receipt verification, bounded cache, and bounded media download tests are retained.
 
-## Reconciliation rule
+## Validation and merge status
 
-Do not merge the two branches wholesale and do not replace main's `core_api.py` with the older branch copy. Port the queue implementation and tests as isolated components first, then adapt the single mainline CatchPipeline-to-review boundary with explicit tests. Reconcile the Worker changes separately after preserving the latest mainline Catch ingress and security changes.
+- Latest confirmed green CI run is on older commit `2d1aac2d88379df033d173d1bf422c213e2d4783`; it does **not** validate the current branch head.
+- The current branch head has no reported GitHub check runs or combined commit statuses.
+- The PR remains Draft and GitHub reports it as not mergeable. The branch history is still divergent from main (218 commits ahead and 5 behind at the last check).
+- File-level reconciliation has restored the latest mainline behavior in the files listed above; it has **not** rebased the branch history or established merge readiness.
+- Python and Worker test suites have not been executed against the current head in this environment.
 
-## Current verified state (2026-11-20)
+## Remaining gates
 
-- `main` includes `kagecatch/catch_pipeline.py` and `tests/test_catch_pipeline.py`; the feature branch does not.
-- The feature branch includes `job_queue.py`, `recognition_job_producer.py`, `recognition_worker.py`, and their dedicated tests; main does not.
-- Main's Core runtime selects `catch_pipeline` before `review_pipeline` for incoming events.
-- The branch's Core startup installs the recognition producer as the incoming handler when the queue runtime is available.
-- Therefore a safe integration needs an adapter at the already-detected Spawn/review boundary, not a wholesale Core API cherry-pick.
-
-This document is a design/reconciliation note only. It does not assert that the queue has been integrated into current main, that CI has passed, or that production behavior has been validated.
-
-
-## Follow-up implementation on the queue branch
-
-The queue branch now exposes `RecognitionJobProducer.process_spawn(user_id, spawn, chat_id)`.
-It accepts an already-detected Spawn and does not call the detector. It validates the
-chat/message identifiers and enqueues only bounded recognition metadata plus the
-origin identifiers. Regression tests assert the detector is not called and invalid
-chat identifiers are rejected.
-
-This is an integration seam only, not an active CatchPipeline integration. The
-branch's current Core still installs the raw-event RecognitionJobProducer as the
-incoming handler when the queue is enabled. That wiring must not be carried forward
-over main's guarded CatchPipeline. The eventual integration must make CatchPipeline
-the sole detector and decision owner, pass a validated chat identifier into the
-manual-review adapter, and call `process_spawn` only on its review branch. Until
-that end-to-end change is implemented and tested against main's current pipeline,
-the queue branch must remain unmerged.
-
-
-## Recognition payload media classification
-
-The already-detected Spawn model does not itself carry a media-kind field. The producer therefore accepts an explicit media kind at the enqueue seam and allowlists `video`, `photo`, `image`, `document`, or `unknown`; it no longer labels every job as `video`. When no trustworthy classification is available, the payload must say `unknown`, not guess. The worker independently validates this enum and dead-letters unsupported values. The future CatchPipeline adapter should pass a media kind only when it can derive it from a trusted normalized adapter/event field.
-
-
-## Core ingress guard implemented on the queue branch
-
-The branch Core wiring has been hardened: `create_app` accepts an optional `catch_pipeline`, stores it separately, and selects it ahead of the direct review pipeline for the selfbot incoming handler. The recognition producer and worker may be initialized when the queue is configured, but the producer is no longer bound to raw Telegram events. A regression test configures both a Catch pipeline and the queue and asserts the Catch pipeline remains the only incoming handler. This is a defensive wiring change, not yet the complete queue-to-review adapter: the CatchPipeline manual-review seam still needs to pass validated chat/media origin to `process_spawn` and the worker-to-review delivery path must be tested end-to-end.
-
-
-## Queue-backed manual-review path implemented on the branch
-
-- Added `kagecatch/catch_pipeline.py` based on the guarded mainline implementation, with an optional RecognitionJobProducer dependency.
-- Core attaches the configured producer to CatchPipeline after initializing the queue runtime.
-- All manual-review branches pass the same already-detected Spawn to the queue; Catch eligibility, atomic admission, adapter validation, and receipt verification remain on the original immediate-dispatch branch.
-- The queue payload contains normalized recognition metadata and origin identifiers only. The event object is not serialized.
-- Enqueue failure or invalid chat origin is surfaced as `review_persistence_failed`; it does not silently run the resolver inline.
-- Added CatchPipeline integration tests and a Core regression test proving the queue cannot replace the guarded incoming handler.
-
-Validation remains pending: no workflow run has been reported for the current branch HEAD, and the branch remains divergent from main.
-
-
-## Additional input-hardening regression coverage
-
-The queue boundary now rejects non-string media-kind values in the producer without raising an uncaught type error. CatchPipeline normalizes malformed event media metadata to `unknown` before calling the producer. Regression tests cover both cases. Latest checked branch HEAD is `33e213586deef6945b2d08a2d63d4d35c4750fc7`; GitHub reports no combined status checks and no pull-request workflow run for this commit. The PR is still 201 commits ahead and 4 behind current main, so this is not validated for merge.
+1. Reconcile the remaining branch history against main without wholesale replacement of either side.
+2. Obtain fresh Python and Worker CI results on the exact final head.
+3. Review the SQLite queue's single-host/persistent-disk assumption before any production use.
+4. Run controlled end-to-end tests only after explicit approval and in a non-production Telegram environment.
+5. Keep production deployment, migrations, and live Telegram sends disabled until separately approved.
