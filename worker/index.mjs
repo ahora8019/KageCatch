@@ -8,6 +8,10 @@ export function isSavedAccountStatus(status) {
   return status === "connected" || status === "authorized";
 }
 
+export function isPendingAuthorizationConflict(status, data) {
+  return status === 409 && (data?.detail === "authorization_already_pending" || data?.error === "authorization_already_pending");
+}
+
 const RENDER_CORE_HEALTH_URL = "https://kagecatch-core-preview.onrender.com/healthz";
 
 async function keepRenderCoreWarm(env, controller) {
@@ -496,7 +500,7 @@ async function beginTelegramLogin(env, telegramUserId, phone) {
   if (!validatePhoneNumber(phone)) throw new Error("invalid_phone");
   const path = "/v1/accounts/" + telegramUserId;
   const result = await coreRequest(env, "POST", path + "/connect", { phone: phone.trim() });
-  if (result.status === 409 && result.data?.error === "authorization_already_pending") {
+  if (isPendingAuthorizationConflict(result.status, result.data)) {
     const pending = await coreRequest(env, "GET", path + "/connect/status");
     if (pending.status === 200 && pending.data?.status === "pending") return "code_sent";
   }
