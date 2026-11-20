@@ -32,6 +32,14 @@ class ReviewPipeline:
         spawn = await self.detector.detect(event)
         if spawn is None:
             return {"status": "no_spawn"}
+        return await self.process_spawn(spawn=spawn, user_id=user_id)
+
+    async def process_spawn(self, *, spawn, user_id: str) -> dict[str, Any]:
+        """Persist an already-detected spawn without re-running media recognition."""
+        if not isinstance(user_id, str) or not user_id or len(user_id) > 128:
+            raise ValueError("valid user_id is required")
+        if spawn is None:
+            return {"status": "no_spawn"}
 
         metadata = spawn.metadata
         anime_name = getattr(metadata, "anime_name", None)
