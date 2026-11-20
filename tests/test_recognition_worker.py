@@ -214,6 +214,35 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.failed, [])
         self.assertEqual(queue.quarantined, [])
 
+    async def test_unhashable_media_kind_is_dead_lettered(self):
+        payload = dict(Job.payload)
+        payload["origin"] = dict(Job.payload["origin"], media_kind=["photo"])
+        job = SimpleNamespace(job_id="bad-media-list", lease_generation=5, payload=payload)
+        queue = FakeQueue(job)
+        worker = RecognitionWorker(
+            queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer",
+        )
+        result = await worker.run_once()
+        self.assertEqual(result.status, "invalid_metadata")
+        self.assertEqual(queue.quarantined, [("bad-media-list", "recognizer", 5)])
+        self.assertEqual(queue.failed, [])
+
+    async def test_zero_chat_id_and_negative_message_id_are_dead_lettered(self):
+        for field, value in (("chat_id", 0), ("message_id", -1)):
+            payload = dict(Job.payload)
+            payload["origin"] = dict(Job.payload["origin"], **{field: value})
+            job = SimpleNamespace(job_id=f"bad-{field}", lease_generation=6, payload=payload)
+            queue = FakeQueue(job)
+            worker = RecognitionWorker(
+                queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(),
+                worker_id="recognizer",
+            )
+            result = await worker.run_once()
+            self.assertEqual(result.status, "invalid_metadata")
+            self.assertEqual(len(queue.quarantined), 1)
+            self.assertEqual(queue.failed, [])
+
     async def test_empty_queue_is_idle(self):
         worker = RecognitionWorker(queue=FakeQueue(None), resolver=FakeResolver(),
                                    review_queue=FakeReviewQueue(), worker_id="recognizer")
