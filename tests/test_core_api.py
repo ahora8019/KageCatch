@@ -77,7 +77,7 @@ class FakeAuthFlow:
         return "code_sent"
 
     async def get_status(self, *, user_id):
-        return {"status": self.status, "expires_in": 20, "login_url": "tg://login?token=one-time"}
+        return {"status": self.status, "expires_in": 20}
 
     async def cancel(self, *, user_id):
         self.cancelled.append(user_id)
@@ -239,6 +239,7 @@ class CoreApiTests(unittest.TestCase):
         response = self.client.get(path, headers=signed_headers("GET", path))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "pending")
+        self.assertNotIn("login_url", response.json())
 
 
     def test_successful_telegram_confirmation_starts_the_execution_client(self):

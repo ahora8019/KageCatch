@@ -26,14 +26,14 @@ TARGETS: dict[str, CatchTarget] = {
         username="HentaCatcherBot",
         command="/catch",
         media_kind="image",
-        enabled=True,
+        enabled=False,  # Catch remains disabled pending explicit command approval.
     ),
     "character_catcher": CatchTarget(
         source="character_catcher",
         username="Character_Catcher_Bot",
         command="/catch",
         media_kind="image",
-        enabled=True,
+        enabled=False,  # Catch remains disabled pending explicit command approval.
     ),
 }
 
@@ -43,9 +43,9 @@ def build_catch_command(source: str, character_name: str) -> str:
     target = TARGETS.get(source)
     if target is None:
         raise ValueError("unsupported catch source")
-    if not target.enabled:
-        raise RuntimeError("catch source is currently frozen")
     name = character_name.strip()
     if not name or len(name) > 100 or any(char in name for char in "\r\n"):
         raise ValueError("invalid character name")
+    if not target.enabled:
+        raise RuntimeError("catch source is disabled pending explicit command approval")
     return f"{target.command} {name}"

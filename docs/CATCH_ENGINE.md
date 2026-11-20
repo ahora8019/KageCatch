@@ -1,3 +1,5 @@
+> **Current implementation note (2026-11-20):** The web dashboard, Mini App, browser login page, one-time login links, and `TelegramQrAuthorizationFlow` have been retired. The active account flow is phone number → inline OTP keypad → optional 2FA, entirely in the private Telegram bot conversation. See the repository README for the current control and deployment boundaries.
+
 # KageCatch Catch Engine and Session Runtime
 
 ## Supported targets
@@ -83,21 +85,21 @@ SQLiteSessionStore persists ciphertext (not raw StringSessions) in a local SQLit
 
 The transport-independent, bot-driven authorization state machine is in kagecatch/telegram_auth_flow.py. It supports one pending login per KageCatch user, a five-minute default expiry, a three-attempt limit, explicit cancellation, optional 2FA, and persistence only after Telegram confirms authorization. Phone codes and 2FA passwords are held only as method arguments during the request; they are not stored in the pending state or database.
 
-The currently wired account-connection path is browser-based Phone Login:
-- The private Control Worker issues a short-lived, one-time HTTPS link. The browser connection page accepts the phone number, Telegram OTP, and optional 2FA password when Telegram requires it; none of these values are collected in bot chat.
-- The browser submits those values through authenticated Worker endpoints. The Worker forwards them to the Python Core using timestamped HMAC authentication (method, path, body hash and nonce); the Core rejects stale signatures and replayed nonces.
-- The Core authorization API exposes authenticated `connect`, `connect/code`, `connect/password`, `connect/status`, and `connect/cancel` operations. Therefore OTP/2FA values do reach the trusted Core API transport, but they are not written to logs or pending-session storage.
-- SessionManager encrypts pending challenge metadata and the temporary Telethon StringSession before storage. After Telegram confirms authorization, the final StringSession is persisted encrypted. If that final write fails, the Core returns `persistence_pending` and retains an encrypted authorized-session checkpoint for recovery; cancellation cannot discard an already-authorized session.
-- The standalone `TelegramQrAuthorizationFlow` class exists but is not wired into the active Core API or browser connection page. Do not describe it as the live connection method.
+The active account-connection path is Telegram-native Phone Login:
+- The user starts account connection in the private Control Bot and enters an E.164 phone number.
+- The bot displays an inline numeric keypad for the OTP. Callback data carries only one-digit actions; it never contains the complete code.
+- If Telegram requires 2FA, the user enters the password in the private bot conversation. The Worker forwards the values to the Python Core over timestamped HMAC-authenticated requests with nonce/replay protection and bounded request bodies.
+- Short-lived authorization state is encrypted and bound to the Telegram user ID. The Core does not write OTP/2FA values to logs or pending-session storage; the final Telethon StringSession is encrypted before persistence.
+- The bot attempts to delete the user's phone/code/password messages, but deletion is best-effort. Telegram bot chats are not end-to-end encrypted, so credentials transit the bot backend.
+- Browser login pages, one-time login links, browser sessions, and the separate `TelegramQrAuthorizationFlow` implementation are not part of the active system and have been removed.
 - The local authorization CLI remains a separate local-development tool. It is not the deployed account-connection transport.
-
 No real Telegram account has been authorized or validated in this development phase. The path has unit-level coverage only; controlled real-account validation and operational review remain prerequisites before enabling real-account use.
 
 For local development only, the explicit authorization helper and CLI remain available in kagecatch/telegram_authorization.py and scripts/authorize_telegram.py. The CLI collects verification material in a private terminal.
 
 Never send API hashes, Fernet keys, or StringSessions to the bot, ChatGPT, GitHub issues, logs, or repository files. Do not commit data/kagecatch-sessions.sqlite3. The repository .gitignore excludes local database and secret files.
 
-No real Telegram account has been authorized or tested. The bot-driven flow has unit-level test coverage only; it is not yet connected to the deployed Control Worker or a running Python host.
+No real Telegram account has been authorized or tested. The Telegram-native flow has unit-level coverage; production end-to-end account authorization has not been validated.
 
 ## Verification boundaries
 
@@ -107,21 +109,30 @@ No real Telegram account has been authorized or tested. The bot-driven flow has 
 - Key rotation, access auditing, a managed production database, and deployment integration remain incomplete.
 - No real Telegram account was connected and no catch command was sent during this development phase.
 
-## Control bot interface\n\nThe menu exposes account connection, connected accounts, settings, statistics, security/session controls, disconnect, and help. Account connection creates a one-time link; link validation does not imply that the Python core or Telegram account authorization is operational. `/status` and `/help` remain shortcuts. `/admin` is disabled until an owner ID and explicit authorization policy are configured. Worker unit tests run with `node --test worker/index.test.mjs`.\n\n## Remaining integration work
+## Control bot interface
 
-- Design and review a secure local authorization handoff that does not transmit OTPs, 2FA passwords, or StringSessions through the bot chat.
-- Add key rotation and session access/revocation auditing.
-- Add a deployment composition that injects a durable `SQLiteCatchAdmissionStore` and operator-approved quota/confidence values; live dispatch must remain disabled until this is reviewed.
-- Add live Telegram response listeners and verifiers for each target bot.
-- Add spawn ingestion and recognition (image/video frame extraction, catalog lookup, confidence calibration).
-- Add an authenticated, retry-safe Worker-to-Python queue contract and a deployed execution process.
+The private Telegram bot is the only control surface. Members use inline menus for account connection, Catch status, bot targets, settings, statistics, and security/session controls. Owners additionally receive member administration, invitations, broadcast draft/preview/confirmation, and Telegram send-safety monitoring/recovery. `/start`, `/panel`, `/status`, and `/help` are bot commands; `/panel` does not serve a web page. The web dashboard, Mini App, browser login links, browser sessions, and browser account APIs have been removed.
 
+## Recognition job queue
+
+`kagecatch/job_queue.py` implements a local SQLite queue with typed jobs, idempotency, priority, delayed scheduling, bounded retry/dead-letter behavior, fenced leases, heartbeat renewal, and expired-lease recovery. The `RecognitionWorker` claims only `spawn.recognize` jobs and persists resolved candidates into the durable manual-review queue. It never dispatches Catch commands. Jobs are created only after a Spawn has already been detected and routed to manual review; raw Telegram ingress is not bound directly to the queue producer.
+
+The queue is opt-in through `KAGECATCH_JOB_QUEUE_PATH` and requires persistent single-host storage. It is not a distributed queue and must remain disabled on an ephemeral filesystem. D1 manual-review creation uses deterministic IDs and idempotent insert handling to survive a lost queue acknowledgement without creating duplicate review items.
+
+## Remaining integration work
+
+- Complete a controlled real-account security review of the Telegram-native OTP/optional-2FA flow before production account authorization.
+- Rotate the previously exposed Core shared secret through the secret managers, then verify the Worker-to-Core HMAC path without exposing the value in chat or logs.
+- Configure a durable host path (or replace the local SQLite queue with a D1-backed queue) before activating the background recognition worker in production.
+- Complete image/video recognition coverage and calibrated character-level confidence; anime-scene similarity alone is not character identity.
+- Approve exact Catch command syntax for each target and complete controlled target-response verification before enabling any target. All production Catch targets are currently disabled.
+- Complete key rotation and session access/revocation auditing.
 
 ## Current implementation checkpoint
 
-- `CatchEngine` is disabled by default. An enabled instance must receive an atomic `SQLiteCatchAdmissionStore` (or equivalent implementation); separate quota and dedupe callbacks cannot enable live dispatch.
+- `CatchEngine` is disabled by default and requires an atomic admission gate if explicitly enabled.
+- Every `TARGETS` entry is currently disabled. Adapter mechanics are tested with test-only opt-in; production command construction fails closed.
 - Atomic admission and rolling per-user/source quotas are implemented in `kagecatch/catch_admission.py`. An admitted reservation remains consumed after ambiguous send errors, preventing automatic duplicate retries.
-- `TelethonCatchAdapter` dispatches the configured `/catch {name}` command through an already-authorized user session. It rejects source/media mismatches and frozen targets.
-- Dispatch and success verification are separate. Without a target-specific response verifier, the adapter always reports the receipt as unverified; a sent command is never presented as a successful catch.
-- Target-specific response formats have not yet been validated against live bot replies. No catch command has been sent to a real target during this implementation.
-- Spawn ingestion and visual recognition are still separate remaining work; the engine currently receives normalized candidate names and confidence values.
+- Dispatch and success verification are separate. Without a target-specific response verifier, a sent command is never presented as a successful Catch.
+- SenpaiCatcher inbound Spawn recognition is wired to manual review. Only the extracted frame from a qualifying Spawn video is sent to trace.moe; the full video is not uploaded.
+- No real Telegram account was connected and no Catch command was sent to a real target during this implementation.

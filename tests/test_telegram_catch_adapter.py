@@ -1,5 +1,8 @@
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 
+from kagecatch.adapters import TARGETS
 from kagecatch.engine import Spawn, Candidate
 from kagecatch.telegram_catch_adapter import TelethonCatchAdapter
 
@@ -19,6 +22,26 @@ class FakeClient:
 
 
 class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # These tests exercise the adapter mechanics with an explicit test-only
+        # opt-in; production TARGETS remain disabled until command syntax approval.
+        enabled_targets = {
+            source: replace(target, enabled=True)
+            for source, target in TARGETS.items()
+        }
+        self._target_patch = patch.dict(TARGETS, enabled_targets)
+        self._target_patch.start()
+
+    def tearDown(self):
+        self._target_patch.stop()
+
+    async def test_disabled_production_target_rejects_adapter_construction(self):
+        with patch.dict(TARGETS, {"henta_catcher": replace(TARGETS["henta_catcher"], enabled=False)}):
+            with self.assertRaisesRegex(RuntimeError, "disabled"):
+                TelethonCatchAdapter(
+                    client=FakeClient(), source="henta_catcher", dispatch_enabled=True
+                )
+
     def spawn(self):
         return Spawn(
             source="henta_catcher",

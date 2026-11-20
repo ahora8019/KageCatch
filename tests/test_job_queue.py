@@ -17,6 +17,10 @@ class SQLiteJobQueueTests(unittest.IsolatedAsyncioTestCase):
         await self.queue.close()
         self.temp.cleanup()
 
+    async def test_memory_database_path_is_rejected_for_durable_queue(self):
+        with self.assertRaises(ValueError):
+            SQLiteJobQueue(":memory:")
+
     async def test_enqueue_is_durable_and_deduplicates_idempotency_key(self):
         first = await self.queue.enqueue("spawn.recognize", {"spawn_id": 12}, idempotency_key="source:chat:12")
         second = await self.queue.enqueue("spawn.recognize", {"spawn_id": 12}, idempotency_key="source:chat:12")

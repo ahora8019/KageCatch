@@ -1,74 +1,78 @@
 # KageCatch
 
-Role-based multi-user Telegram character spawn recognition and catch orchestration. New users require an Owner-issued invitation before they can join. Existing members remain registered, and the configured numeric Telegram ID is always resolved as OWNER.
+KageCatch is a Telegram-first, multi-user character-spawn recognition and manual-review system. New users require an Owner-issued invitation. The configured numeric Telegram user ID is the only Owner identity.
 
-## Supported catcher targets
+## Telegram-only control surface
 
-| Target | Media | Catch command | State |
-|---|---|---|---|
-| SenpaiCatcherBot | Video | `/pick {name}` | Frozen / unavailable; retained in architecture |
-| HentaCatcherBot | Image | `/catch {name}` | Configured |
-| Character_Catcher_Bot | Image | `/catch {name}` | Configured |
+All user and Owner controls are delivered inside the Telegram bot. The web dashboard, Telegram Mini App, browser login page, one-time login links, and browser account APIs are retired. `GET /panel` and the former Mini App/account routes return `404`. `/panel` remains only as a Telegram slash-command shortcut that opens the bot's inline menu; it is not a web page.
+
+### Native account login
+
+The private bot conversation uses this flow:
+
+1. Enter the phone number in international E.164 format.
+2. Enter the Telegram login code using the bot's inline numeric keypad.
+3. Enter the 2FA password only if Telegram requests it.
+
+OTP digits are not embedded in callback data. Short-lived authorization state is encrypted and bound to the Telegram user ID. The bot attempts to delete phone/code/password messages, but deletion is best-effort. Telegram bot chats are not end-to-end encrypted, so credentials transit the bot backend; never send credentials to anyone other than the official KageCatch bot.
 
 ## Architecture
 
-- **Control Plane:** Cloudflare Worker + Telegram Bot API for commands and user-facing control.
-- **Execution Plane:** Python core with encrypted per-user Telethon sessions.
-- **Recognition:** Planned spawn ingestion, image/video analysis, reference-catalog search, candidate ranking, and confidence gating.
-- **Catch Engine:** Quota check, duplicate suppression, adapter-specific command dispatch, and verification against the target bot response.
+- **Control Plane:** Cloudflare Worker, Telegram Bot API, Durable Objects, and D1.
+- **Execution Plane:** Python Core with per-user Telethon sessions encrypted before persistence.
+- **Recognition:** sender/media/phrase-gated spawn detection, frame extraction, anime matching, and conservative character resolution.
+- **Manual Review:** user-scoped review records with expiry, approval/rejection, and retry-safe persistence.
+- **Catch Engine:** guarded adapter interface with atomic admission, quota, deduplication, and receipt verification.
 
-## Repository status
+For the approved SenpaiCatcher recognition path, only an extracted frame from a qualifying Spawn video may be sent to `trace.moe`; the full video is not uploaded.
 
-The Catch Engine foundation is in `kagecatch/engine.py`. It accepts normalized spawn candidates, blocks low-confidence matches, checks a quota interface, deduplicates events, dispatches through an adapter interface, and reports success only after adapter verification.
+## Recognition job queue
 
-Session components:
+`kagecatch/job_queue.py` provides a single-host SQLite queue with typed claims, priorities, delayed scheduling, idempotency keys, bounded retries, dead-letter quarantine, fenced lease generations, lease renewal, and expired-lease recovery.
+
+The Core starts the recognition worker only when all required components are configured and `KAGECATCH_JOB_QUEUE_PATH` points to a persistent local database path. The worker claims only `spawn.recognize` jobs. Jobs are created from an already-detected Spawn on the manual-review path; the queue is not attached to raw Telegram ingress and never issues Catch commands. D1 review creation uses deterministic review IDs so a retry after a lost acknowledgement does not create duplicate review records.
+
+**Storage limitation:** this SQLite queue is single-host, not distributed. Its database must live on persistent local storage; an ephemeral container filesystem is not sufficient. Leave `KAGECATCH_JOB_QUEUE_PATH` unset until the Python host has durable storage. The queue is optional and is not activated merely by deploying the code.
+
+## Catch execution safety
+
+All configured Catch targets are registered but disabled. `CatchEngine` is disabled by default, and `build_catch_command()` refuses to build commands while a target is disabled. No real Catch command may be enabled until its exact syntax is explicitly approved and a controlled test is separately authorized. Recognition and manual review do not imply permission to execute Catch.
+
+## Telegram Owner controls
+
+The Owner's private bot menu includes member administration, invitations, activity/status monitoring, broadcast draft/preview/confirmation, an emergency-stop placeholder, and Telegram send-safety monitoring/recovery. Safety recovery is performed in the Telegram bot with a separate confirmation and stale-state checks; there is no web Owner panel. Role checks are repeated for each privileged callback. `OWNER_TELEGRAM_ID` must remain a Cloudflare Secret.
+
+## Telegram group status queue
+
+The `.panel` and `.پنل` group commands refer to a Telegram group status message with inline controls, not a web dashboard. Requests are HMAC-signed by the Python Core and stored in the separate D1 `panel_requests` table. Delivery is bounded and owner/group/message scoped. The ten-minute Cron is only a lightweight Render liveness check; it does not activate Catch or drain arbitrary work.
+
+## Session and review storage
+
 - `kagecatch/session_manager.py`: Fernet encryption/decryption boundary.
-- `kagecatch/sqlite_session_store.py`: local single-host SQLite fallback for encrypted blobs.
-- `kagecatch/d1_session_store.py`: signed HTTPS adapter that transports encrypted blobs through the Cloudflare Control Worker into D1; it never stores plaintext sessions or needs a Cloudflare API token in Render.
-- `migrations/0001_telegram_sessions.sql`: D1 schema for encrypted session blobs.
-- `wrangler.toml`: preview D1 binding and the existing Durable Object namespace.
-- `kagecatch/session_runtime.py`: isolated per-user Telethon clients, authorization checks, disconnect and revocation.
-- `kagecatch/telegram_authorization.py`: local interactive authorization helper.
-- `kagecatch/telegram_auth_flow.py`: isolated phone-code authorization state machine; do not expose its OTP/2FA inputs through the bot.
-- `kagecatch/telegram_qr_auth_flow.py`: Telegram-native one-time `tg://login?token=...` deep-link authorization; no QR image and no OTP/2FA collection.
+- `kagecatch/sqlite_session_store.py`: local single-host encrypted-session fallback.
+- `kagecatch/d1_session_store.py`: signed HTTPS transport for encrypted session ciphertext through the Worker into D1.
+- `kagecatch/persistent_manual_review_queue.py`: durable manual-review state machine.
+- `kagecatch/d1_manual_review_store.py`: signed Worker transport for review metadata.
+- `migrations/`: D1 schemas. Do not apply a migration remotely without checking the live D1 migration ledger first.
 
-The authorization state machine is isolated from the bot transport and must never collect OTP/2FA values in the Telegram chat. The Control Worker issues short-lived, one-time account links through the `CONNECT_LINKS` Durable Object (`ConnectionLinkStore`). The link is exchanged once for a random browser session token; only its SHA-256 digest and Telegram user binding are stored in the Durable Object, and the browser token expires after ten minutes. The standalone HTTPS login page at `/connect/{token}` collects phone, OTP, and optional 2FA only in the browser, then forwards them through a bearer-authenticated Worker endpoint to the HMAC-signed Python Core API. The page uses no third-party scripts, no-store caching, a restrictive Content Security Policy, and clears the one-time token from browser history after exchange. Bot account-connect callbacks now send a normal HTTPS URL button instead of launching the Mini App. Real-account validation remains pending; no live catch has been performed.
+The Python Core selects D1 session storage when `KAGECATCH_SESSION_STORE_URL` is configured. Keep `KAGECATCH_CORE_SECRET`, `KAGECATCH_FERNET_KEY`, Telegram API credentials, and bot tokens in their respective secret managers; never commit or paste them into chat.
 
-## Legacy Telegram Mini App
+## Development and tests
 
-The previous dashboard remains available at `/panel` temporarily as a fallback while the standalone login flow is reviewed and tested. It is no longer the default account-connection path. Do not remove the legacy route until the standalone login is deployed, verified end-to-end, and the user explicitly approves retiring it.
+Python 3.11+ and Node.js 22 are required.
 
-See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md).
+```bash
+python -m pip install -e ".[api]"
+python -m unittest discover -s tests -v
+node --test worker/*.test.mjs
+```
 
-## Durable group panel queue
+Run the Python Core with:
 
-Group commands `.panel` and `.پنل` are accepted only from the authorized account owner in a group/supergroup. The Python Core sends a timestamped HMAC-signed request to `POST /internal/panel-requests`; the Worker stores it in the independent `panel_requests` D1 table with a deterministic idempotency key. After the Worker accepts a signed request, it immediately dispatches the queue in the request's `waitUntil` background task; panel delivery does not wait for the ten-minute Render keep-alive Cron. The `*/10 * * * *` Cron only sends a lightweight GET to the Render Core `/healthz` endpoint. Abandoned delivery claims are recovered when the queue is next dispatched, and delivery attempts are bounded to three.
+```bash
+uvicorn kagecatch.core_api:app --host 0.0.0.0 --port 8000
+```
 
-Every callback is bound to the stored request, owner Telegram ID, exact group ID, exact panel message ID, and active expiry. Non-owners receive an alert. Catch remains disabled in the panel; buttons currently expose status/configuration placeholders only.
+Configure secrets through the host's secret manager. The Worker signs Core requests with timestamp, nonce, method, path, and body hash. The current in-memory Core replay guard is single-process; do not scale the Core horizontally until a shared nonce store is configured.
 
-The schema is in `migrations/0004_panel_requests.sql`. The additive table has been created in the existing `kagecatch-sessions-preview` D1 database; the existing `telegram_sessions` table was not modified. The Core uses `KAGECATCH_PANEL_QUEUE_URL`, falling back to `KAGECATCH_SESSION_STORE_URL`, and the existing `KAGECATCH_CORE_SECRET` for HMAC signing. The Worker route and scheduled delivery code are committed but not deployed. Do not enable real group delivery until the Worker deployment and a controlled test group verification are explicitly approved.
-
-## Durable session storage (Cloudflare D1)
-
-The preview D1 database is `kagecatch-sessions-preview` in the EU jurisdiction, primary region EEUR. It stores only Fernet-encrypted Telethon StringSession ciphertext. The Python Core encrypts before the request; the Worker accepts only HMAC-authenticated requests signed with the existing Core shared secret, checks timestamp and a Durable Object-backed one-time nonce, then uses parameterized D1 statements.
-
-The Python Core selects this adapter when `KAGECATCH_SESSION_STORE_URL` is configured (set it to the Control Worker origin). The Worker must have the `KAGECATCH_DB` D1 binding and the existing `CONNECT_LINKS` Durable Object binding. Without the URL, local development retains the SQLite fallback.
-
-The D1 database and schema are provisioned for preview, but the Worker binding and new Worker code have **not** been deployed. Render environment variables have not been changed. Do not authorize a real Telegram account until the Worker binding is deployed, the D1 adapter passes live round-trip tests, and the Fernet key exposed in the development conversation has been rotated.
-
-## Control bot roles
-
-`worker/index.mjs` defines a role-based access model. The numeric ID configured in the `OWNER_TELEGRAM_ID` Worker secret is always resolved as `OWNER`; existing registered members retain `MEMBER`. New users must redeem a short-lived Owner-issued invite link (`/start inv_…`) before they are registered. Invites are stored by token digest, have bounded use counts and expiry, and can be revoked. Members see only personal account, security, and statistics controls. The Owner receives the member list, block/unblock controls, invite management, system overview, and broadcast. Global settings and emergency-stop actions remain unfinished placeholders. Role checks run again on every callback; blocked users are denied. `/admin` is Owner-only. `OWNER_TELEGRAM_ID` must remain a Cloudflare Secret and must never be committed to the repository. Never ask users to send Telegram login codes or 2FA passwords to the bot.
-
-## Development
-
-Python 3.11+ is required. Install the Telegram integration and run tests with:
-
-    python -m pip install '.[telegram,api]'
-    python -m unittest discover -s tests -v
-
-Before authorizing an account, configure `KAGECATCH_API_ID`, `KAGECATCH_API_HASH`, and `KAGECATCH_FERNET_KEY` in the Python host's secret manager. Configure `KAGECATCH_CORE_SECRET` there and set the matching `CORE_API_URL` and `CORE_API_SECRET` as Worker secrets.
-
-Run the Python Core API with `uvicorn kagecatch.core_api:app --host 0.0.0.0 --port 8000` after configuring `KAGECATCH_CORE_SECRET`, `KAGECATCH_API_ID`, `KAGECATCH_API_HASH`, and `KAGECATCH_FERNET_KEY` as deployment secrets. Set `KAGECATCH_DB_PATH` to a durable mounted path. Set `CORE_API_URL` and the same secret value as `CORE_API_SECRET` in Cloudflare. The Worker signs every Core request with timestamp, nonce, method, path, and body hash. The initial replay guard is single-process; do not scale the Core API horizontally until a shared nonce store is configured.
-
-See [Catch Engine and Session Runtime design](docs/CATCH_ENGINE.md) for security boundaries and remaining work.
+`docs/PRO_PANEL_AND_CORE_ROADMAP.md` is retained as a historical record; its web-panel/Mini-App proposal is superseded by the Telegram-only decision documented here.

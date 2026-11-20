@@ -1428,6 +1428,7 @@ test("Owner bot menu keeps Telegram controls and contains no dashboard or Mini A
   assert.ok(callbacks.includes("owner:invites"));
   assert.ok(callbacks.includes("owner:broadcast"));
   assert.ok(callbacks.includes("owner:emergency"));
+  assert.ok(callbacks.includes("owner:safety"));
   assert.ok(!callbacks.includes("home:panel"));
   assert.ok(buttons.every((button) => !button.url && !button.web_app));
 });

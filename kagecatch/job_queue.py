@@ -41,6 +41,8 @@ class SQLiteJobQueue:
     def __init__(self, path: str, *, clock: Callable[[], float] = time.time) -> None:
         if not isinstance(path, str) or not path.strip():
             raise ValueError("a database path is required")
+        if path.strip() == ":memory:" or path.strip().startswith("file:"):
+            raise ValueError("the recognition queue requires a persistent filesystem database path")
         if not callable(clock):
             raise ValueError("clock must be callable")
         self.path = path

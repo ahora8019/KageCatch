@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
 import worker, { telegramApi, ConnectionLinkStore } from "./index.mjs";
 
 const BOT_TOKEN = "safety-integration-test-token";
@@ -134,21 +133,6 @@ function createDurableObjectState() {
   return { storage };
 }
 
-function makeWebAppInitData(user, authDate = Math.floor(Date.now() / 1000)) {
-  const params = new URLSearchParams({
-    auth_date: String(authDate),
-    query_id: "safety-integration-query",
-    user: JSON.stringify(user),
-  });
-  const checkString = [...params.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => key + "=" + value)
-    .join("\n");
-  const secret = createHmac("sha256", "WebAppData").update(BOT_TOKEN).digest();
-  params.set("hash", createHmac("sha256", secret).update(checkString).digest("hex"));
-  return params.toString();
-}
-
 async function createOwnerContext(db, actorId = OWNER_ID) {
   const store = new ConnectionLinkStore(createDurableObjectState());
   const register = (telegramUserId) => store.fetch(new Request("https://do.internal/register", {
@@ -169,22 +153,7 @@ async function createOwnerContext(db, actorId = OWNER_ID) {
       OWNER_TELEGRAM_ID: String(OWNER_ID),
       CONNECT_LINKS: binding,
     },
-    initData: makeWebAppInitData({ id: actorId, first_name: actorId === OWNER_ID ? "Owner" : "Member" }),
   };
-}
-
-function recoveryRequest(initData, chatId, updatedAtMs) {
-  return new Request("https://kagecatch-control.ahora-project.workers.dev/api/owner/safety/recover", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      initData,
-      action: "chat_circuit",
-      chat_id: String(chatId),
-      confirmation: "RESET_CHAT_CIRCUIT",
-      expected_updated_at_ms: updatedAtMs,
-    }),
-  });
 }
 
 test("telegramApi persists a 429 retry_after globally and blocks the next outbound mutation", async () => {

@@ -1,3 +1,5 @@
+> **Historical document — superseded.** The proposed web dashboard and Telegram Mini App described below were retired. KageCatch is controlled only through the Telegram bot; browser login links and web Owner-panel routes are not part of the current design. See the repository README for the active architecture and safety boundaries.
+
 # KageCatch Professional Panel and Core Roadmap
 
 ## Product direction
