@@ -6,6 +6,8 @@ selects a provider, reads credentials, downloads media, or sends images elsewher
 
 from __future__ import annotations
 
+import asyncio
+import math
 from collections.abc import Iterable
 from typing import Protocol
 
@@ -23,6 +25,8 @@ _SUPPORTED_MEDIA_TYPES = frozenset({
 })
 _DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 _MAX_CONFIGURED_IMAGE_BYTES = 10 * 1024 * 1024
+_DEFAULT_MODEL_TIMEOUT_SECONDS = 30.0
+_MAX_MODEL_TIMEOUT_SECONDS = 120.0
 
 
 class CharacterVisionModel(Protocol):
@@ -43,6 +47,7 @@ class CharacterModelAdapter:
         model: CharacterVisionModel,
         *,
         max_image_bytes: int = _DEFAULT_MAX_IMAGE_BYTES,
+        timeout_seconds: float = _DEFAULT_MODEL_TIMEOUT_SECONDS,
     ) -> None:
         if not isinstance(engine, CharacterRecognitionEngine):
             raise TypeError("engine must be a CharacterRecognitionEngine")
@@ -54,10 +59,25 @@ class CharacterModelAdapter:
             or not 1 <= max_image_bytes <= _MAX_CONFIGURED_IMAGE_BYTES
         ):
             raise ValueError("max_image_bytes must be an integer from 1 to 10485760")
+        timeout_value = None
+        if not isinstance(timeout_seconds, bool) and isinstance(
+            timeout_seconds, (int, float)
+        ):
+            try:
+                timeout_value = float(timeout_seconds)
+            except (OverflowError, TypeError, ValueError):
+                timeout_value = None
+        if (
+            timeout_value is None
+            or not math.isfinite(timeout_value)
+            or not 0.0 < timeout_value <= _MAX_MODEL_TIMEOUT_SECONDS
+        ):
+            raise ValueError("timeout_seconds must be finite and from 0 to 120")
 
         self.engine = engine
         self.model = model
         self.max_image_bytes = max_image_bytes
+        self.timeout_seconds = timeout_value
 
     async def recognize(
         self, image: bytes, *, media_type: str
@@ -70,7 +90,10 @@ class CharacterModelAdapter:
             return self._review("unsupported_media_type")
 
         try:
-            candidates = await self.model.predict(image, media_type=media_type)
+            async with asyncio.timeout(self.timeout_seconds):
+                candidates = await self.model.predict(image, media_type=media_type)
+        except TimeoutError:
+            return self._review("model_timeout")
         except Exception:
             # Do not leak provider errors, credentials, or request details.
             return self._review("model_unavailable")

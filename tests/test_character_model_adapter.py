@@ -52,6 +52,23 @@ class CharacterModelAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "review")
         self.assertEqual(result.reason, "low_confidence")
 
+
+    async def test_model_timeout_fails_closed_with_specific_review_reason(self):
+        import asyncio
+
+        class HangingModel:
+            async def predict(self, image: bytes, *, media_type: str):
+                await asyncio.Event().wait()
+
+        adapter = CharacterModelAdapter(
+            self.engine, HangingModel(), timeout_seconds=0.01
+        )
+
+        result = await adapter.recognize(b"image-bytes", media_type="image/jpeg")
+
+        self.assertEqual(result.status, "review")
+        self.assertEqual(result.reason, "model_timeout")
+
     async def test_model_failure_fails_closed_without_exposing_exception(self):
         model = FakeVisionModel(error=RuntimeError("private provider detail"))
         adapter = CharacterModelAdapter(self.engine, model)
@@ -128,6 +145,11 @@ class CharacterModelAdapterTests(unittest.IsolatedAsyncioTestCase):
         model = FakeVisionModel()
         with self.assertRaises(ValueError):
             CharacterModelAdapter(self.engine, model, max_image_bytes=True)
+
+    async def test_rejects_unrepresentably_large_model_timeout(self):
+        model = FakeVisionModel()
+        with self.assertRaises(ValueError):
+            CharacterModelAdapter(self.engine, model, timeout_seconds=10 ** 10000)
 
 
 if __name__ == "__main__":
