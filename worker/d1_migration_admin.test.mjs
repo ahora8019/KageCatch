@@ -11,20 +11,15 @@ const EXPECTED_LEDGER = [
   "0006_manual_review_spawn_context.sql",
 ];
 
-function createMigrationDb() {
+function createMigrationDb({ failOn = null, partial = [] } = {}) {
   const state = {
     tables: ["_cf_KV", "d1_migrations", "manual_review_items", "panel_requests", "sqlite_sequence", "telegram_auth_challenges", "telegram_sessions"],
-    ledger: [...EXPECTED_LEDGER],
+    ledger: [...EXPECTED_LEDGER, ...partial],
     executed: [],
   };
+  if (partial.includes("0005_telegram_bot_safety.sql")) state.tables.push("telegram_bot_safety");
   return {
     state,
-    async exec(sql) {
-      state.executed.push(sql);
-      for (const match of sql.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/g)) {
-        if (!state.tables.includes(match[1])) state.tables.push(match[1]);
-      }
-    },
     prepare(sql) {
       if (sql.startsWith("SELECT name FROM d1_migrations")) {
         return { all: async () => ({ results: state.ledger.map((name) => ({ name })) }) };
@@ -35,11 +30,18 @@ function createMigrationDb() {
       if (sql.startsWith("INSERT INTO d1_migrations")) {
         return { bind: (name) => ({ run: async () => { state.ledger.push(name); return { success: true }; } }) };
       }
-      throw new Error("unexpected migration query");
+      return {
+        run: async () => {
+          if (failOn && sql.includes(failOn)) throw new Error("simulated D1 statement failure");
+          state.executed.push(sql);
+          const match = sql.match(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/);
+          if (match && !state.tables.includes(match[1])) state.tables.push(match[1]);
+          return { success: true };
+        },
+      };
     },
   };
 }
-
 function migrationRequest(body, secret = SECRET) {
   return new Request("https://kagecatch-control.ahora-project.workers.dev/admin/d1-migrations", {
     method: "POST",
@@ -96,9 +98,35 @@ test("D1 migration endpoint applies only the three allowlisted missing safety mi
     "0007_telegram_bot_chat_pacing.sql",
     "0008_telegram_bot_chat_circuit_breaker.sql",
   ]);
-  assert.equal(db.state.executed.length, 3);
+  assert.equal(db.state.executed.length, 6);
 });
 
+
+test("D1 migration endpoint safely resumes after a partial migration run", async () => {
+  const db = createMigrationDb({ partial: ["0005_telegram_bot_safety.sql"] });
+  const response = await worker.fetch(migrationRequest(confirmation), {
+    CORE_API_SECRET: SECRET,
+    KAGECATCH_DB: db,
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.deepEqual(result.rechecked, ["0005_telegram_bot_safety.sql"]);
+  assert.deepEqual(result.applied, ["0007_telegram_bot_chat_pacing.sql", "0008_telegram_bot_chat_circuit_breaker.sql"]);
+  assert.equal(result.status, "ready");
+});
+
+test("D1 migration endpoint reports the failing migration phase without SQL details", async () => {
+  const db = createMigrationDb({ failOn: "CREATE TABLE IF NOT EXISTS telegram_bot_chat_pacing" });
+  const response = await worker.fetch(migrationRequest(confirmation), {
+    CORE_API_SECRET: SECRET,
+    KAGECATCH_DB: db,
+  });
+  assert.equal(response.status, 500);
+  const result = await response.json();
+  assert.equal(result.phase, "apply:0007_telegram_bot_chat_pacing.sql");
+  assert.equal(result.error_name, "Error");
+  assert.equal(db.state.ledger.at(-1), "0005_telegram_bot_safety.sql");
+});
 
 test("D1 migration endpoint accepts the one-time deployment approval binding", async () => {
   const db = createMigrationDb();
@@ -109,7 +137,7 @@ test("D1 migration endpoint accepts the one-time deployment approval binding", a
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.equal(result.status, "ready");
-  assert.equal(db.state.executed.length, 3);
+  assert.equal(db.state.executed.length, 6);
 });
 
 test("D1 migration endpoint rejects an absent secret and absent one-time approval", async () => {
