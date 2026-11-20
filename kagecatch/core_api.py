@@ -254,11 +254,6 @@ def create_app(
                 review_queue=app.state.review_queue,
             )
 
-        # Bind only after the review pipeline exists. SessionRuntime attaches
-        # the controller to each authorized account, and its incoming callback
-        # reads this handler dynamically.
-        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
-        set_handler = getattr(controller, "set_incoming_handler", None)
         if (app.state.job_queue is not None and app.state.review_queue is not None
                 and spawn_detector is not None and character_resolver is not None):
             from .recognition_job_producer import RecognitionJobProducer
@@ -281,13 +276,17 @@ def create_app(
                 app.state.recognition_worker.run_forever(stop_event=stop_event),
                 name="kagecatch-recognition-worker",
             )
-        # The recognition queue is deliberately not an incoming-event
-        # handler. CatchPipeline must remain the single owner of detection and
-        # Catch safety decisions; it may enqueue an already-detected Spawn on
-        # its manual-review branch through a dedicated adapter. Never replace
-        # that guarded path with RecognitionJobProducer.process(raw_event).
+        # The recognition queue is deliberately not an incoming-event handler.
+        # CatchPipeline must remain the single owner of detection and Catch
+        # safety decisions; it enqueues an already-detected Spawn only on the
+        # manual-review path. Never bind the producer to raw Telegram events.
+        # Bind only after the review pipeline exists. SessionRuntime attaches
+        # the controller to each authorized account, and its incoming callback
+        # reads this handler dynamically.
+        controller = getattr(runtime, "_selfbot_controller", None) if runtime is not None else None
+        set_handler = getattr(controller, "set_incoming_handler", None)
         incoming_pipeline = app.state.catch_pipeline or app.state.review_pipeline
-        if callable(set_handler) and incoming_pipeline is not None:
+        if incoming_pipeline is not None and callable(set_handler):
             async def process_incoming(user_id: str, event) -> None:
                 await incoming_pipeline.process(event=event, user_id=user_id)
             set_handler(process_incoming)
