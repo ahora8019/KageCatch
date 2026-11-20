@@ -318,11 +318,23 @@ async function health(env) {
     const corePromise = env.CORE_API_URL && env.CORE_API_SECRET
       ? coreRequest(env, "GET", "/v1/health")
       : Promise.resolve({ status: 503, data: { status: "not_connected" } });
-    const [webhook, bot, core] = await Promise.all([
+    const d1Promise = (async () => {
+      try {
+        if (!env.KAGECATCH_DB) return null;
+        return await env.KAGECATCH_DB.prepare(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('telegram_bot_safety', 'telegram_bot_chat_pacing', 'telegram_bot_chat_circuit_breaker')"
+        ).first();
+      } catch {
+        return null;
+      }
+    })();
+    const [webhook, bot, core, d1] = await Promise.all([
       telegramApi(env, "getWebhookInfo"),
       telegramApi(env, "getMe"),
       corePromise,
+      d1Promise,
     ]);
+    const d1RequiredTables = Number.isSafeInteger(d1?.count) ? d1.count : null;
     const expectedUrl = new URL(WEBHOOK_PATH, "https://kagecatch-control.ahora-project.workers.dev").toString();
     return json({
       service: "KageCatch Control",
@@ -332,6 +344,11 @@ async function health(env) {
       bot: { id: bot.id, username: bot.username, first_name: bot.first_name },
       pending_updates: webhook.pending_update_count ?? 0,
       last_telegram_error: webhook.last_error_message ?? null,
+      last_telegram_error_at: Number.isSafeInteger(webhook.last_error_date)
+        ? new Date(webhook.last_error_date * 1000).toISOString()
+        : null,
+      d1_storage: d1RequiredTables === 3 ? "ready" : d1RequiredTables === null ? "unavailable" : "schema_incomplete",
+      d1_required_tables: d1RequiredTables,
       python_core: core.status === 200 && core.data?.status === "ready" ? "connected" : core.status === 503 && core.data?.status === "degraded" ? "degraded" : "unreachable",
       version: VERSION,
     });
