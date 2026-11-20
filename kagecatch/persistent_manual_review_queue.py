@@ -1,4 +1,4 @@
-"""Durable implementation of the ManualReviewQueue state-machine contract."""
+""""Durable implementation of the ManualReviewQueue state-machine contract."""
 
 from __future__ import annotations
 
@@ -116,14 +116,27 @@ class PersistentManualReviewQueue:
     @staticmethod
     def _deserialize(record: dict) -> ReviewItem:
         try:
+            created_at = datetime.fromisoformat(record["created_at"])
+            expires_at = datetime.fromisoformat(record["expires_at"])
+            if (
+                created_at.tzinfo is None
+                or created_at.utcoffset() is None
+                or expires_at.tzinfo is None
+                or expires_at.utcoffset() is None
+            ):
+                raise ValueError("stored timestamps must be timezone-aware")
+            created_at = created_at.astimezone(timezone.utc)
+            expires_at = expires_at.astimezone(timezone.utc)
+            if expires_at <= created_at:
+                raise ValueError("stored expiry must follow creation")
             return ReviewItem(
                 review_id=record["review_id"],
                 user_id=record["user_id"],
                 spawn_id=int(record["spawn_id"]),
                 anime_name=record["anime_name"],
                 candidates=tuple(record["candidates"]),
-                created_at=datetime.fromisoformat(record["created_at"]).astimezone(timezone.utc),
-                expires_at=datetime.fromisoformat(record["expires_at"]).astimezone(timezone.utc),
+                created_at=created_at,
+                expires_at=expires_at,
                 status=ReviewStatus(record["status"]),
                 selected_character=record.get("selected_character"),
             )
