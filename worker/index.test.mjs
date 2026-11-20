@@ -1,7 +1,8 @@
 import "./panel_queue.test.mjs";
+import "./telegram_login_ui.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply, isSavedAccountStatus } from "./index.mjs";
 
 test("panel explains login requirements and never leaves the connect button silent", async () => {
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
@@ -33,11 +34,11 @@ test("main menu is inline-first and exposes the agreed account controls", () => 
   assert.equal(menu.inline_keyboard.flat().some((button) => button.url), false);
 });
 
-test("connect callback explains the standalone account link without exposing a chat credential prompt", () => {
+test("connect callback starts a Telegram-native phone and keypad login flow", () => {
   const result = resolveCallback("account:connect");
-  assert.match(result.text, /لینک مخصوص خودت ساخته بشه/);
-  assert.match(result.text, /صفحهٔ ورود باز بشه/);
-  assert.doesNotMatch(result.text, /پنل|کد ورود را بفرست|رمز دومرحله‌ای را وارد کن/);
+  assert.match(result.text, /شماره تلفنت/);
+  assert.match(result.text, /صفحه‌کلید داخل همین بات/);
+  assert.doesNotMatch(result.text, /لینک مخصوص|صفحهٔ ورود باز بشه/);
 });
 
 test("account and security callbacks disclose only current unavailable state", () => {
@@ -1721,4 +1722,131 @@ test("manual webhook setup derives the webhook host from the incoming Worker ori
   }), env);
   assert.equal(response.status, 200);
   assert.equal(webhookUrl, "https://custom-worker.example/webhook");
+});
+
+
+
+test("native account login completes in private Telegram chat with optional 2FA and direct no-2FA success", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const binding = {
+    idFromName: () => "connection-links-v1",
+    get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }),
+  };
+  for (const telegramUserId of [500123, 500124]) {
+    await store.fetch(new Request("https://do.internal/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ telegramUserId, ownerTelegramId: "999001" }),
+    }));
+  }
+
+  const telegramCalls = [];
+  const coreCalls = [];
+  const env = {
+    KAGECATCH_DB: createTelegramSafetyDb(),
+    CONNECT_LINKS: binding,
+    OWNER_TELEGRAM_ID: "999001",
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "hook-secret",
+    CORE_API_URL: "https://core.example",
+    CORE_API_SECRET: "core-secret-with-at-least-32-characters",
+    FETCH: async (url, init) => {
+      const target = String(url);
+      if (target.startsWith("https://api.telegram.org/")) {
+        const method = target.split("/").pop();
+        const payload = JSON.parse(init.body);
+        telegramCalls.push({ method, payload });
+        return new Response(JSON.stringify({ ok: true, result: method === "sendMessage" ? { message_id: 77 } : {} }), { status: 200 });
+      }
+      const payload = init.body ? JSON.parse(init.body) : null;
+      coreCalls.push({ url: target, payload });
+      if (/\\/v1\\/accounts\\/(500123|500124)\\/connect$/.test(target)) return new Response(JSON.stringify({ status: "code_sent" }), { status: 200 });
+      if (target.endsWith("/v1/accounts/500123/connect/code")) return new Response(JSON.stringify({ status: "password_required" }), { status: 200 });
+      if (target.endsWith("/v1/accounts/500124/connect/code")) return new Response(JSON.stringify({ status: "connected" }), { status: 200 });
+      if (target.endsWith("/v1/accounts/500123/connect/password")) return new Response(JSON.stringify({ status: "connected" }), { status: 200 });
+      return new Response(JSON.stringify({ error: "unexpected_core_route" }), { status: 404 });
+    },
+  };
+
+  const webhook = async (update_id, update) => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
+    body: JSON.stringify({ update_id, ...update }),
+  }), env);
+
+  const callback = (id, data, messageId = 1, telegramUserId = 500123) => ({
+    callback_query: {
+      id: "cb-" + id,
+      data,
+      from: { id: telegramUserId },
+      message: { message_id: messageId, chat: { id: telegramUserId, type: "private" } },
+    },
+  });
+  const message = (id, text, telegramUserId = 500123) => ({
+    message: {
+      message_id: id,
+      text,
+      chat: { id: telegramUserId, type: "private" },
+      from: { id: telegramUserId, first_name: "Member" },
+    },
+  });
+
+  assert.equal((await webhook(1, callback(1, "account:connect"))).status, 200);
+  assert.equal((await webhook(2, message(2, "+989121234567"))).status, 200);
+
+  const keypadMessage = telegramCalls.find((call) => call.method === "sendMessage" && call.payload.reply_markup?.inline_keyboard?.flat().some((button) => button.callback_data === "auth:submit"));
+  assert.ok(keypadMessage);
+  const keypadButtons = keypadMessage.payload.reply_markup.inline_keyboard.flat();
+  assert.ok(keypadButtons.every((button) => !/\\d{4,}/.test(button.callback_data)));
+
+  for (const [index, digit] of ["1", "2", "3", "4", "5"].entries()) {
+    assert.equal((await webhook(3 + index, callback(3 + index, "auth:digit:" + digit, 77))).status, 200);
+  }
+  assert.equal((await webhook(8, callback(8, "auth:submit", 77))).status, 200);
+  assert.equal((await webhook(9, message(9, "private-2fa-password"))).status, 200);
+
+  const codeRequest = coreCalls.find((call) => call.url.endsWith("/connect/code"));
+  const passwordRequest = coreCalls.find((call) => call.url.endsWith("/connect/password"));
+  assert.deepEqual(codeRequest.payload, { code: "12345" });
+  assert.deepEqual(passwordRequest.payload, { password: "private-2fa-password" });
+  assert.ok(telegramCalls.some((call) => call.method === "deleteMessage" && call.payload.message_id === 2));
+  assert.ok(telegramCalls.some((call) => call.method === "deleteMessage" && call.payload.message_id === 9));
+  assert.ok(telegramCalls.some((call) => call.method === "sendMessage" && /با موفقیت متصل شد/.test(call.payload.text)));
+  assert.ok(telegramCalls.every((call) => !JSON.stringify(call.payload).includes("12345")));
+  assert.ok(telegramCalls.every((call) => !JSON.stringify(call.payload).includes("private-2fa-password")));
+
+  const remaining = await store.fetch(new Request("https://do.internal/auth-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 500123, action: "get" }),
+  }));
+  assert.deepEqual(await remaining.json(), { state: null });
+
+  assert.equal((await webhook(10, callback(10, "account:connect", 1, 500124))).status, 200);
+  assert.equal((await webhook(11, message(11, "+989121234568", 500124))).status, 200);
+  for (const [index, digit] of ["6", "5", "4", "3", "2"].entries()) {
+    assert.equal((await webhook(12 + index, callback(12 + index, "auth:digit:" + digit, 77, 500124))).status, 200);
+  }
+  assert.equal((await webhook(17, callback(17, "auth:submit", 77, 500124))).status, 200);
+
+  const directCodeRequest = coreCalls.find((call) => call.url.endsWith("/v1/accounts/500124/connect/code"));
+  assert.deepEqual(directCodeRequest.payload, { code: "65432" });
+  assert.equal(coreCalls.some((call) => call.url.endsWith("/v1/accounts/500124/connect/password")), false);
+  const directUserMessages = telegramCalls.filter((call) => call.payload.chat_id === 500124);
+  assert.ok(directUserMessages.some((call) => call.method === "editMessageText" && /با موفقیت متصل شد/.test(call.payload.text)));
+  assert.equal(directUserMessages.some((call) => /رمز دومرحله‌ای/.test(call.payload.text)), false);
+  const directRemaining = await store.fetch(new Request("https://do.internal/auth-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 500124, action: "get" }),
+  }));
+  assert.deepEqual(await directRemaining.json(), { state: null });
+});
+
+test("saved account statuses include connected and authorized only", () => {
+  assert.equal(isSavedAccountStatus("connected"), true);
+  assert.equal(isSavedAccountStatus("authorized"), true);
+  assert.equal(isSavedAccountStatus("pending"), false);
 });
