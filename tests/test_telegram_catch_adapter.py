@@ -58,6 +58,57 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         receipt = await adapter.send_catch(self.spawn(), "Sakura")
         self.assertTrue(await adapter.verify_catch(receipt))
 
+    async def test_verifier_must_return_literal_true(self):
+        client = FakeClient()
+
+        async def verifier(*args):
+            return "verified"
+
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipt = await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertFalse(await adapter.verify_catch(receipt))
+
+    async def test_modified_receipt_cannot_reuse_a_sent_message(self):
+        from kagecatch.engine import CatchReceipt
+
+        client = FakeClient()
+
+        async def verifier(*args):
+            return True
+
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipt = await adapter.send_catch(self.spawn(), "Sakura")
+        forged = CatchReceipt(reference=receipt.reference, character_name="Other")
+
+        self.assertFalse(await adapter.verify_catch(forged))
+
+    async def test_verifier_exception_fails_closed(self):
+        client = FakeClient()
+
+        async def verifier(*args):
+            raise RuntimeError("listener unavailable")
+
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipt = await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertFalse(await adapter.verify_catch(receipt))
+
     async def test_rejects_spawn_from_another_source_before_sending(self):
         client = FakeClient()
         adapter = TelethonCatchAdapter(
