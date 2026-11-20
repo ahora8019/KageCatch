@@ -243,6 +243,58 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(queue.quarantined), 1)
             self.assertEqual(queue.failed, [])
 
+    async def test_review_write_is_idempotent_when_ack_fails_after_persistence(self):
+        class ReclaimedQueue:
+            def __init__(self):
+                self.claims = 0
+                self.completions = []
+                self.failures = []
+            async def claim_next(self, worker_id, *, lease_seconds=60, job_types=None):
+                self.claims += 1
+                if self.claims > 2:
+                    return None
+                return SimpleNamespace(
+                    job_id="job-retry", lease_generation=self.claims,
+                    payload=Job.payload,
+                )
+            async def renew_lease(self, job_id, worker_id, *, lease_generation, lease_seconds=60):
+                return 999999.0
+            async def complete(self, job_id, worker_id, *, lease_generation):
+                self.completions.append(lease_generation)
+                if lease_generation == 1:
+                    raise RuntimeError("simulated ack failure after durable review write")
+            async def fail(self, job_id, worker_id, *, lease_generation, retry_delay=0):
+                self.failures.append(lease_generation)
+                return "queued"
+            async def dead_letter(self, job_id, worker_id, *, lease_generation):
+                raise AssertionError("valid payload must not be dead-lettered")
+
+        class IdempotentReviews:
+            def __init__(self):
+                self.items = {}
+                self.calls = 0
+            async def enqueue(self, **kwargs):
+                self.calls += 1
+                key = kwargs["idempotency_key"]
+                return self.items.setdefault(key, {"id": "review-durable"})
+
+        queue = ReclaimedQueue()
+        reviews = IdempotentReviews()
+        worker = RecognitionWorker(
+            queue=queue, resolver=FakeResolver(SimpleNamespace(candidates=("A", "B"))),
+            review_queue=reviews, worker_id="recognizer",
+        )
+
+        first = await worker.run_once()
+        second = await worker.run_once()
+
+        self.assertEqual(first.status, "retry_scheduled")
+        self.assertEqual(second.status, "review_queued")
+        self.assertEqual(reviews.calls, 2)
+        self.assertEqual(len(reviews.items), 1)
+        self.assertEqual(queue.failures, [1])
+        self.assertEqual(queue.completions, [1, 2])
+
     async def test_empty_queue_is_idle(self):
         worker = RecognitionWorker(queue=FakeQueue(None), resolver=FakeResolver(),
                                    review_queue=FakeReviewQueue(), worker_id="recognizer")
