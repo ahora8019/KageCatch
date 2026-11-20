@@ -59,18 +59,25 @@ class CharacterModelAdapter:
             or not 1 <= max_image_bytes <= _MAX_CONFIGURED_IMAGE_BYTES
         ):
             raise ValueError("max_image_bytes must be an integer from 1 to 10485760")
+        timeout_value = None
+        if not isinstance(timeout_seconds, bool) and isinstance(
+            timeout_seconds, (int, float)
+        ):
+            try:
+                timeout_value = float(timeout_seconds)
+            except (OverflowError, TypeError, ValueError):
+                timeout_value = None
         if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(float(timeout_seconds))
-            or not 0.0 < float(timeout_seconds) <= _MAX_MODEL_TIMEOUT_SECONDS
+            timeout_value is None
+            or not math.isfinite(timeout_value)
+            or not 0.0 < timeout_value <= _MAX_MODEL_TIMEOUT_SECONDS
         ):
             raise ValueError("timeout_seconds must be finite and from 0 to 120")
 
         self.engine = engine
         self.model = model
         self.max_image_bytes = max_image_bytes
-        self.timeout_seconds = float(timeout_seconds)
+        self.timeout_seconds = timeout_value
 
     async def recognize(
         self, image: bytes, *, media_type: str
