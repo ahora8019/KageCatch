@@ -77,7 +77,6 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.review_id, second.review_id)
         self.assertEqual(len(store.records), 1)
 
-
     async def test_same_idempotency_key_is_scoped_per_user(self):
         store = FakeDurableStore()
         queue = PersistentManualReviewQueue(store=store)
@@ -153,6 +152,31 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await queue.enqueue(user_id="12345", spawn_id=1, anime_name="KonoSuba", candidates=tuple(f"C{i}" for i in range(31)))
         self.assertEqual(store.records, {})
+
+    async def test_rejects_naive_stored_timestamps(self):
+        store = FakeDurableStore()
+        queue = PersistentManualReviewQueue(store=store)
+        item = await queue.enqueue(
+            user_id="12345", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin",),
+        )
+        record = dict(store.records[item.review_id])
+        record["created_at"] = "2026-11-08T12:00:00"
+        with self.assertRaises(RuntimeError):
+            queue._deserialize(record)
+
+    async def test_rejects_non_positive_stored_expiry_window(self):
+        store = FakeDurableStore()
+        queue = PersistentManualReviewQueue(store=store)
+        item = await queue.enqueue(
+            user_id="12345", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin",),
+        )
+        record = dict(store.records[item.review_id])
+        for expires_at in ("2026-11-08T12:00:00+00:00", "2026-11-08T11:59:59+00:00"):
+            record["expires_at"] = expires_at
+            with self.assertRaises(RuntimeError):
+                queue._deserialize(record)
 
     async def test_expiry_delegates_to_durable_store(self):
         class ExpiringStore(FakeDurableStore):
