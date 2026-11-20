@@ -695,6 +695,12 @@ async function handleCallback(callback, env) {
         await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست تلگرام ذخیره شد؛ اما فعال‌شدن کلاینت نیازمند بررسی Core است.", reply_markup: BACK_MENU });
         return;
       }
+      const pendingStatus = await coreRequest(env, "GET", "/v1/accounts/" + callback.from.id + "/connect/status");
+      if (pendingStatus.status === 200 && pendingStatus.data?.status !== "pending") {
+        await authStateRequest(env, callback.from.id, "delete");
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⏳ تلاش‌های ورود پایان یافت یا درخواست منقضی شد. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+        return;
+      }
       const nextCode = result.status === 400 ? "" : code;
       await authStateRequest(env, callback.from.id, "set", { ...state, code: nextCode });
       await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.status === 400 ? "❌ کد اشتباه است. دوباره وارد کن.\n\n" + maskLoginCode("") : "⚠️ ارتباط با Core برقرار نشد؛ دوباره تلاش کن.", reply_markup: buildLoginCodeKeyboard() });
@@ -849,7 +855,13 @@ async function handleWebhook(request, env) {
           await authStateRequest(env, message.from.id, "delete");
           await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "✅ حساب تلگرام با موفقیت متصل شد.", reply_markup: BACK_MENU });
         } else {
-          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "❌ رمز دومرحله‌ای تأیید نشد یا اتصال ناموفق بود. دوباره تلاش کن یا /cancel را بزن.", reply_markup: BACK_MENU });
+          const pendingStatus = await coreRequest(env, "GET", "/v1/accounts/" + message.from.id + "/connect/status");
+          if (pendingStatus.status === 200 && pendingStatus.data?.status !== "pending") {
+            await authStateRequest(env, message.from.id, "delete");
+            await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⏳ تلاش‌های ورود پایان یافت یا درخواست منقضی شد. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+          } else {
+            await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "❌ رمز دومرحله‌ای تأیید نشد. دوباره تلاش کن یا /cancel را بزن.", reply_markup: BACK_MENU });
+          }
         }
       } catch {
         await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
