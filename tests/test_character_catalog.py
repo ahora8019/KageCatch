@@ -97,5 +97,19 @@ class CharacterCatalogTests(unittest.TestCase):
         self.assertEqual(result.character.character_id, "sakura-001")
 
 
+    def test_rejects_candidate_stream_larger_than_configured_limit(self):
+        engine = CharacterRecognitionEngine(self.catalog, max_candidates=3)
+        consumed = []
+
+        def candidates():
+            for index in range(1000):
+                consumed.append(index)
+                yield RecognitionCandidate(name=f"Candidate {index}", confidence=0.9)
+
+        with self.assertRaisesRegex(ValueError, "at most 3 candidates"):
+            engine.recognize(candidates())
+        self.assertEqual(consumed, [0, 1, 2, 3])
+
+
 if __name__ == "__main__":
     unittest.main()
