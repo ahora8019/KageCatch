@@ -70,6 +70,34 @@ class TelegramSelfbotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(received, [("12345", event)])
 
+    async def test_incoming_handler_resolves_lazy_sender_before_dispatch(self):
+        received = []
+
+        class LazySenderEvent:
+            sender = None
+
+            def __init__(self):
+                self.sender_loaded = False
+
+            async def get_sender(self):
+                self.sender_loaded = True
+                self.sender = types.SimpleNamespace(username="SenpaiCatcherBot")
+                return self.sender
+
+        controller = TelegramSelfbotController(
+            incoming_handler=lambda user_id, event: received.append(
+                (user_id, event, event.sender.username if event.sender else None)
+            )
+        )
+        client = FakeClient()
+        await controller.attach(client, "12345")
+        event = LazySenderEvent()
+
+        await client.handlers[0][0](event)
+
+        self.assertTrue(event.sender_loaded)
+        self.assertEqual(received, [("12345", event, "SenpaiCatcherBot")])
+
     async def test_dot_commands_control_only_the_current_users_catch_state(self):
         controller = TelegramSelfbotController()
         client = FakeClient()

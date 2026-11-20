@@ -356,3 +356,54 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(catch_pipeline.events, [("2001", event)])
         self.assertEqual(review_pipeline.events, [])
 
+
+
+
+class DefaultSpawnWiringTests(unittest.TestCase):
+    def test_configured_senpai_recognition_uses_confirmed_bot_username(self):
+        import os
+        from unittest.mock import patch
+
+        from kagecatch.core_api import _configured_spawn_recognition
+        from kagecatch.character_resolver import CharacterResolver
+        from kagecatch.spawn_detector import SpawnDetector
+        from kagecatch.targets.senpai_catcher import SenpaiCatcherAdapter
+
+        with patch.dict(os.environ, {"KAGECATCH_SENPAI_BOT_USERNAME": "SenpaiCatcherBot"}):
+            detector, resolver = _configured_spawn_recognition()
+
+        self.assertIsInstance(detector, SpawnDetector)
+        self.assertEqual(len(detector.adapters), 1)
+        self.assertIsInstance(detector.adapters[0], SenpaiCatcherAdapter)
+        self.assertEqual(detector.adapters[0].sender_username, "senpaicatcherbot")
+        self.assertIsNone(detector.adapters[0].catch_command_template)
+        self.assertIsInstance(resolver, CharacterResolver)
+
+    def test_runtime_default_spawn_components_are_bound_to_review_pipeline(self):
+        from kagecatch.review_pipeline import ReviewPipeline
+
+        class SelfbotRegistry:
+            def set_incoming_handler(self, handler):
+                self.handler = handler
+
+        class RuntimeWithSpawnComponents(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self._selfbot_controller = SelfbotRegistry()
+                self._spawn_detector = object()
+                self._character_resolver = object()
+
+        runtime = RuntimeWithSpawnComponents()
+        app = create_app(
+            core_secret=SECRET,
+            runtime=runtime,
+            session_manager=self.sessions if hasattr(self, "sessions") else FakeSessionManager(),
+            auth_flow=FakeAuthFlow(),
+            review_store=object(),
+        )
+
+        with TestClient(app):
+            self.assertIsInstance(app.state.review_pipeline, ReviewPipeline)
+            self.assertIs(app.state.review_pipeline.detector, runtime._spawn_detector)
+            self.assertIs(app.state.review_pipeline.resolver, runtime._character_resolver)
+            self.assertIsNotNone(runtime._selfbot_controller.handler)
