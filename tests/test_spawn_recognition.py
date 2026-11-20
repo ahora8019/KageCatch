@@ -155,9 +155,13 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.downloaded = None
 
-            async def download_media(self, message, file):
-                self.downloaded = (message, file)
-                return b"downloaded-video"
+            def iter_download(self, message, *, request_size):
+                self.downloaded = (message, request_size)
+
+                async def chunks():
+                    yield b"downloaded-video"
+
+                return chunks()
 
         class RecordingFrameExtractor:
             def __init__(self):
@@ -176,7 +180,7 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
         result = await extractor.extract_first_frame(event)
 
         self.assertEqual(result, b"jpeg-frame")
-        self.assertEqual(client.downloaded, (message, bytes))
+        self.assertEqual(client.downloaded, (message, 64 * 1024))
         self.assertEqual(frames.video, b"downloaded-video")
 
     async def test_telethon_extractor_rejects_oversized_media_before_download(self):
@@ -192,6 +196,54 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(MetadataLookupError):
             await extractor.extract_first_frame(event)
+
+
+    async def test_telethon_extractor_streams_unknown_size_and_stops_at_limit(self):
+        from kagecatch.targets.senpai_catcher import TelethonFrameExtractor, MetadataLookupError
+
+        class Client:
+            def __init__(self):
+                self.request_size = None
+                self.yielded = 0
+                self.closed = False
+
+            def iter_download(self, message, *, request_size):
+                self.request_size = request_size
+
+                async def chunks():
+                    try:
+                        for chunk in (b"a" * 40, b"b" * 40, b"c" * 40, b"unused"):
+                            self.yielded += 1
+                            yield chunk
+                    finally:
+                        self.closed = True
+
+                return chunks()
+
+        client = Client()
+        message = SimpleNamespace(file=SimpleNamespace(size=None), client=client)
+        event = SimpleNamespace(message=message, client=client)
+        extractor = TelethonFrameExtractor(max_video_bytes=100)
+
+        with self.assertRaises(MetadataLookupError):
+            await extractor.extract_first_frame(event)
+
+        self.assertEqual(client.request_size, 64 * 1024)
+        self.assertEqual(client.yielded, 3)
+        self.assertTrue(client.closed)
+
+    async def test_telethon_extractor_rejects_clients_without_streaming_download(self):
+        from kagecatch.targets.senpai_catcher import TelethonFrameExtractor, MetadataLookupError
+
+        class Client:
+            async def download_media(self, message, file):
+                return b"unbounded-download"
+
+        message = SimpleNamespace(file=SimpleNamespace(size=None), client=Client())
+        event = SimpleNamespace(message=message, client=message.client)
+
+        with self.assertRaises(MetadataLookupError):
+            await TelethonFrameExtractor().extract_first_frame(event)
 
 
 class SpawnDetectorTests(unittest.IsolatedAsyncioTestCase):
