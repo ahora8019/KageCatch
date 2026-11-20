@@ -102,6 +102,17 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "invalid_metadata")
         self.assertEqual(len(queue.quarantined), 1)
 
+    async def test_unsupported_media_kind_is_dead_lettered(self):
+        payload = dict(Job.payload)
+        payload["origin"] = dict(Job.payload["origin"], media_kind="audio")
+        job = SimpleNamespace(job_id="bad-media", lease_generation=4, payload=payload)
+        queue = FakeQueue(job)
+        worker = RecognitionWorker(queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(), worker_id="recognizer")
+        result = await worker.run_once()
+        self.assertEqual(result.status, "invalid_metadata")
+        self.assertEqual(queue.quarantined, [("bad-media", "recognizer", 4)])
+        self.assertEqual(queue.completed, [])
+
     async def test_resolver_failure_retries_job(self):
         queue = FakeQueue(Job())
         worker = RecognitionWorker(queue=queue, resolver=FakeResolver(error=RuntimeError("private")),
