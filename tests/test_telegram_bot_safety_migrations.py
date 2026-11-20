@@ -107,6 +107,7 @@ class TelegramBotSafetyMigrationTests(unittest.TestCase):
                     "0005_telegram_bot_safety.sql",
                     "0007_telegram_bot_chat_pacing.sql",
                     "0008_telegram_bot_chat_circuit_breaker.sql",
+                    "0009_durable_job_queue.sql",
                 ],
             )
             review_columns = {

@@ -117,7 +117,7 @@ The private Telegram bot is the only control surface. Members use inline menus f
 
 `kagecatch/job_queue.py` implements a local SQLite queue with typed jobs, idempotency, priority, delayed scheduling, bounded retry/dead-letter behavior, fenced leases, heartbeat renewal, and expired-lease recovery. The `RecognitionWorker` claims only `spawn.recognize` jobs and persists resolved candidates into the durable manual-review queue. It never dispatches Catch commands. Jobs are created only after a Spawn has already been detected and routed to manual review; raw Telegram ingress is not bound directly to the queue producer.
 
-The queue is opt-in through `KAGECATCH_JOB_QUEUE_PATH` and requires persistent single-host storage. It is not a distributed queue and must remain disabled on an ephemeral filesystem. D1 manual-review creation uses deterministic IDs and idempotent insert handling to survive a lost queue acknowledgement without creating duplicate review items.
+The queue is opt-in through `KAGECATCH_JOB_QUEUE_URL` (Cloudflare D1) or `KAGECATCH_JOB_QUEUE_PATH` (persistent single-host SQLite). SQLite must remain disabled on ephemeral filesystems such as Render Free. The D1 adapter uses signed, replay-protected Worker requests and fenced leases. D1 manual-review creation uses deterministic IDs and idempotent insert handling to survive a lost queue acknowledgement without creating duplicate review items.
 
 ## Remaining integration work
 

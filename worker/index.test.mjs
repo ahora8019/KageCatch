@@ -1519,7 +1519,7 @@ function createFakeJobQueueDatabase() {
       }
       throw new Error("unexpected fake D1 run: "+sql);
     },
-    async first() { if(sql.includes("WHERE job_id = ?")) return rows.get(values[0])||null; if(sql.includes("WHERE idempotency_key = ?")) return [...rows.values()].find(r=>r.idempotency_key===values[0])||null; throw new Error("unexpected fake D1 first: "+sql); },
+    async first() { if(sql.includes("WHERE job_id=?")) return rows.get(values[0])||null; if(sql.includes("WHERE idempotency_key = ?")) return [...rows.values()].find(r=>r.idempotency_key===values[0])||null; throw new Error("unexpected fake D1 first: "+sql); },
     async all() {
       if(sql.includes("UPDATE catch_jobs SET status='running'")) {
         const [worker_id,lease_until,updated_at,now,...types]=values;
