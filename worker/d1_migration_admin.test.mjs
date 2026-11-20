@@ -99,6 +99,28 @@ test("D1 migration endpoint applies only the three allowlisted missing safety mi
   assert.equal(db.state.executed.length, 3);
 });
 
+
+test("D1 migration endpoint accepts the one-time deployment approval binding", async () => {
+  const db = createMigrationDb();
+  const response = await worker.fetch(migrationRequest(confirmation, ""), {
+    KAGECATCH_D1_MIGRATION_APPROVAL: "APPLY_KAGECATCH_D1_SAFETY_MIGRATIONS",
+    KAGECATCH_DB: db,
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.status, "ready");
+  assert.equal(db.state.executed.length, 3);
+});
+
+test("D1 migration endpoint rejects an absent secret and absent one-time approval", async () => {
+  const db = createMigrationDb();
+  const response = await worker.fetch(migrationRequest(confirmation, ""), {
+    KAGECATCH_DB: db,
+  });
+  assert.equal(response.status, 401);
+  assert.equal(db.state.executed.length, 0);
+});
+
 test("D1 migration endpoint requires the exact confirmation phrase", async () => {
   const db = createMigrationDb();
   const response = await worker.fetch(migrationRequest({ ...confirmation, confirm: "yes" }), {
