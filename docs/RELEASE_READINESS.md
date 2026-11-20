@@ -70,7 +70,7 @@
 
 ## Known blockers — refreshed 2026-11-20
 
-- `main` is at `2a5366cbee1240fc459bd3dc7d921cbb30086ac8`; PR #46 head at this refresh is `c081740fc0c1978c7e7d3ac3452133ad4abb4825`. The PR remains Draft and GitHub reports it as not mergeable: 219 commits ahead and 5 behind. File-level reconciliation has restored current mainline behavior in Core/Catch ingress, ReviewPipeline, bounded Catch receipt verification, and bounded Senpai media download; branch ancestry is still divergent and must be reconciled before merge/release.
+- `main` was last checked at `2a5366cbee1240fc459bd3dc7d921cbb30086ac8`. PR #46 remains Draft and GitHub reports it as not mergeable. File-level reconciliation has restored current mainline behavior in Core/Catch ingress, ReviewPipeline, bounded Catch receipt verification, and bounded Senpai media download; branch ancestry is still divergent and must be reconciled before merge/release.
 - The last confirmed green CI run is on older commit `2d1aac2d88379df033d173d1bf422c213e2d4783`. The current head has no reported combined status checks or pull-request workflow run. Do not treat the older green run as validation of the current code.
 - The queue/Catch integration now has regression tests for single detection, queue routing, invalid origin/media metadata, worker lease loss, review idempotency after an acknowledgement failure, and bounded worker shutdown. These tests have not yet run on the current head.
 - The documented D1 resource is Preview; production database/bindings have not been established here.
