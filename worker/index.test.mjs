@@ -1426,6 +1426,11 @@ test("saved account statuses include connected and authorized only", () => {
   assert.equal(isSavedAccountStatus("pending"), false);
 });
 
+test("one-time D1 migration endpoint is retired after schema initialization", async () => {
+  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/admin/d1-migrations", { method: "POST" }), {});
+  assert.equal(response.status, 404);
+});
+
 test("web dashboard, Mini App, browser login, and account proxy routes are retired", async () => {
   const base = "https://kagecatch-control.ahora-project.workers.dev";
   const removed = [
