@@ -23,8 +23,8 @@ class FakeReviewPipeline:
     def __init__(self):
         self.calls = []
 
-    async def process_spawn(self, *, spawn, user_id):
-        self.calls.append((spawn, user_id))
+    async def process_spawn(self, *, spawn, user_id, event=None):
+        self.calls.append((spawn, user_id, event))
         return {"status": "review_queued", "spawn_id": spawn.message_id}
 
 

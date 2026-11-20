@@ -56,6 +56,7 @@ class ManualReviewQueue:
         self._default_ttl = default_ttl
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._items: dict[str, ReviewItem] = {}
+        self._idempotency: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
     async def enqueue(
@@ -65,6 +66,7 @@ class ManualReviewQueue:
         spawn_id: int,
         anime_name: str,
         candidates: Sequence[str],
+        idempotency_key: str | None = None,
     ) -> ReviewItem:
         self._validate_user_id(user_id)
         if isinstance(spawn_id, bool) or not isinstance(spawn_id, int) or spawn_id < 0:
@@ -81,6 +83,11 @@ class ManualReviewQueue:
         )
         if not normalized_candidates or len(normalized_candidates) != len(candidates):
             raise ValueError("candidates must contain non-empty strings")
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str) or not idempotency_key.strip()
+            or len(idempotency_key) > 256
+        ):
+            raise ValueError("invalid idempotency_key")
 
         now = self._now()
         item = ReviewItem(
@@ -93,6 +100,16 @@ class ManualReviewQueue:
             expires_at=now + self._default_ttl,
         )
         async with self._lock:
+            if idempotency_key is not None:
+                existing_id = self._idempotency.get(idempotency_key)
+                if existing_id is not None:
+                    existing = self._items[existing_id]
+                    if (existing.user_id, existing.spawn_id, existing.anime_name, existing.candidates) != (
+                        user_id, spawn_id, anime_name.strip(), normalized_candidates
+                    ):
+                        raise ValueError("idempotency_key already belongs to a different review")
+                    return existing
+                self._idempotency[idempotency_key] = item.review_id
             self._items[item.review_id] = item
         return item
 

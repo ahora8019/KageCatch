@@ -21,10 +21,11 @@ class ReviewPipeline:
     failed persistence operation for a durable ReviewItem.
     """
 
-    def __init__(self, *, detector, resolver, review_queue) -> None:
+    def __init__(self, *, detector, resolver, review_queue, recognition_producer=None) -> None:
         self.detector = detector
         self.resolver = resolver
         self.review_queue = review_queue
+        self.recognition_producer = recognition_producer
 
     async def process(self, *, event: Any, user_id: str) -> dict[str, Any]:
         if not isinstance(user_id, str) or not user_id or len(user_id) > 128:
@@ -33,9 +34,9 @@ class ReviewPipeline:
         spawn = await self.detector.detect(event)
         if spawn is None:
             return {"status": "no_spawn"}
-        return await self.process_spawn(spawn=spawn, user_id=user_id)
+        return await self.process_spawn(spawn=spawn, user_id=user_id, event=event)
 
-    async def process_spawn(self, *, spawn, user_id: str) -> dict[str, Any]:
+    async def process_spawn(self, *, spawn, user_id: str, event: Any = None) -> dict[str, Any]:
         """Persist an already-detected spawn without re-running media recognition."""
         if not isinstance(user_id, str) or not user_id or len(user_id) > 128:
             raise ValueError("valid user_id is required")
@@ -102,6 +103,32 @@ class ReviewPipeline:
         else:
             if anime_name is None:
                 return {"status": "no_candidates", "spawn_id": spawn.message_id}
+            producer = self.recognition_producer
+            if producer is not None and event is not None:
+                message = getattr(event, "message", event)
+                chat_id = getattr(event, "chat_id", None)
+                if isinstance(chat_id, bool) or not isinstance(chat_id, int):
+                    chat_id = getattr(message, "chat_id", None)
+                media_kind = getattr(event, "media_kind", None)
+                if not isinstance(media_kind, str):
+                    media_kind = getattr(message, "media_kind", None)
+                if not isinstance(media_kind, str):
+                    media_kind = "unknown"
+                if isinstance(chat_id, int) and not isinstance(chat_id, bool) and chat_id != 0:
+                    queued = await producer.process_spawn(
+                        user_id=user_id, spawn=spawn, chat_id=chat_id,
+                        media_kind=media_kind,
+                    )
+                    if queued.get("status") == "queued":
+                        return {
+                            "status": "review_queued", "spawn_id": spawn.message_id,
+                            "job_id": queued.get("job_id"),
+                        }
+                    if queued.get("status") not in {"no_anime_match", "invalid_origin"}:
+                        return {
+                            "status": "review_persistence_failed",
+                            "error": queued.get("status", "enqueue_failed"),
+                        }
             resolved = await self.resolver.resolve(metadata)
             if resolved is None or not getattr(resolved, "candidates", ()):
                 return {"status": "no_candidates", "spawn_id": spawn.message_id}

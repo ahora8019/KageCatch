@@ -293,19 +293,45 @@ test("real Telegram send path opens only the failing chat circuit and Owner alon
   assert.equal(networkCalls, 4);
   assert.equal(db.circuits.has("2002"), false);
 
+  const pressBotCallback = async (context, actorId, data, updateId) => {
+    const calls = context.calls || (context.calls = []);
+    context.env.TELEGRAM_WEBHOOK_SECRET = "safety-integration-webhook";
+    context.env.FETCH = async (url, init) => {
+      calls.push({ method: String(url).split("/").pop(), payload: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: updateId } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    };
+    return worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "safety-integration-webhook" },
+      body: JSON.stringify({
+        update_id: updateId,
+        callback_query: {
+          id: "safety-" + updateId,
+          from: { id: actorId },
+          message: { message_id: updateId, chat: { id: actorId, type: "private" } },
+          data,
+        },
+      }),
+    }), context.env);
+  };
+
   const member = await createOwnerContext(db, 2002);
-  const denied = await worker.fetch(
-    recoveryRequest(member.initData, 2001, db.circuits.get("2001").updated_at_ms),
-    member.env,
-  );
-  assert.equal(denied.status, 403);
+  const denied = await pressBotCallback(member, 2002, "owner:safety", 401);
+  assert.equal(denied.status, 200);
+  assert.equal(member.calls.some((call) => call.method === "editMessageText"), false);
   assert.equal(db.circuits.get("2001").is_open, 1);
 
-  const recovered = await worker.fetch(
-    recoveryRequest(owner.initData, 2001, db.circuits.get("2001").updated_at_ms),
-    owner.env,
-  );
-  assert.equal(recovered.status, 200);
+  await pressBotCallback(owner, OWNER_ID, "owner:safety", 402);
+  const statusMessage = owner.calls.filter((call) => call.method === "editMessageText").at(-1).payload;
+  const prepare = statusMessage.reply_markup.inline_keyboard.flat().find((button) => button.callback_data?.startsWith("owner:safety:prepare:c:2001:"));
+  assert.ok(prepare);
+  await pressBotCallback(owner, OWNER_ID, prepare.callback_data, 403);
+  const confirmation = owner.calls.filter((call) => call.method === "editMessageText").at(-1).payload;
+  const confirm = confirmation.reply_markup.inline_keyboard.flat().find((button) => button.callback_data?.startsWith("owner:safety:confirm:c:2001:"));
+  assert.ok(confirm);
+  await pressBotCallback(owner, OWNER_ID, confirm.callback_data, 404);
   assert.equal(db.circuits.get("2001").is_open, 0);
   assert.equal(db.circuits.get("3003").is_open, 1);
 

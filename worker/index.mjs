@@ -1,6 +1,6 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
 import { buildLoginCodeKeyboard, maskLoginCode, parseLoginCodeCallback, validatePhoneNumber } from "./telegram_login_ui.mjs";
-import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, isTelegramMutatingMethod, isValidTelegramMethod } from "./telegram_safety.mjs";
+import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, getTelegramSafetySnapshot, recoverTelegramGlobalPause, recoverTelegramChatCircuit, isTelegramMutatingMethod, isValidTelegramMethod } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -181,6 +181,7 @@ export function buildRoleMenu(role = "MEMBER") {
     [{ text: "📊 نمای کلی", callback_data: "owner:stats" }, { text: "👁️ نظارت کاربران", callback_data: "owner:monitor" }],
     [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
     [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
+    [{ text: "🛡️ وضعیت ایمنی بات", callback_data: "owner:safety" }],
     [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
     ...memberRows,
   ] };
@@ -616,6 +617,84 @@ function activityLabel(action) {
 
 async function handleOwnerCallback(callback, env) {
   const data = callback.data || '';
+  if (data === "owner:safety") {
+    try {
+      const snapshot = await getTelegramSafetySnapshot(env.KAGECATCH_DB);
+      const global = snapshot.global;
+      const globalLine = global.paused
+        ? global.operator_action_required
+          ? "🔴 توقف سراسری فعال است؛ علت: اعتبارنامه نامعتبر (HTTP 401). اقدام Owner لازم است."
+          : "🟡 توقف موقت فعال است؛ علت: محدودیت تلگرام (HTTP 429)، زمان باقی‌مانده: " + (global.retry_after_seconds ?? 0) + " ثانیه."
+        : global.cooldown_remaining_ms > 0
+          ? "🟡 مکث سراسری: " + Math.ceil(global.cooldown_remaining_ms / 1000) + " ثانیه."
+          : "🟢 توقف سراسری فعال نیست.";
+      const openChats = snapshot.chats.filter((chat) => chat.is_open);
+      const chatLines = snapshot.chats
+        .filter((chat) => chat.is_open || chat.cooldown_remaining_ms > 0)
+        .slice(0, 8)
+        .map((chat) => "• " + chat.chat_id + " — " + (chat.is_open
+          ? "مدار باز · HTTP " + (chat.last_error_code ?? "نامشخص")
+          : "مکث " + Math.ceil(chat.cooldown_remaining_ms / 1000) + " ثانیه"));
+      const rows = [];
+      const until = String(global.paused_until_ms ?? "");
+      const reason = global.pause_reason || global.stored_pause_reason;
+      if (global.paused && /^\d{1,20}$/.test(until) && ["telegram_429", "invalid_credentials"].includes(reason)) {
+        rows.push([{ text: "♻️ بازیابی توقف سراسری", callback_data: "owner:safety:prepare:g:" + until + ":" + reason }]);
+      }
+      for (const chat of openChats.slice(0, 5)) {
+        const chatId = String(chat.chat_id);
+        const updatedAt = chat.circuit_updated_at_ms;
+        if (/^-?\d{1,20}$/.test(chatId) && Number.isSafeInteger(updatedAt) && updatedAt >= 0) {
+          rows.push([{ text: "♻️ بازیابی مدار " + chatId.slice(-8), callback_data: "owner:safety:prepare:c:" + chatId + ":" + updatedAt }]);
+        }
+      }
+      rows.push([{ text: "🔄 بروزرسانی", callback_data: "owner:safety" }, { text: "⬅️ منوی Owner", callback_data: "home:admin" }]);
+      return {
+        text: "🛡️ وضعیت ایمنی بات\n\n" + globalLine + "\n\n" +
+          (chatLines.join("\n") || "🟢 مدار باز یا مکث گفت‌وگویی ثبت نشده است.") +
+          (snapshot.chats_truncated ? "\n\n⚠️ فهرست گفت‌وگوها محدود شده است." : ""),
+        keyboard: { inline_keyboard: rows },
+      };
+    } catch {
+      return { text: "⚠️ وضعیت ایمنی در دسترس نیست؛ ذخیره پایدار یا پیکربندی دیتابیس را بررسی کن.", keyboard: BACK_MENU };
+    }
+  }
+  const globalSafetyAction = data.match(/^owner:safety:(prepare|confirm):g:(\d{1,20}):(telegram_429|invalid_credentials)$/);
+  if (globalSafetyAction) {
+    const [, stage, expectedUntil, expectedReason] = globalSafetyAction;
+    if (stage === "prepare") {
+      return {
+        text: "⚠️ تأیید بازیابی توقف سراسری\n\nبا تأیید، مکث سراسری بات پاک می‌شود. اگر خطای اعتبارنامه 401 باشد، پیش از ادامه باید علت آن را خارج از بات اصلاح کرده باشی.",
+        keyboard: { inline_keyboard: [
+          [{ text: "✅ تأیید و بازیابی", callback_data: "owner:safety:confirm:g:" + expectedUntil + ":" + expectedReason }],
+          [{ text: "لغو", callback_data: "owner:safety" }],
+        ] },
+      };
+    }
+    const recovered = await recoverTelegramGlobalPause(env.KAGECATCH_DB, expectedUntil, expectedReason);
+    return recovered.recovered
+      ? { text: "✅ توقف سراسری رفع شد. وضعیت ارسال بات را دوباره بررسی کن.", keyboard: { inline_keyboard: [[{ text: "🛡️ وضعیت ایمنی", callback_data: "owner:safety" }], ...BACK_MENU.inline_keyboard] } }
+      : { text: "⚠️ وضعیت از زمان نمایش تغییر کرده یا توقف قبلاً رفع شده است؛ هیچ تغییری اعمال نشد.", keyboard: { inline_keyboard: [[{ text: "🔄 بررسی دوباره", callback_data: "owner:safety" }], ...BACK_MENU.inline_keyboard] } };
+  }
+  const chatSafetyAction = data.match(/^owner:safety:(prepare|confirm):c:(-?\d{1,20}):(\d{1,16})$/);
+  if (chatSafetyAction) {
+    const [, stage, chatId, updatedAtRaw] = chatSafetyAction;
+    const expectedUpdatedAt = Number(updatedAtRaw);
+    if (!Number.isSafeInteger(expectedUpdatedAt)) return { text: "شناسه یا زمان مدار معتبر نیست.", keyboard: BACK_MENU, alert: true };
+    if (stage === "prepare") {
+      return {
+        text: "⚠️ تأیید بازیابی مدار گفت‌وگو " + chatId + "\n\nفقط مدار همین گفت‌وگو بازنشانی می‌شود؛ توقف سراسری و مدارهای دیگر دست‌نخورده می‌مانند.",
+        keyboard: { inline_keyboard: [
+          [{ text: "✅ تأیید و بازیابی", callback_data: "owner:safety:confirm:c:" + chatId + ":" + updatedAtRaw }],
+          [{ text: "لغو", callback_data: "owner:safety" }],
+        ] },
+      };
+    }
+    const recovered = await recoverTelegramChatCircuit(env.KAGECATCH_DB, chatId, expectedUpdatedAt);
+    return recovered.recovered
+      ? { text: "✅ مدار گفت‌وگوی " + chatId + " رفع شد.", keyboard: { inline_keyboard: [[{ text: "🛡️ وضعیت ایمنی", callback_data: "owner:safety" }], ...BACK_MENU.inline_keyboard] } }
+      : { text: "⚠️ وضعیت مدار تغییر کرده یا قبلاً رفع شده است؛ هیچ تغییری اعمال نشد.", keyboard: { inline_keyboard: [[{ text: "🔄 بررسی دوباره", callback_data: "owner:safety" }], ...BACK_MENU.inline_keyboard] } };
+  }
   if (data === 'owner:stats') {
     const { users = [] } = await registryRequest(env, '/users', {});
     const active = users.filter((user) => user.status === 'active' && user.role === 'MEMBER').length;
@@ -1070,10 +1149,24 @@ async function internalManualReviewStore(request, env) {
         || typeof created_at !== "string" || typeof expires_at !== "string"
         || !Number.isFinite(Date.parse(created_at)) || !Number.isFinite(Date.parse(expires_at))
         || Date.parse(expires_at) <= Date.parse(created_at)) return json({ error: "invalid_review_item" }, 400);
+      const candidatesJson = JSON.stringify(candidates);
       const inserted = await env.KAGECATCH_DB.prepare(
-        "INSERT INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
-      ).bind(review_id, user_id, spawn_id, anime_name.trim(), JSON.stringify(candidates), new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
-      if (Number(inserted?.meta?.changes || 0) !== 1) return json({ error: "pending_queue_limit_reached" }, 429);
+        "INSERT OR IGNORE INTO manual_review_items (review_id, user_id, spawn_id, anime_name, candidates_json, created_at, expires_at, status, selected_character) SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', NULL WHERE (SELECT COUNT(*) FROM manual_review_items WHERE user_id = ? AND status = 'pending' AND expires_at > ?) < 100"
+      ).bind(review_id, user_id, spawn_id, anime_name.trim(), candidatesJson, new Date(created_at).toISOString(), new Date(expires_at).toISOString(), user_id, now).run();
+      if (Number(inserted?.meta?.changes || 0) !== 1) {
+        const existing = await env.KAGECATCH_DB.prepare(
+          "SELECT review_id, user_id, spawn_id, anime_name, candidates_json FROM manual_review_items WHERE review_id = ?"
+        ).bind(review_id).first();
+        if (existing) {
+          const sameLogicalReview = existing.user_id === user_id
+            && Number(existing.spawn_id) === spawn_id
+            && existing.anime_name === anime_name.trim()
+            && existing.candidates_json === candidatesJson;
+          if (!sameLogicalReview) return json({ error: "review_id_conflict" }, 409);
+          return json({ status: "created", idempotent: true }, 200);
+        }
+        return json({ error: "pending_queue_limit_reached" }, 429);
+      }
       return json({ status: "created" }, 201);
     }
 

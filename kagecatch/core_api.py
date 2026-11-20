@@ -22,6 +22,33 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 
+async def _stop_recognition_worker(
+    stop_event: asyncio.Event | None,
+    worker_task: asyncio.Task | None,
+    *,
+    grace_seconds: float = 10.0,
+) -> None:
+    """Drain the background worker before cancelling it at a bounded deadline."""
+    if stop_event is not None:
+        stop_event.set()
+    if worker_task is None:
+        return
+    done, _ = await asyncio.wait({worker_task}, timeout=grace_seconds)
+    if not done:
+        logging.getLogger("kagecatch.core").warning(
+            "Recognition worker did not drain before shutdown deadline; cancelling it"
+        )
+        worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logging.getLogger("kagecatch.core").exception(
+            "Recognition worker exited with an error during shutdown"
+        )
+
+
 class NonceStore(Protocol):
     async def claim(self, nonce: str, expires_at: float) -> bool: ...
 
@@ -146,6 +173,7 @@ def create_app(
     catch_pipeline=None,
     spawn_detector=None,
     character_resolver=None,
+    job_queue=None,
 ) -> FastAPI:
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
     logging.getLogger("kagecatch.core").info("Core configuration presence: %s", _configuration_presence(secret))
@@ -189,6 +217,11 @@ def create_app(
     app.state.review_queue = review_queue
     app.state.review_pipeline = review_pipeline
     app.state.catch_pipeline = catch_pipeline
+    app.state.job_queue = job_queue
+    app.state.recognition_producer = None
+    app.state.recognition_worker = None
+    app.state.recognition_worker_task = None
+    app.state.recognition_worker_stop = None
 
     async def require_core_auth(request: Request) -> None:
         if not secret:
@@ -217,6 +250,11 @@ def create_app(
             raise HTTPException(status_code=409, detail="request_replayed")
 
     async def initialize_review_runtime() -> None:
+        if app.state.job_queue is None:
+            queue_path = os.getenv("KAGECATCH_JOB_QUEUE_PATH", "").strip()
+            if queue_path:
+                from .job_queue import SQLiteJobQueue
+                app.state.job_queue = SQLiteJobQueue(queue_path)
         if app.state.review_store is None:
             store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
             store_secret = secret
@@ -239,6 +277,35 @@ def create_app(
                 review_queue=app.state.review_queue,
             )
 
+        if (
+            app.state.job_queue is not None
+            and app.state.review_queue is not None
+            and spawn_detector is not None
+            and character_resolver is not None
+        ):
+            from .recognition_job_producer import RecognitionJobProducer
+            from .recognition_worker import RecognitionWorker
+            app.state.recognition_producer = RecognitionJobProducer(
+                detector=spawn_detector,
+                queue=app.state.job_queue,
+            )
+            if app.state.review_pipeline is not None:
+                app.state.review_pipeline.recognition_producer = app.state.recognition_producer
+            app.state.recognition_worker = RecognitionWorker(
+                queue=app.state.job_queue,
+                resolver=character_resolver,
+                review_queue=app.state.review_queue,
+                worker_id=os.getenv("KAGECATCH_RECOGNITION_WORKER_ID", "core-recognition"),
+                lease_seconds=float(os.getenv("KAGECATCH_RECOGNITION_LEASE_SECONDS", "120")),
+                retry_delay=float(os.getenv("KAGECATCH_RECOGNITION_RETRY_DELAY", "5")),
+            )
+            stop_event = asyncio.Event()
+            app.state.recognition_worker_stop = stop_event
+            app.state.recognition_worker_task = asyncio.create_task(
+                app.state.recognition_worker.run_forever(stop_event=stop_event),
+                name="kagecatch-recognition-worker",
+            )
+
         # Bind only after the review pipeline exists. SessionRuntime attaches
         # the controller to each authorized account, and its incoming callback
         # reads this handler dynamically.
@@ -251,6 +318,19 @@ def create_app(
             set_handler(process_incoming)
 
     async def close_review_runtime() -> None:
+        await _stop_recognition_worker(
+            app.state.recognition_worker_stop,
+            app.state.recognition_worker_task,
+        )
+        queue = app.state.job_queue
+        queue_close = getattr(queue, "close", None) if queue is not None else None
+        if callable(queue_close):
+            try:
+                await queue_close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Recognition job queue shutdown failed"
+                )
         store = app.state.review_store
         close = getattr(store, "close", None) if store is not None else None
         if close is not None:
