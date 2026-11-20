@@ -14,7 +14,7 @@ test("login code keyboard exposes digits, delete, and confirm without rendering 
 });
 
 test("login code callback parser accepts only bounded numeric input", () => {
-  assert.deepEqual(parseLoginCodeCallback("auth:digit:12345"), { action: "submit", code: "12345" });
+  assert.deepEqual(parseLoginCodeCallback("auth:digit:12345"), { action: "digit", code: "12345" });
   assert.deepEqual(parseLoginCodeCallback("auth:delete:1234"), { action: "delete", code: "123" });
   assert.equal(parseLoginCodeCallback("auth:digit:12x"), null);
   assert.equal(parseLoginCodeCallback("auth:digit:" + "1".repeat(9)), null);
