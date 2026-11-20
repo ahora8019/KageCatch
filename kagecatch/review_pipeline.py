@@ -56,6 +56,14 @@ class ReviewPipeline:
         confidence = getattr(metadata, "character_confidence", None)
         metadata_source = getattr(metadata, "source", None)
         target_name = getattr(spawn, "target_name", None)
+        confidence_value = None
+        if not isinstance(confidence, bool) and isinstance(confidence, (int, float)):
+            try:
+                confidence_value = float(confidence)
+            except (OverflowError, TypeError, ValueError):
+                # Unrepresentable numeric values are invalid, not pipeline errors.
+                confidence_value = None
+
         catalog_verified = (
             recognition_status == "known"
             and metadata_source == target_name
@@ -63,10 +71,9 @@ class ReviewPipeline:
             and bool(character_name.strip())
             and len(character_name.strip()) <= 100
             and not any(ord(char) < 32 or 127 <= ord(char) < 160 for char in character_name)
-            and not isinstance(confidence, bool)
-            and isinstance(confidence, (int, float))
-            and math.isfinite(float(confidence))
-            and 0.0 <= float(confidence) <= 1.0
+            and confidence_value is not None
+            and math.isfinite(confidence_value)
+            and 0.0 <= confidence_value <= 1.0
         )
 
         proposed_name = (
