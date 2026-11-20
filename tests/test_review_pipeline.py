@@ -102,6 +102,39 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.items[0]["anime_name"], "Unknown anime")
         self.assertEqual(queue.items[0]["candidates"], ("Sakura",))
 
+
+    async def test_unverified_model_suggestion_is_queued_for_human_review(self):
+        from kagecatch.models.spawn import CharacterMetadata, SpawnEvent
+
+        spawn = SpawnEvent(
+            message_id=94,
+            character_name=None,
+            confidence_score=0.0,
+            metadata=CharacterMetadata(
+                anime_name=None,
+                source="senpai_catcher",
+                character_name=None,
+                character_confidence=0.0,
+                additional={
+                    "character_recognition_status": "review",
+                    "proposed_character_name": "Unverified Name",
+                },
+            ),
+            target_name="senpai_catcher",
+        )
+        queue = FakeQueue()
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(spawn),
+            resolver=FakeResolver(),
+            review_queue=queue,
+        )
+
+        result = await pipeline.process(event=object(), user_id="12345")
+
+        self.assertEqual(result["status"], "review_queued")
+        self.assertEqual(queue.items[0]["anime_name"], "Unknown anime")
+        self.assertEqual(queue.items[0]["candidates"], ("Unverified Name",))
+
     async def test_no_spawn_does_not_create_review_item(self):
         queue = FakeQueue()
         pipeline = ReviewPipeline(

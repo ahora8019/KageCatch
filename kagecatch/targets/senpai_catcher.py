@@ -349,6 +349,19 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         additional["character_recognition_status"] = recognition_status
         if recognition_reason is not None:
             additional["character_recognition_reason"] = recognition_reason
+        if recognition_status == "review" and isinstance(
+            getattr(recognition, "proposed_name", None), str
+        ):
+            proposed_name = recognition.proposed_name.strip()
+            if (
+                proposed_name
+                and len(proposed_name) <= 100
+                and not any(
+                    ord(char) < 32 or 127 <= ord(char) < 160
+                    for char in proposed_name
+                )
+            ):
+                additional["proposed_character_name"] = proposed_name
         return CharacterMetadata(
             anime_name=anime_name, source=self.target_name,
             character_name=character_name, episode=episode,
