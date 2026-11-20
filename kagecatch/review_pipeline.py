@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import httpx
@@ -44,18 +45,47 @@ class ReviewPipeline:
         metadata = spawn.metadata
         anime_name = getattr(metadata, "anime_name", None)
         if not isinstance(anime_name, str) or not anime_name.strip():
-            return {"status": "no_candidates", "spawn_id": spawn.message_id}
+            anime_name = None
 
-        resolved = await self.resolver.resolve(metadata)
-        if resolved is None or not getattr(resolved, "candidates", ()):
-            return {"status": "no_candidates", "spawn_id": spawn.message_id}
+        additional = getattr(metadata, "additional", None)
+        recognition_status = (
+            additional.get("character_recognition_status")
+            if isinstance(additional, dict) else None
+        )
+        character_name = getattr(metadata, "character_name", None)
+        confidence = getattr(metadata, "character_confidence", None)
+        metadata_source = getattr(metadata, "source", None)
+        target_name = getattr(spawn, "target_name", None)
+        catalog_verified = (
+            recognition_status == "known"
+            and metadata_source == target_name
+            and isinstance(character_name, str)
+            and bool(character_name.strip())
+            and len(character_name.strip()) <= 100
+            and not any(ord(char) < 32 or 127 <= ord(char) < 160 for char in character_name)
+            and not isinstance(confidence, bool)
+            and isinstance(confidence, (int, float))
+            and math.isfinite(float(confidence))
+            and 0.0 <= float(confidence) <= 1.0
+        )
+
+        if catalog_verified:
+            anime_name = anime_name or "Unknown anime"
+            candidates = (character_name.strip(),)
+        else:
+            if anime_name is None:
+                return {"status": "no_candidates", "spawn_id": spawn.message_id}
+            resolved = await self.resolver.resolve(metadata)
+            if resolved is None or not getattr(resolved, "candidates", ()):
+                return {"status": "no_candidates", "spawn_id": spawn.message_id}
+            candidates = resolved.candidates
 
         try:
             item = await self.review_queue.enqueue(
                 user_id=user_id,
                 spawn_id=spawn.message_id,
                 anime_name=anime_name,
-                candidates=resolved.candidates,
+                candidates=candidates,
             )
         except httpx.TimeoutException:
             logger.exception(
