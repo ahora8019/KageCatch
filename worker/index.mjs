@@ -835,6 +835,12 @@ async function handleWebhook(request, env) {
     const authState = authSnapshot.state;
     if (authState && authState.expiresAt <= Date.now()) await authStateRequest(env, message.from.id, "delete");
     else if (authState?.stage === "phone") {
+      if (command === "/cancel") {
+        await authStateRequest(env, message.from.id, "delete");
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+        return new Response("OK", { status: 200 });
+      }
       try {
         await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
         if (!validatePhoneNumber(message.text)) throw new Error("invalid_phone");
