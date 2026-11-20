@@ -248,6 +248,42 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
             await TelethonFrameExtractor().extract_first_frame(event)
 
 
+    async def test_trace_moe_oversized_stream_stops_reading_and_closes(self):
+        import httpx
+        from kagecatch.targets.senpai_catcher import HttpxTraceMoeClient, MetadataLookupError
+
+        class OversizedStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.yielded = 0
+                self.closed = False
+
+            async def __aiter__(self):
+                try:
+                    for chunk in (b"a" * 8192, b"b" * 8192, b"unused"):
+                        self.yielded += 1
+                        yield chunk
+                finally:
+                    self.closed = True
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = OversizedStream()
+
+        def respond(request):
+            return httpx.Response(200, request=request, stream=stream)
+
+        client = HttpxTraceMoeClient(
+            max_response_bytes=10_000,
+            transport=httpx.MockTransport(respond),
+        )
+        with self.assertRaises(MetadataLookupError):
+            await client.search(b"jpeg-frame")
+
+        self.assertEqual(stream.yielded, 2)
+        self.assertTrue(stream.closed)
+
+
 class SpawnDetectorTests(unittest.IsolatedAsyncioTestCase):
     async def test_uses_first_recognizing_adapter_and_returns_spawn_event(self):
         metadata = CharacterMetadata(
