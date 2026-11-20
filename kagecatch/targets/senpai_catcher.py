@@ -277,15 +277,10 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         results = payload.get("result") if isinstance(payload, Mapping) else None
         if not isinstance(results, list):
             raise MetadataLookupError("trace.moe returned an invalid response")
-        if not results:
-            return CharacterMetadata(
-                anime_name=None, source=self.target_name, character_name=None,
-                character_confidence=0.0,
-                additional={"character_recognition_status": "not_run_no_scene_match"},
-            )
-        first = results[0]
+        first = results[0] if results else {}
         if not isinstance(first, Mapping):
             raise MetadataLookupError("trace.moe result entry is invalid")
+
         anilist = first.get("anilist")
         title = anilist.get("title") if isinstance(anilist, Mapping) else None
         if not isinstance(title, Mapping):
@@ -306,7 +301,9 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
 
         character_name = None
         character_confidence = 0.0
-        recognition_status = "not_configured"
+        recognition_status = (
+            "not_run_no_scene_match" if not results else "not_configured"
+        )
         recognition_reason = None
         if self.character_recognizer is not None:
             try:
@@ -328,6 +325,8 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
                     ):
                         character_name = record.canonical_name
                         character_confidence = float(confidence)
+                else:
+                    recognition_status = "invalid_model_output"
             except Exception:
                 # Anime-scene metadata remains useful; character identity fails closed.
                 recognition_status = "model_unavailable"
