@@ -1036,9 +1036,9 @@ async function handleWebhook(request, env) {
     if (authState && authState.expiresAt <= Date.now()) await authStateRequest(env, message.from.id, "delete");
     else if (authState?.stage === "phone") {
       try {
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
         if (!validatePhoneNumber(message.text)) throw new Error("invalid_phone");
         const status = await beginTelegramLogin(env, message.from.id, message.text);
-        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
         if (status === "connected") {
           await authStateRequest(env, message.from.id, "delete");
           await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "✅ حساب تلگرام شما از قبل مجاز بود و اتصال برقرار شد.", reply_markup: BACK_MENU });
@@ -1051,6 +1051,13 @@ async function handleWebhook(request, env) {
       }
       return new Response("OK", { status: 200 });
     } else if (authState?.stage === "password") {
+      if (command === "/cancel") {
+        await authStateRequest(env, message.from.id, "delete");
+        await coreRequest(env, "POST", "/v1/accounts/" + message.from.id + "/connect/cancel");
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+        return new Response("OK", { status: 200 });
+      }
       try {
         await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
         const result = await coreRequest(env, "POST", "/v1/accounts/" + message.from.id + "/connect/password", { password: message.text });
