@@ -30,9 +30,9 @@ For the approved SenpaiCatcher recognition path, only an extracted frame from a 
 
 `kagecatch/job_queue.py` provides a single-host SQLite queue with typed claims, priorities, delayed scheduling, idempotency keys, bounded retries, dead-letter quarantine, fenced lease generations, lease renewal, and expired-lease recovery.
 
-The Core starts the recognition worker only when all required components are configured and `KAGECATCH_JOB_QUEUE_PATH` points to a persistent local database path. The worker claims only `spawn.recognize` jobs. Jobs are created from an already-detected Spawn on the manual-review path; the queue is not attached to raw Telegram ingress and never issues Catch commands. D1 review creation uses deterministic review IDs so a retry after a lost acknowledgement does not create duplicate review records.
+The Core starts the recognition worker only when all required components are configured and either `KAGECATCH_JOB_QUEUE_URL` points to the authenticated Cloudflare Control Worker (D1-backed durable queue), or `KAGECATCH_JOB_QUEUE_PATH` points to a persistent local database path. The worker claims only `spawn.recognize` jobs. Jobs are created from an already-detected Spawn on the manual-review path; the queue is not attached to raw Telegram ingress and never issues Catch commands. D1 review creation uses deterministic review IDs so a retry after a lost acknowledgement does not create duplicate review records.
 
-**Storage limitation:** this SQLite queue is single-host, not distributed. Its database must live on persistent local storage; an ephemeral container filesystem is not sufficient. Leave `KAGECATCH_JOB_QUEUE_PATH` unset until the Python host has durable storage. The queue is optional and is not activated merely by deploying the code.
+**Storage limitation:** SQLite remains single-host and requires persistent local storage; do not use it on Render Free's ephemeral filesystem. For cloud deployments, use `KAGECATCH_JOB_QUEUE_URL` with the D1-backed queue after migration `0009_durable_job_queue.sql` is applied. The queue remains opt-in and does not activate merely by deploying the code.
 
 ## Catch execution safety
 

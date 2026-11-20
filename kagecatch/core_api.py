@@ -251,10 +251,15 @@ def create_app(
 
     async def initialize_review_runtime() -> None:
         if app.state.job_queue is None:
-            queue_path = os.getenv("KAGECATCH_JOB_QUEUE_PATH", "").strip()
-            if queue_path:
-                from .job_queue import SQLiteJobQueue
-                app.state.job_queue = SQLiteJobQueue(queue_path)
+            queue_url = os.getenv("KAGECATCH_JOB_QUEUE_URL", "").strip()
+            if queue_url and secret:
+                from .d1_job_queue import D1JobQueue
+                app.state.job_queue = D1JobQueue(queue_url, secret)
+            else:
+                queue_path = os.getenv("KAGECATCH_JOB_QUEUE_PATH", "").strip()
+                if queue_path:
+                    from .job_queue import SQLiteJobQueue
+                    app.state.job_queue = SQLiteJobQueue(queue_path)
         if app.state.review_store is None:
             store_url = os.getenv("KAGECATCH_SESSION_STORE_URL", "").strip()
             store_secret = secret
