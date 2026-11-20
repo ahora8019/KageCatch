@@ -114,7 +114,7 @@ class RecognitionWorker:
                 or isinstance(origin.get("chat_id"), bool) or not isinstance(origin.get("chat_id"), int)
                 or isinstance(origin.get("message_id"), bool) or not isinstance(origin.get("message_id"), int)
                 or not isinstance(origin.get("source"), str) or not origin["source"].strip()
-                or not isinstance(origin.get("media_kind"), str) or not origin["media_kind"].strip()
+                or origin.get("media_kind") not in {"video", "photo", "image", "document", "unknown"}
             ):
                 await self.queue.dead_letter(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("invalid_metadata", job.job_id)
