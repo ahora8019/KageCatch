@@ -112,9 +112,13 @@ class RecognitionWorker:
                 not isinstance(origin, dict) or not isinstance(recognition, dict)
                 or not isinstance(user_id, str) or not user_id.strip() or len(user_id) > 128
                 or isinstance(origin.get("chat_id"), bool) or not isinstance(origin.get("chat_id"), int)
+                or origin.get("chat_id") == 0
                 or isinstance(origin.get("message_id"), bool) or not isinstance(origin.get("message_id"), int)
+                or origin.get("message_id") <= 0
                 or not isinstance(origin.get("source"), str) or not origin["source"].strip()
-                or origin.get("media_kind") not in {"video", "photo", "image", "document", "unknown"}
+                or len(origin["source"]) > 80
+                or not isinstance(origin.get("media_kind"), str)
+                or origin["media_kind"] not in {"video", "photo", "image", "document", "unknown"}
             ):
                 await self.queue.dead_letter(job.job_id, self.worker_id, lease_generation=generation)
                 return RecognitionWorkResult("invalid_metadata", job.job_id)
