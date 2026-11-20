@@ -69,9 +69,29 @@ class ReviewPipeline:
             and 0.0 <= float(confidence) <= 1.0
         )
 
+        proposed_name = (
+            additional.get("proposed_character_name")
+            if isinstance(additional, dict) else None
+        )
+        review_suggestion = (
+            recognition_status == "review"
+            and metadata_source == target_name
+            and isinstance(proposed_name, str)
+            and bool(proposed_name.strip())
+            and len(proposed_name.strip()) <= 100
+            and not any(
+                ord(char) < 32 or 127 <= ord(char) < 160
+                for char in proposed_name
+            )
+        )
+
         if catalog_verified:
             anime_name = anime_name or "Unknown anime"
             candidates = (character_name.strip(),)
+        elif review_suggestion:
+            # Model suggestions are review candidates only, never trusted identities.
+            anime_name = anime_name or "Unknown anime"
+            candidates = (proposed_name.strip(),)
         else:
             if anime_name is None:
                 return {"status": "no_candidates", "spawn_id": spawn.message_id}
