@@ -2,7 +2,7 @@ import "./panel_queue.test.mjs";
 import "./telegram_login_ui.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply, isSavedAccountStatus } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply, isSavedAccountStatus, isPendingAuthorizationConflict } from "./index.mjs";
 
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
@@ -1170,4 +1170,12 @@ test("an authorized session is recognized as saved even when the execution clien
   assert.equal(isSavedAccountStatus("pending"), false);
   assert.equal(isSavedAccountStatus("not_connected"), false);
   assert.equal(isSavedAccountStatus(undefined), false);
+});
+
+
+test("pending authorization conflicts recognize FastAPI detail responses", () => {
+  assert.equal(isPendingAuthorizationConflict(409, { detail: "authorization_already_pending" }), true);
+  assert.equal(isPendingAuthorizationConflict(409, { error: "authorization_already_pending" }), true);
+  assert.equal(isPendingAuthorizationConflict(409, { detail: "other_conflict" }), false);
+  assert.equal(isPendingAuthorizationConflict(400, { detail: "authorization_already_pending" }), false);
 });
