@@ -146,6 +146,11 @@ class CharacterModelAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             CharacterModelAdapter(self.engine, model, max_image_bytes=True)
 
+    async def test_rejects_unrepresentably_large_model_timeout(self):
+        model = FakeVisionModel()
+        with self.assertRaises(ValueError):
+            CharacterModelAdapter(self.engine, model, timeout_seconds=10 ** 10000)
+
 
 if __name__ == "__main__":
     unittest.main()
