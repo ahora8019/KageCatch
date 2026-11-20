@@ -705,7 +705,7 @@ async function handleCallback(callback, env) {
       return;
     }
     if (action.action === "submit") {
-      if (!/^\\d{4,8}$/.test(code)) {
+      if (!/^\d{4,8}$/.test(code)) {
         await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "کد باید بین ۴ تا ۸ رقم باشد.", show_alert: true });
         return;
       }
