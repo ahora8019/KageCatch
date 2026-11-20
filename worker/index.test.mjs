@@ -399,14 +399,20 @@ import { createHash, createHmac } from "node:crypto";
 test("health distinguishes a reachable but unconfigured Python Core from an unreachable Core", async () => {
   const calls = [];
   const env = {
-    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
+    KAGECATCH_DB: {
+      prepare(sql) {
+        assert.match(sql, /sqlite_master/);
+        assert.match(sql, /telegram_bot_safety/);
+        return { first: async () => ({ count: 3 }) };
+      },
+    }, TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
     CORE_API_URL: "https://core.example.test",
     CORE_API_SECRET: "kagecatch-core-test-secret-32-bytes",
     FETCH: async (url, init) => {
       calls.push(url);
       if (url.endsWith("/getWebhookInfo")) {
-        return new Response(JSON.stringify({ ok: true, result: { url: "https://kagecatch-control.ahora-project.workers.dev/webhook", pending_update_count: 0 } }), { status: 200 });
+        return new Response(JSON.stringify({ ok: true, result: { url: "https://kagecatch-control.ahora-project.workers.dev/webhook", pending_update_count: 0, last_error_message: "Wrong response from the webhook: 502 Bad Gateway", last_error_date: 1794572719 } }), { status: 200 });
       }
       if (url.endsWith("/getMe")) {
         return new Response(JSON.stringify({ ok: true, result: { id: 1, username: "KageCatchBot", first_name: "KageCatch" } }), { status: 200 });
@@ -420,6 +426,9 @@ test("health distinguishes a reachable but unconfigured Python Core from an unre
   const health = await response.json();
   assert.equal(health.status, "webhook_ready");
   assert.equal(health.python_core, "degraded");
+  assert.equal(health.last_telegram_error_at, new Date(1794572719 * 1000).toISOString());
+  assert.equal(health.d1_storage, "ready");
+  assert.equal(health.d1_required_tables, 3);
   assert.equal(calls.length, 3);
 });
 
