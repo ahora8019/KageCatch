@@ -72,3 +72,8 @@ the sole detector and decision owner, pass a validated chat identifier into the
 manual-review adapter, and call `process_spawn` only on its review branch. Until
 that end-to-end change is implemented and tested against main's current pipeline,
 the queue branch must remain unmerged.
+
+
+## Recognition payload media classification
+
+The already-detected Spawn model does not itself carry a media-kind field. The producer therefore accepts an explicit media kind at the enqueue seam and allowlists `video`, `photo`, `image`, `document`, or `unknown`; it no longer labels every job as `video`. When no trustworthy classification is available, the payload must say `unknown`, not guess. The worker independently validates this enum and dead-letters unsupported values. The future CatchPipeline adapter should pass a media kind only when it can derive it from a trusted normalized adapter/event field.
