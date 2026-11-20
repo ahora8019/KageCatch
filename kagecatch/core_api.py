@@ -113,6 +113,7 @@ def create_app(
     review_store=None,
     review_queue=None,
     review_pipeline=None,
+    catch_pipeline=None,
     spawn_detector=None,
     character_resolver=None,
     job_queue=None,
@@ -152,6 +153,7 @@ def create_app(
     app.state.review_store = review_store
     app.state.review_queue = review_queue
     app.state.review_pipeline = review_pipeline
+    app.state.catch_pipeline = catch_pipeline
     app.state.job_queue = job_queue
     app.state.recognition_producer = None
     app.state.recognition_worker = None
@@ -251,15 +253,16 @@ def create_app(
                 app.state.recognition_worker.run_forever(stop_event=stop_event),
                 name="kagecatch-recognition-worker",
             )
-        if callable(set_handler):
-            if app.state.recognition_producer is not None:
-                async def process_incoming(user_id: str, event) -> None:
-                    await app.state.recognition_producer.process(user_id, event)
-                set_handler(process_incoming)
-            elif app.state.review_pipeline is not None:
-                async def process_incoming_direct(user_id: str, event) -> None:
-                    await app.state.review_pipeline.process(event=event, user_id=user_id)
-                set_handler(process_incoming_direct)
+        # The recognition queue is deliberately not an incoming-event
+        # handler. CatchPipeline must remain the single owner of detection and
+        # Catch safety decisions; it may enqueue an already-detected Spawn on
+        # its manual-review branch through a dedicated adapter. Never replace
+        # that guarded path with RecognitionJobProducer.process(raw_event).
+        incoming_pipeline = app.state.catch_pipeline or app.state.review_pipeline
+        if callable(set_handler) and incoming_pipeline is not None:
+            async def process_incoming(user_id: str, event) -> None:
+                await incoming_pipeline.process(event=event, user_id=user_id)
+            set_handler(process_incoming)
 
     async def close_review_runtime() -> None:
         stop_event = app.state.recognition_worker_stop
