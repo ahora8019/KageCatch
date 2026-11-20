@@ -695,7 +695,7 @@ async function handleCallback(callback, env) {
     if (action.action === "digit") {
       if (code.length < 8) code += action.digit;
       await authStateRequest(env, callback.from.id, "set", { ...state, code });
-      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 کد ورود را وارد کن\n\n" + maskLoginCode(code) + "\n\nکد فقط در حافظه موقت نگهداری می‌شود.", reply_markup: buildLoginCodeKeyboard() });
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 کد ورود را وارد کن\n\n" + maskLoginCode(code) + "\n\nکد فقط به‌صورت رمزنگاری‌شده و موقت نگهداری می‌شود.", reply_markup: buildLoginCodeKeyboard() });
       return;
     }
     if (action.action === "delete") {
