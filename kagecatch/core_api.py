@@ -240,6 +240,8 @@ def create_app(
             app.state.recognition_producer = RecognitionJobProducer(
                 detector=spawn_detector, queue=app.state.job_queue,
             )
+            if app.state.catch_pipeline is not None:
+                app.state.catch_pipeline.recognition_producer = app.state.recognition_producer
             app.state.recognition_worker = RecognitionWorker(
                 queue=app.state.job_queue, resolver=character_resolver,
                 review_queue=app.state.review_queue,
