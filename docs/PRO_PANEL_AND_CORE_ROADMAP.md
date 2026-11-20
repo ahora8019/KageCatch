@@ -76,3 +76,7 @@ The Python Core requires a persistent process and durable storage for Telethon c
 Oracle Cloud Always Free is a candidate for a single persistent VM and block storage, subject to account eligibility, card/phone verification, regional capacity, and idle-instance reclamation: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
 
 Until a suitable persistent host is available, the Core API and account flow remain development-only. Do not store real Telegram sessions on an ephemeral filesystem or enable production Catch.
+
+## Superseding implementation decision — 2026-11-20
+
+The legacy Mini App and browser connection-link login are retired from the Worker branch. Account authorization now uses the private bot chat: phone number message → OTP Inline Keyboard → optional 2FA password message → encrypted session persistence in the Python Core. OTP state is encrypted at rest in the existing Durable Object, scoped to the Telegram user ID, and expires after five minutes. OTP values never appear in callback payloads. Password and phone messages are deleted on a best-effort basis, but deletion cannot guarantee complete erasure. This supersedes earlier roadmap items that require a Mini App or browser form for login. Do not deploy or authorize a real account until the preview Worker is deployed and D1 round-trip plus Fernet key-rotation prerequisites are satisfied.
