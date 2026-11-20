@@ -109,6 +109,15 @@ class RecognitionJobProducerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detector.calls, 0)
         self.assertEqual(queue.calls, [])
 
+    async def test_process_spawn_rejects_non_string_media_kind(self):
+        queue = FakeQueue()
+        producer = RecognitionJobProducer(detector=FakeDetector(spawn()), queue=queue)
+        result = await producer.process_spawn(
+            user_id="12345", spawn=spawn(), chat_id=-1001, media_kind=["photo"],
+        )
+        self.assertEqual(result, {"status": "invalid_origin"})
+        self.assertEqual(queue.calls, [])
+
     async def test_invalid_user_id_is_rejected(self):
         producer = RecognitionJobProducer(detector=FakeDetector(), queue=FakeQueue())
         with self.assertRaises(ValueError):
