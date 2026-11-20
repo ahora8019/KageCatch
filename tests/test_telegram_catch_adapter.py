@@ -143,5 +143,35 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt.reference, "HentaCatcherBot:77")
 
 
+    async def test_sent_message_cache_is_bounded_and_evicts_oldest_receipts(self):
+        class IncrementingClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.next_id = 0
+
+            async def send_message(self, username, text):
+                self.next_id += 1
+                self.sent.append((username, text))
+                return FakeMessage(self.next_id)
+
+        async def verifier(*args):
+            return True
+
+        client = IncrementingClient()
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipts = [
+            await adapter.send_catch(self.spawn(), f"Sakura-{index}")
+            for index in range(257)
+        ]
+
+        self.assertFalse(await adapter.verify_catch(receipts[0]))
+        self.assertTrue(await adapter.verify_catch(receipts[-1]))
+
+
 if __name__ == "__main__":
     unittest.main()
