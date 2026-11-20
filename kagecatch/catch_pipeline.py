@@ -139,7 +139,7 @@ class CatchPipeline:
             media_kind = getattr(event, "media_kind", None)
             if not isinstance(media_kind, str):
                 media_kind = getattr(message, "media_kind", None)
-            if media_kind not in {"video", "photo", "image", "document"}:
+            if not isinstance(media_kind, str) or media_kind not in {"video", "photo", "image", "document"}:
                 media_kind = "unknown"
             result = await producer.process_spawn(
                 user_id=user_id, spawn=detected, chat_id=chat_id,
