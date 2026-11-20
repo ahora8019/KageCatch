@@ -208,5 +208,21 @@ class CatchPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.review.calls, [])
 
 
+    async def test_metadata_source_mismatch_falls_back_before_adapter_creation(self):
+        from dataclasses import replace
+
+        detected = spawn_event(name="Megumin", confidence=0.99)
+        mismatched_metadata = replace(detected.metadata, source="henta_catcher")
+        self.detector.spawn = replace(detected, metadata=mismatched_metadata)
+        event = type("Event", (), {"chat_id": 100})()
+
+        result = await self.pipeline.process(event=event, user_id="12345")
+
+        self.assertEqual(result["status"], "review_queued")
+        self.assertEqual(self.adapter.sent, [])
+        self.assertEqual(self.factory_calls, [])
+        self.assertEqual(len(self.review.calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
