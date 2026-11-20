@@ -93,7 +93,7 @@ class CharacterModelAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, [])
 
     async def test_invalid_model_output_fails_closed(self):
-        model = FakeVisionModel(None)
+        model = FakeVisionModel(object())
         adapter = CharacterModelAdapter(self.engine, model)
 
         result = await adapter.recognize(b"image-bytes", media_type="image/webp")
