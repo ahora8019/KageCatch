@@ -1572,8 +1572,8 @@ test("D1 catch admission is authenticated, atomic, deduplicated, and quota bound
   const db = createFakeCatchAdmissionDatabase();
   const secret = "catch-admission-core-secret-at-least-32-bytes";
   const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
-  const reserve = async (dedupe_key, nonce) => worker.fetch(await makeSignedJobQueueRequest({
-    action: "admit_catch", user_id: "12345", source: "senpai_catcher", dedupe_key,
+  const reserve = async (dedupe_key, nonce, source = "senpai_catcher") => worker.fetch(await makeSignedJobQueueRequest({
+    action: "admit_catch", user_id: "12345", source, dedupe_key,
     max_attempts: 2, window_seconds: 60,
   }, secret, nonce), env);
   const first = await reserve("spawn:1", "a".repeat(32));
@@ -1584,7 +1584,13 @@ test("D1 catch admission is authenticated, atomic, deduplicated, and quota bound
   assert.deepEqual(await duplicate.json(), { status: "duplicate" });
   assert.deepEqual(await second.json(), { status: "admitted" });
   assert.deepEqual(await quota.json(), { status: "quota_blocked" });
-  assert.equal(db.rows.size, 2);
+  const raced = await Promise.all([
+    reserve("spawn:race", "f".repeat(32), "race_catcher"),
+    reserve("spawn:race", "g".repeat(32), "race_catcher"),
+  ]);
+  const raceStatuses = await Promise.all(raced.map(async (response) => (await response.json()).status));
+  assert.deepEqual(raceStatuses.sort(), ["admitted", "duplicate"]);
+  assert.equal(db.rows.size, 3);
   const invalid = await worker.fetch(await makeSignedJobQueueRequest({ action: "admit_catch", user_id: "12345", source: "../bad", dedupe_key: "x", max_attempts: 2, window_seconds: 60 }, secret, "e".repeat(32)), env);
   assert.equal(invalid.status, 400);
 });
