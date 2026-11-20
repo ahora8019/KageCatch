@@ -661,7 +661,7 @@ async function handleOwnerCallback(callback, env) {
 async function handleCallback(callback, env) {
   if (await handlePanelCallback(callback, env, telegramApi)) return;
   const chat = callback.message?.chat;
-  if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id)) {
+  if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id) || chat.id !== callback.from.id) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "این بخش فقط در گفت‌وگوی خصوصی در دسترس است.", show_alert: true });
     return;
   }
