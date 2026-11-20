@@ -6,6 +6,7 @@ provided before a receipt can be marked verified.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -22,6 +23,10 @@ class SentCatch:
 
 
 ResponseVerifier = Callable[[Any, str, Any, CatchReceipt], Awaitable[bool]]
+
+# Keep only recent pending verification contexts; each entry retains a Telethon
+# message object and must not grow without bound in a long-lived Core process.
+_MAX_SENT_CATCHES = 256
 
 
 class TelethonCatchAdapter:
@@ -47,7 +52,7 @@ class TelethonCatchAdapter:
         self.response_verifier = response_verifier
         # Live Telegram commands require a deliberate opt-in at composition time.
         self.dispatch_enabled = bool(dispatch_enabled)
-        self._sent: dict[str, Any] = {}
+        self._sent: OrderedDict[str, SentCatch] = OrderedDict()
 
     async def send_catch(self, spawn: Spawn, character_name: str) -> CatchReceipt:
         if not self.dispatch_enabled:
@@ -66,6 +71,8 @@ class TelethonCatchAdapter:
             target_username=self.target_username,
             outgoing_message=message,
         )
+        while len(self._sent) > _MAX_SENT_CATCHES:
+            self._sent.popitem(last=False)
         return receipt
 
     async def verify_catch(self, receipt: CatchReceipt) -> bool:
