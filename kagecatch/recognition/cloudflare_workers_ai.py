@@ -137,7 +137,7 @@ class CloudflareWorkersAIVisionModel:
                 headers={"Authorization": f"Bearer {self._api_token}"},
             ) as response:
                 response.raise_for_status()
-                async for chunk in response.aiter_bytes():
+                async for chunk in response.aiter_bytes(chunk_size=8192):
                     if len(response_body) + len(chunk) > _MAX_RESPONSE_BYTES:
                         raise VisionModelProviderError(
                             "Cloudflare vision response exceeded its size limit"
