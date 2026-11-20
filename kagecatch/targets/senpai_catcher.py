@@ -91,10 +91,6 @@ class TelethonFrameExtractor:
     async def extract_first_frame(self, event: Any) -> bytes:
         message = getattr(event, "message", event)
         client = getattr(event, "client", None) or getattr(message, "client", None)
-        download_media = getattr(client, "download_media", None)
-        if not callable(download_media):
-            raise MetadataLookupError("Telethon client is unavailable for media download")
-
         media_file = getattr(message, "file", None)
         declared_size = getattr(media_file, "size", None)
         if isinstance(declared_size, int) and declared_size > self.max_video_bytes:
