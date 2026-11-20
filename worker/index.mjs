@@ -726,23 +726,6 @@ export class ConnectionLinkStore {
       }
       return json({ state: stored });
     }
-    if (url.pathname === '/auth-state') {
-      const { telegramUserId, action, state: authState } = body || {};
-      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !['get', 'set', 'delete'].includes(action)) return json({ error: 'invalid_request' }, 400);
-      const key = 'telegram-auth-state:' + telegramUserId;
-      if (action === 'delete') { await this.state.storage.delete(key); return json({ status: 'deleted' }); }
-      if (action === 'set') {
-        if (!authState || !Array.isArray(authState.iv) || authState.iv.length !== 12 || !Array.isArray(authState.ciphertext) || authState.ciphertext.length < 16 || authState.ciphertext.length > 2048 || !Number.isSafeInteger(authState.expiresAt) || authState.expiresAt <= Date.now() || authState.expiresAt > Date.now() + 300000) return json({ error: 'invalid_auth_state' }, 400);
-        await this.state.storage.put(key, authState);
-        return json({ status: 'saved' });
-      }
-      const stored = await this.state.storage.get(key);
-      if (!stored || stored.expiresAt <= Date.now()) {
-        if (stored) await this.state.storage.delete(key);
-        return json({ state: null });
-      }
-      return json({ state: stored });
-    }
     if (url.pathname === '/claim-nonce') {
       const { nonce, expiresAt } = body || {};
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
@@ -1101,7 +1084,7 @@ async function handleOwnerCallback(callback, env) {
 async function handleCallback(callback, env) {
   if (await handlePanelCallback(callback, env, telegramApi)) return;
   const chat = callback.message?.chat;
-  if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id)) {
+  if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id) || chat.id !== callback.from.id) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "این بخش فقط در گفت‌وگوی خصوصی در دسترس است.", show_alert: true });
     return;
   }
@@ -1120,7 +1103,8 @@ async function handleCallback(callback, env) {
     const action = parseLoginCodeCallback(callback.data);
     const current = await authStateRequest(env, callback.from.id, "get");
     const state = current.state;
-    if (!action || action.action === "cancel") {
+    if (!action) return;
+    if (action.action === "cancel") {
       await coreRequest(env, "POST", "/v1/accounts/" + callback.from.id + "/connect/cancel");
       await authStateRequest(env, callback.from.id, "delete");
       await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
