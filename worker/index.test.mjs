@@ -411,7 +411,13 @@ test("health distinguishes a reachable but unconfigured Python Core from an unre
           ] }) };
         }
         if (sql.includes("d1_migrations")) {
-          return { first: async () => ({ count: 5, latest: "0008_telegram_bot_chat_circuit_breaker.sql" }) };
+          return { all: async () => ({ results: [
+            { name: "0001_telegram_sessions.sql" },
+            { name: "0002_telegram_auth_challenges.sql" },
+            { name: "0003_manual_review_items.sql" },
+            { name: "0004_panel_requests.sql" },
+            { name: "0006_manual_review_spawn_context.sql" },
+          ] }) };
         }
         throw new Error("unexpected health query");
       },
@@ -441,7 +447,14 @@ test("health distinguishes a reachable but unconfigured Python Core from an unre
   assert.equal(health.d1_required_tables, 3);
   assert.deepEqual(health.d1_tables, ["d1_migrations", "telegram_bot_safety", "telegram_bot_chat_pacing", "telegram_bot_chat_circuit_breaker", "panel_requests"]);
   assert.equal(health.d1_migration_count, 5);
-  assert.equal(health.d1_latest_migration, "0008_telegram_bot_chat_circuit_breaker.sql");
+  assert.equal(health.d1_latest_migration, "0006_manual_review_spawn_context.sql");
+  assert.deepEqual(health.d1_migration_names, [
+    "0001_telegram_sessions.sql",
+    "0002_telegram_auth_challenges.sql",
+    "0003_manual_review_items.sql",
+    "0004_panel_requests.sql",
+    "0006_manual_review_spawn_context.sql",
+  ]);
   assert.equal(calls.length, 3);
 });
 
