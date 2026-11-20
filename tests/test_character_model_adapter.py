@@ -151,6 +151,12 @@ class CharacterModelAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             CharacterModelAdapter(self.engine, model, timeout_seconds=10 ** 10000)
 
+    async def test_default_model_timeout_is_five_seconds(self):
+        model = FakeVisionModel()
+        adapter = CharacterModelAdapter(self.engine, model)
+
+        self.assertEqual(adapter.timeout_seconds, 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()
