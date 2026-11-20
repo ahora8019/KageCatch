@@ -221,6 +221,21 @@ class CatchPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(producer.calls[0]["media_kind"], "photo")
         self.assertEqual(self.review.calls, [])
 
+    async def test_malformed_media_kind_is_normalized_to_unknown(self):
+        class Producer:
+            def __init__(self):
+                self.calls = []
+            async def process_spawn(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"status": "queued", "job_id": "recognition-2"}
+
+        producer = Producer()
+        self.pipeline.recognition_producer = producer
+        self.detector.spawn = spawn_event(name=None, confidence=0.0)
+        event = type("Event", (), {"chat_id": -1001, "media_kind": ["photo"]})()
+        await self.pipeline.process(event=event, user_id="12345")
+        self.assertEqual(producer.calls[0]["media_kind"], "unknown")
+
     async def test_queue_failure_does_not_fall_back_to_inline_review(self):
         class Producer:
             async def process_spawn(self, **kwargs):
