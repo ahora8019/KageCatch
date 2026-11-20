@@ -1403,6 +1403,85 @@ async function internalAuthChallengeStore(request, env) {
 }
 
 
+const EXPECTED_D1_MIGRATION_LEDGER = [
+  "0001_telegram_sessions.sql",
+  "0002_telegram_auth_challenges.sql",
+  "0003_manual_review_items.sql",
+  "0004_panel_requests.sql",
+  "0006_manual_review_spawn_context.sql",
+];
+
+const D1_SAFETY_MIGRATIONS = {
+  "0005_telegram_bot_safety.sql": `CREATE TABLE IF NOT EXISTS telegram_bot_safety (
+    singleton_id TEXT PRIMARY KEY NOT NULL CHECK (singleton_id = 'control-bot'),
+    paused_until_ms INTEGER NOT NULL DEFAULT 0 CHECK (paused_until_ms >= 0),
+    next_allowed_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (next_allowed_at_ms >= 0),
+    pause_reason TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  INSERT INTO telegram_bot_safety (singleton_id)
+  VALUES ('control-bot')
+  ON CONFLICT(singleton_id) DO NOTHING;`,
+  "0007_telegram_bot_chat_pacing.sql": `CREATE TABLE IF NOT EXISTS telegram_bot_chat_pacing (
+    chat_id TEXT PRIMARY KEY NOT NULL,
+    next_allowed_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (next_allowed_at_ms >= 0),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_telegram_bot_chat_pacing_updated
+    ON telegram_bot_chat_pacing(updated_at);`,
+  "0008_telegram_bot_chat_circuit_breaker.sql": `CREATE TABLE IF NOT EXISTS telegram_bot_chat_circuit_breaker (
+    chat_id TEXT PRIMARY KEY NOT NULL,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+    is_open INTEGER NOT NULL DEFAULT 0 CHECK (is_open IN (0, 1)),
+    last_error_code INTEGER CHECK (last_error_code IS NULL OR last_error_code IN (400, 403)),
+    updated_at_ms INTEGER NOT NULL DEFAULT 0 CHECK (updated_at_ms >= 0)
+  );
+  CREATE INDEX IF NOT EXISTS idx_telegram_bot_chat_circuit_breaker_open
+    ON telegram_bot_chat_circuit_breaker(is_open, updated_at_ms);`,
+};
+
+async function handleD1MigrationAdmin(request, env) {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  const authorization = request.headers.get("authorization") || "";
+  const providedSecret = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!await verifySecret(providedSecret, env.CORE_API_SECRET)) return json({ error: "unauthorized" }, 401);
+  if (!env.KAGECATCH_DB) return json({ error: "d1_unavailable" }, 503);
+  const rawBody = await request.text();
+  if (rawBody.length > 4096) return json({ error: "request_too_large" }, 413);
+  let payload;
+  try { payload = JSON.parse(rawBody); }
+  catch { return json({ error: "invalid_request" }, 400); }
+  if (payload?.confirm !== "APPLY_KAGECATCH_D1_SAFETY_MIGRATIONS") return json({ error: "confirmation_required" }, 400);
+  if (!Array.isArray(payload.expected_ledger) || JSON.stringify(payload.expected_ledger) !== JSON.stringify(EXPECTED_D1_MIGRATION_LEDGER)) {
+    return json({ error: "expected_ledger_mismatch" }, 409);
+  }
+  try {
+    const ledgerResult = await env.KAGECATCH_DB.prepare("SELECT name FROM d1_migrations ORDER BY id").all();
+    const currentLedger = Array.isArray(ledgerResult?.results) ? ledgerResult.results.map((row) => String(row.name)) : [];
+    if (JSON.stringify(currentLedger) !== JSON.stringify(EXPECTED_D1_MIGRATION_LEDGER)) {
+      return json({ error: "live_ledger_changed", migration_count: currentLedger.length }, 409);
+    }
+    const applied = [];
+    for (const [name, sql] of Object.entries(D1_SAFETY_MIGRATIONS)) {
+      await env.KAGECATCH_DB.exec(sql);
+      await env.KAGECATCH_DB.prepare("INSERT INTO d1_migrations (name) VALUES (?)").bind(name).run();
+      applied.push(name);
+    }
+    const [tablesResult, migrationsResult] = await Promise.all([
+      env.KAGECATCH_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all(),
+      env.KAGECATCH_DB.prepare("SELECT name FROM d1_migrations ORDER BY id").all(),
+    ]);
+    const tables = Array.isArray(tablesResult?.results) ? tablesResult.results.map((row) => String(row.name)) : [];
+    const required = ["telegram_bot_safety", "telegram_bot_chat_pacing", "telegram_bot_chat_circuit_breaker"];
+    const requiredTables = required.filter((name) => tables.includes(name)).length;
+    const migrations = Array.isArray(migrationsResult?.results) ? migrationsResult.results.map((row) => String(row.name)) : [];
+    return json({ status: requiredTables === 3 ? "ready" : "schema_incomplete", applied, required_tables: requiredTables, tables, migrations });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "d1_migration_admin_failed", error_name: typeof error?.name === "string" ? error.name.slice(0, 64) : "Error" }));
+    return json({ error: "migration_failed" }, 500);
+  }
+}
+
 export default {
   async scheduled(controller, env) {
     if (controller?.cron !== "*/10 * * * *") {
@@ -1413,6 +1492,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === "/admin/setup-webhook") return manualWebhookSetup(request, env);
+    if (url.pathname === "/admin/d1-migrations") return handleD1MigrationAdmin(request, env);
     if (url.pathname === "/health" && request.method === "GET") return health(env);
     if (url.pathname === "/internal/panel-requests") {
       return enqueuePanelRequestAndDispatch(
