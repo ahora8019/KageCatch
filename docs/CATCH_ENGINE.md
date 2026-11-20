@@ -136,3 +136,16 @@ The queue is opt-in through `KAGECATCH_JOB_QUEUE_URL` (Cloudflare D1) or `KAGECA
 - Dispatch and success verification are separate. Without a target-specific response verifier, a sent command is never presented as a successful Catch.
 - SenpaiCatcher inbound Spawn recognition is wired to manual review. Only the extracted frame from a qualifying Spawn video is sent to trace.moe; the full video is not uploaded.
 - No real Telegram account was connected and no Catch command was sent to a real target during this implementation.
+
+## Durable Catch admission
+
+Persistent deployments must use `D1CatchAdmissionStore`, not the local SQLite
+store (Render Free has no durable local disk). Configure
+`KAGECATCH_CATCH_ADMISSION_URL` with the HTTPS base URL of the Control Worker,
+and optionally set `KAGECATCH_CATCH_MAX_ATTEMPTS` (default `5`) and
+`KAGECATCH_CATCH_QUOTA_WINDOW_SECONDS` (default `3600`). Apply
+`migrations/0010_d1_catch_admission.sql` to the target D1 database before
+starting Core with this setting. The Worker endpoint is authenticated with the
+existing Core HMAC secret and performs deduplication plus rolling quota
+admission in one atomic D1 statement. Reservations are intentionally retained
+when a send result is ambiguous; do not automatically retry those commands.
