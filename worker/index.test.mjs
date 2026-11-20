@@ -1176,8 +1176,9 @@ test("native account login completes phone, keypad OTP, and optional 2FA entirel
   const directCodeRequest = coreCalls.find((call) => call.url.endsWith("/v1/accounts/500124/connect/code"));
   assert.deepEqual(directCodeRequest.payload, { code: "65432" });
   assert.equal(coreCalls.some((call) => call.url.endsWith("/v1/accounts/500124/connect/password")), false);
-  assert.ok(telegramCalls.some((call) => call.method === "editMessageText" && /با موفقیت متصل شد/.test(call.payload.text)));
-  assert.equal(telegramCalls.some((call) => call.method === "sendMessage" && /رمز دومرحله‌ای/.test(call.payload.text)), false);
+  const directUserMessages = telegramCalls.filter((call) => call.payload.chat_id === 500124);
+  assert.ok(directUserMessages.some((call) => call.method === "editMessageText" && /با موفقیت متصل شد/.test(call.payload.text)));
+  assert.equal(directUserMessages.some((call) => /رمز دومرحله‌ای/.test(call.payload.text)), false);
   const directRemaining = await store.fetch(new Request("https://do.internal/auth-state", {
     method: "POST",
     headers: { "content-type": "application/json" },
