@@ -43,7 +43,7 @@ test("connect callback starts a Telegram-native phone and keypad login flow", ()
 
 test("account and security callbacks disclose only current unavailable state", () => {
   assert.match(resolveCallback("account:list").text, /گزینهٔ «اتصال حساب»/);
-  assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
+  assert.match(resolveCallback("security:open").text, /از سرور KageCatch عبور می‌کنند/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
 
