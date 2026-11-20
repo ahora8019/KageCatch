@@ -401,9 +401,19 @@ test("health distinguishes a reachable but unconfigured Python Core from an unre
   const env = {
     KAGECATCH_DB: {
       prepare(sql) {
-        assert.match(sql, /sqlite_master/);
-        assert.match(sql, /telegram_bot_safety/);
-        return { first: async () => ({ count: 3 }) };
+        if (sql.includes("sqlite_master")) {
+          return { all: async () => ({ results: [
+            { name: "d1_migrations" },
+            { name: "telegram_bot_safety" },
+            { name: "telegram_bot_chat_pacing" },
+            { name: "telegram_bot_chat_circuit_breaker" },
+            { name: "panel_requests" },
+          ] }) };
+        }
+        if (sql.includes("d1_migrations")) {
+          return { first: async () => ({ count: 5, latest: "0008_telegram_bot_chat_circuit_breaker.sql" }) };
+        }
+        throw new Error("unexpected health query");
       },
     }, TELEGRAM_BOT_TOKEN: "test-token",
     TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
@@ -429,6 +439,9 @@ test("health distinguishes a reachable but unconfigured Python Core from an unre
   assert.equal(health.last_telegram_error_at, new Date(1794572719 * 1000).toISOString());
   assert.equal(health.d1_storage, "ready");
   assert.equal(health.d1_required_tables, 3);
+  assert.deepEqual(health.d1_tables, ["d1_migrations", "telegram_bot_safety", "telegram_bot_chat_pacing", "telegram_bot_chat_circuit_breaker", "panel_requests"]);
+  assert.equal(health.d1_migration_count, 5);
+  assert.equal(health.d1_latest_migration, "0008_telegram_bot_chat_circuit_breaker.sql");
   assert.equal(calls.length, 3);
 });
 

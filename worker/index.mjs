@@ -321,9 +321,22 @@ async function health(env) {
     const d1Promise = (async () => {
       try {
         if (!env.KAGECATCH_DB) return null;
-        return await env.KAGECATCH_DB.prepare(
-          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table' AND name IN ('telegram_bot_safety', 'telegram_bot_chat_pacing', 'telegram_bot_chat_circuit_breaker')"
-        ).first();
+        const tableResult = await env.KAGECATCH_DB.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).all();
+        const tableNames = Array.isArray(tableResult?.results)
+          ? tableResult.results.map((row) => String(row.name))
+          : [];
+        let migrationCount = null;
+        let latestMigration = null;
+        if (tableNames.includes("d1_migrations")) {
+          const migration = await env.KAGECATCH_DB.prepare(
+            "SELECT COUNT(*) AS count, (SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1) AS latest FROM d1_migrations"
+          ).first();
+          migrationCount = Number.isSafeInteger(migration?.count) ? migration.count : null;
+          latestMigration = typeof migration?.latest === "string" ? migration.latest : null;
+        }
+        return { tableNames, migrationCount, latestMigration };
       } catch {
         return null;
       }
@@ -334,7 +347,8 @@ async function health(env) {
       corePromise,
       d1Promise,
     ]);
-    const d1RequiredTables = Number.isSafeInteger(d1?.count) ? d1.count : null;
+    const requiredD1Tables = ["telegram_bot_safety", "telegram_bot_chat_pacing", "telegram_bot_chat_circuit_breaker"];
+    const d1RequiredTables = d1 ? requiredD1Tables.filter((name) => d1.tableNames.includes(name)).length : null;
     const expectedUrl = new URL(WEBHOOK_PATH, "https://kagecatch-control.ahora-project.workers.dev").toString();
     return json({
       service: "KageCatch Control",
@@ -349,6 +363,9 @@ async function health(env) {
         : null,
       d1_storage: d1RequiredTables === 3 ? "ready" : d1RequiredTables === null ? "unavailable" : "schema_incomplete",
       d1_required_tables: d1RequiredTables,
+      d1_tables: d1?.tableNames ?? [],
+      d1_migration_count: d1?.migrationCount ?? null,
+      d1_latest_migration: d1?.latestMigration ?? null,
       python_core: core.status === 200 && core.data?.status === "ready" ? "connected" : core.status === 503 && core.data?.status === "degraded" ? "degraded" : "unreachable",
       version: VERSION,
     });
