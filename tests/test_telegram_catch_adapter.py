@@ -58,6 +58,57 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         receipt = await adapter.send_catch(self.spawn(), "Sakura")
         self.assertTrue(await adapter.verify_catch(receipt))
 
+    async def test_verifier_must_return_literal_true(self):
+        client = FakeClient()
+
+        async def verifier(*args):
+            return "verified"
+
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipt = await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertFalse(await adapter.verify_catch(receipt))
+
+    async def test_modified_receipt_cannot_reuse_a_sent_message(self):
+        from kagecatch.engine import CatchReceipt
+
+        client = FakeClient()
+
+        async def verifier(*args):
+            return True
+
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipt = await adapter.send_catch(self.spawn(), "Sakura")
+        forged = CatchReceipt(reference=receipt.reference, character_name="Other")
+
+        self.assertFalse(await adapter.verify_catch(forged))
+
+    async def test_verifier_exception_fails_closed(self):
+        client = FakeClient()
+
+        async def verifier(*args):
+            raise RuntimeError("listener unavailable")
+
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipt = await adapter.send_catch(self.spawn(), "Sakura")
+
+        self.assertFalse(await adapter.verify_catch(receipt))
+
     async def test_rejects_spawn_from_another_source_before_sending(self):
         client = FakeClient()
         adapter = TelethonCatchAdapter(
@@ -90,6 +141,36 @@ class TelegramCatchAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         receipt = await adapter.send_catch(self.spawn(), "Sakura")
         self.assertEqual(receipt.reference, "HentaCatcherBot:77")
+
+
+    async def test_sent_message_cache_is_bounded_and_evicts_oldest_receipts(self):
+        class IncrementingClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.next_id = 0
+
+            async def send_message(self, username, text):
+                self.next_id += 1
+                self.sent.append((username, text))
+                return FakeMessage(self.next_id)
+
+        async def verifier(*args):
+            return True
+
+        client = IncrementingClient()
+        adapter = TelethonCatchAdapter(
+            client=client,
+            source="henta_catcher",
+            response_verifier=verifier,
+            dispatch_enabled=True,
+        )
+        receipts = [
+            await adapter.send_catch(self.spawn(), f"Sakura-{index}")
+            for index in range(257)
+        ]
+
+        self.assertFalse(await adapter.verify_catch(receipts[0]))
+        self.assertTrue(await adapter.verify_catch(receipts[-1]))
 
 
 if __name__ == "__main__":
