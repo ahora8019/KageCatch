@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import unicodedata
 from dataclasses import dataclass
+from itertools import islice
 from typing import Iterable, Literal
 
 
@@ -112,6 +113,7 @@ class CharacterRecognitionEngine:
         *,
         confidence_threshold: float = 0.85,
         min_margin: float = 0.08,
+        max_candidates: int = 20,
     ) -> None:
         if not isinstance(catalog, CharacterCatalog):
             raise TypeError("catalog must be a CharacterCatalog")
@@ -126,14 +128,21 @@ class CharacterRecognitionEngine:
                 or not 0.0 <= float(value) <= 1.0
             ):
                 raise ValueError(f"{name} must be a finite number from 0 to 1")
+        if isinstance(max_candidates, bool) or not isinstance(max_candidates, int) or not 1 <= max_candidates <= 100:
+            raise ValueError("max_candidates must be an integer from 1 to 100")
         self.catalog = catalog
         self.confidence_threshold = float(confidence_threshold)
         self.min_margin = float(min_margin)
+        self.max_candidates = max_candidates
 
     def recognize(
         self, candidates: Iterable[RecognitionCandidate]
     ) -> CharacterRecognitionResult:
-        ranked = list(candidates)
+        # Consume at most one item beyond the configured cap so an untrusted or
+        # accidental infinite candidate stream cannot exhaust memory.
+        ranked = list(islice(iter(candidates), self.max_candidates + 1))
+        if len(ranked) > self.max_candidates:
+            raise ValueError(f"recognition accepts at most {self.max_candidates} candidates")
         if any(not isinstance(item, RecognitionCandidate) for item in ranked):
             raise TypeError("candidates must contain RecognitionCandidate values")
         if not ranked:
