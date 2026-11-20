@@ -1544,3 +1544,47 @@ test("D1 durable job queue authenticates enqueue and atomically claims a fenced 
   const unsigned=await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/internal/job-queue",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}),env);
   assert.equal(unsigned.status,401);
 });
+
+function createFakeCatchAdmissionDatabase() {
+  const rows = new Map();
+  return { rows, prepare(sql) { let values = []; return {
+    bind(...args) { values = args; return this; },
+    async run() {
+      if (!sql.includes("INSERT INTO catch_admission_attempts")) throw new Error("unexpected catch admission run: " + sql);
+      const [dedupeKey, userId, source, attemptedAt, duplicateKey, quotaUser, quotaSource, cutoff, maxAttempts] = values;
+      if (rows.has(duplicateKey)) return { meta: { changes: 0 } };
+      const count = [...rows.values()].filter((row) => row.user_id === quotaUser && row.source === quotaSource && row.attempted_at > cutoff).length;
+      if (count >= maxAttempts) return { meta: { changes: 0 } };
+      rows.set(dedupeKey, { dedupe_key: dedupeKey, user_id: userId, source, attempted_at: attemptedAt });
+      return { meta: { changes: 1 } };
+    },
+    async first() {
+      if (!sql.includes("SELECT 1 AS found FROM catch_admission_attempts")) throw new Error("unexpected catch admission first: " + sql);
+      return rows.has(values[0]) ? { found: 1 } : null;
+    },
+  }; }};
+}
+
+test("D1 catch admission is authenticated, atomic, deduplicated, and quota bounded", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const db = createFakeCatchAdmissionDatabase();
+  const secret = "catch-admission-core-secret-at-least-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const reserve = async (dedupe_key, nonce) => worker.fetch(await makeSignedJobQueueRequest({
+    action: "admit_catch", user_id: "12345", source: "senpai_catcher", dedupe_key,
+    max_attempts: 2, window_seconds: 60,
+  }, secret, nonce), env);
+  const first = await reserve("spawn:1", "a".repeat(32));
+  const duplicate = await reserve("spawn:1", "b".repeat(32));
+  const second = await reserve("spawn:2", "c".repeat(32));
+  const quota = await reserve("spawn:3", "d".repeat(32));
+  assert.deepEqual(await first.json(), { status: "admitted" });
+  assert.deepEqual(await duplicate.json(), { status: "duplicate" });
+  assert.deepEqual(await second.json(), { status: "admitted" });
+  assert.deepEqual(await quota.json(), { status: "quota_blocked" });
+  assert.equal(db.rows.size, 2);
+  const invalid = await worker.fetch(await makeSignedJobQueueRequest({ action: "admit_catch", user_id: "12345", source: "../bad", dedupe_key: "x", max_attempts: 2, window_seconds: 60 }, secret, "e".repeat(32)), env);
+  assert.equal(invalid.status, 400);
+});

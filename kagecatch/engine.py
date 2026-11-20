@@ -219,8 +219,8 @@ class CatchEngine:
                     return decision
                 return "admission_unavailable"
 
-            # Backward-compatible development path. It is not atomic; persistent
-            # enabled deployments must inject SQLiteCatchAdmissionStore.
+            # Backward-compatible development path. It is not atomic; enabled
+            # deployments must inject a durable atomic CatchAdmission store.
             if not await self.quota.allow(user_id, source):
                 return "quota_blocked"
             if not await self.deduplicator.claim(dedupe_key):

@@ -120,6 +120,37 @@ class CoreApiTests(unittest.TestCase):
         with TestClient(app):
             self.assertTrue(runtime.restore_called)
 
+    def test_configured_d1_admission_is_injected_into_catch_engine_and_closed(self):
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        class AdmissionStore:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+        engine = SimpleNamespace(admission=None, quota=None, deduplicator=None)
+        pipeline = SimpleNamespace(catch_engine=engine)
+        with patch.dict(os.environ, {
+            "KAGECATCH_CATCH_ADMISSION_URL": "https://control.example.test",
+            "KAGECATCH_CATCH_MAX_ATTEMPTS": "4",
+            "KAGECATCH_CATCH_QUOTA_WINDOW_SECONDS": "900",
+        }), patch("kagecatch.d1_catch_admission.D1CatchAdmissionStore", AdmissionStore):
+            app = create_app(
+                core_secret=SECRET, runtime=self.runtime, session_manager=self.sessions,
+                auth_flow=self.auth_flow, catch_pipeline=pipeline,
+            )
+            with TestClient(app):
+                self.assertIs(engine.admission, app.state.catch_admission)
+                self.assertEqual(app.state.catch_admission.kwargs["max_attempts"], 4)
+                self.assertEqual(app.state.catch_admission.kwargs["window_seconds"], 900.0)
+            self.assertTrue(app.state.catch_admission.closed)
+
     def test_review_pipeline_is_wired_to_the_runtime_selfbot_incoming_listener(self):
         class SelfbotRegistry:
             def __init__(self):

@@ -174,6 +174,7 @@ def create_app(
     spawn_detector=None,
     character_resolver=None,
     job_queue=None,
+    catch_admission=None,
 ) -> FastAPI:
     secret = core_secret if core_secret is not None else os.getenv("KAGECATCH_CORE_SECRET", "")
     logging.getLogger("kagecatch.core").info("Core configuration presence: %s", _configuration_presence(secret))
@@ -218,6 +219,7 @@ def create_app(
     app.state.review_pipeline = review_pipeline
     app.state.catch_pipeline = catch_pipeline
     app.state.job_queue = job_queue
+    app.state.catch_admission = catch_admission
     app.state.recognition_producer = None
     app.state.recognition_worker = None
     app.state.recognition_worker_task = None
@@ -250,6 +252,26 @@ def create_app(
             raise HTTPException(status_code=409, detail="request_replayed")
 
     async def initialize_review_runtime() -> None:
+        if app.state.catch_admission is None:
+            admission_url = os.getenv("KAGECATCH_CATCH_ADMISSION_URL", "").strip()
+            if admission_url and secret:
+                from .d1_catch_admission import D1CatchAdmissionStore
+                app.state.catch_admission = D1CatchAdmissionStore(
+                    admission_url,
+                    secret,
+                    max_attempts=int(os.getenv("KAGECATCH_CATCH_MAX_ATTEMPTS", "5")),
+                    window_seconds=float(os.getenv("KAGECATCH_CATCH_QUOTA_WINDOW_SECONDS", "3600")),
+                )
+        catch_engine = getattr(app.state.catch_pipeline, "catch_engine", None)
+        if (
+            catch_engine is not None
+            and getattr(catch_engine, "admission", None) is None
+            and getattr(catch_engine, "quota", None) is None
+            and getattr(catch_engine, "deduplicator", None) is None
+            and app.state.catch_admission is not None
+        ):
+            catch_engine.admission = app.state.catch_admission
+
         if app.state.job_queue is None:
             queue_url = os.getenv("KAGECATCH_JOB_QUEUE_URL", "").strip()
             if queue_url and secret:
@@ -327,6 +349,15 @@ def create_app(
             app.state.recognition_worker_stop,
             app.state.recognition_worker_task,
         )
+        admission = app.state.catch_admission
+        admission_close = getattr(admission, "close", None) if admission is not None else None
+        if callable(admission_close):
+            try:
+                await admission_close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Catch admission store shutdown failed"
+                )
         queue = app.state.job_queue
         queue_close = getattr(queue, "close", None) if queue is not None else None
         if callable(queue_close):

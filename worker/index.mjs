@@ -1284,6 +1284,29 @@ async function internalJobQueue(request,env) {
   let p; try{p=JSON.parse(new TextDecoder().decode(body));}catch{return json({error:"invalid_request"},400);} if(!p||typeof p!=="object"||Array.isArray(p))return json({error:"invalid_request"},400);
   const now=Date.now()/1000, db=env.KAGECATCH_DB;
   try {
+    if (p.action === "admit_catch") {
+      if (typeof p.user_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(p.user_id)
+        || typeof p.source !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(p.source)
+        || typeof p.dedupe_key !== "string" || !p.dedupe_key || p.dedupe_key.length > 256
+        || /[\u0000-\u001f\u007f-\u009f]/.test(p.dedupe_key)
+        || !Number.isSafeInteger(p.max_attempts) || p.max_attempts < 1 || p.max_attempts > 1000000
+        || typeof p.window_seconds !== "number" || !Number.isFinite(p.window_seconds)
+        || p.window_seconds <= 0 || p.window_seconds > 31536000) {
+        return json({ error: "invalid_catch_admission" }, 400);
+      }
+      const cutoff = now - p.window_seconds;
+      const inserted = await db.prepare(
+        "INSERT INTO catch_admission_attempts(dedupe_key,user_id,source,attempted_at) " +
+        "SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM catch_admission_attempts WHERE dedupe_key=?) " +
+        "AND (SELECT COUNT(*) FROM catch_admission_attempts WHERE user_id=? AND source=? AND attempted_at>?) < ? " +
+        "ON CONFLICT(dedupe_key) DO NOTHING"
+      ).bind(p.dedupe_key, p.user_id, p.source, now, p.dedupe_key, p.user_id, p.source, cutoff, p.max_attempts).run();
+      if (Number(inserted?.meta?.changes || 0) === 1) return json({ status: "admitted" }, 201);
+      const duplicate = await db.prepare(
+        "SELECT 1 AS found FROM catch_admission_attempts WHERE dedupe_key=?"
+      ).bind(p.dedupe_key).first();
+      return json({ status: duplicate ? "duplicate" : "quota_blocked" });
+    }
     if(p.action==="enqueue") {
       if(typeof p.job_type!=="string"||!p.job_type.trim()||p.job_type.length>128||!p.payload||typeof p.payload!=="object"||Array.isArray(p.payload)||!Number.isSafeInteger(p.priority??0)||!Number.isSafeInteger(p.max_attempts??3)||(p.max_attempts??3)<1||(p.max_attempts??3)>20||(p.run_after!=null&&(typeof p.run_after!=="number"||!Number.isFinite(p.run_after)))||(p.idempotency_key!=null&&(typeof p.idempotency_key!=="string"||!p.idempotency_key.trim()||p.idempotency_key.length>256)))return json({error:"invalid_job"},400);
       const jid=crypto.randomUUID().replace(/-/g,""), pj=JSON.stringify(p.payload), ins=await db.prepare("INSERT OR IGNORE INTO catch_jobs(job_id,job_type,payload_json,priority,status,max_attempts,idempotency_key,run_after,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?,?,?,?)").bind(jid,p.job_type.trim(),pj,p.priority??0,p.max_attempts??3,p.idempotency_key??null,p.run_after??now,now,now).run();
