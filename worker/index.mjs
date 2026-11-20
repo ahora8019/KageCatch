@@ -1146,7 +1146,7 @@ async function handleCallback(callback, env) {
     }
     if (action.action === "submit") {
       if (!/^\\d{4,8}$/.test(code)) {
-        await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "کد باید بین ۴ تا ۸ رقم باشد.", show_alert: true });
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⚠️ کد باید بین ۴ تا ۸ رقم باشد.\\n\\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
         return;
       }
       const result = await coreRequest(env, "POST", "/v1/accounts/" + callback.from.id + "/connect/code", { code });
