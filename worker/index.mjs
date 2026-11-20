@@ -60,37 +60,6 @@ async function verifySecret(provided, expected) {
   return difference === 0;
 }
 
-export async function verifyWebAppInitData(initData, botToken, nowSeconds = Math.floor(Date.now() / 1000)) {
-  if (typeof initData !== "string" || !initData || initData.length > 8192 || typeof botToken !== "string" || !botToken) return null;
-  const params = new URLSearchParams(initData);
-  const suppliedHash = params.get("hash");
-  if (!suppliedHash || !/^[a-f0-9]{64}$/i.test(suppliedHash)) return null;
-  const entries = [...params.entries()];
-  if (new Set(entries.map(([key]) => key)).size !== entries.length) return null;
-  const authDate = Number(params.get("auth_date"));
-  if (!Number.isSafeInteger(authDate) || authDate > nowSeconds + 30 || nowSeconds - authDate > 86400) return null;
-  const checkString = entries
-    .filter(([key]) => key !== "hash")
-    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(([key, value]) => key + "=" + value)
-    .join("\n");
-  const encoder = new TextEncoder();
-  const sourceKey = await crypto.subtle.importKey("raw", encoder.encode("WebAppData"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const secretBytes = await crypto.subtle.sign("HMAC", sourceKey, encoder.encode(botToken));
-  const signingKey = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, encoder.encode(checkString)));
-  const expectedHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  let difference = expectedHash.length ^ suppliedHash.length;
-  for (let i = 0; i < Math.min(expectedHash.length, suppliedHash.length); i += 1) {
-    difference |= expectedHash.charCodeAt(i) ^ suppliedHash.toLowerCase().charCodeAt(i);
-  }
-  if (difference !== 0) return null;
-  let user;
-  try { user = JSON.parse(params.get("user") || "null"); } catch { return null; }
-  if (!user || !Number.isSafeInteger(user.id) || user.id <= 0) return null;
-  return { user, authDate };
-}
-
 async function coreRequest(env, method, path, payload = null) {
   if (!env.CORE_API_URL || !env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) {
     return { status: 503, data: { error: "core_not_configured" } };
