@@ -88,6 +88,7 @@ class CharacterRecognitionSpawnIntegrationTests(unittest.IsolatedAsyncioTestCase
 
         self.assertIsNone(metadata.character_name)
         self.assertEqual(metadata.character_confidence, 0.0)
+        self.assertEqual(metadata.additional["proposed_character_name"], "Unverified Name")
         self.assertEqual(metadata.source, "senpai_catcher")
 
     async def test_unknown_result_does_not_become_catchable_identity(self):
