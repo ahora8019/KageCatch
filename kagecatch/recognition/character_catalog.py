@@ -143,8 +143,25 @@ class CharacterRecognitionEngine:
             )
 
         ranked.sort(key=lambda item: item.confidence, reverse=True)
-        top = ranked[0]
-        second = ranked[1] if len(ranked) > 1 else None
+
+        # Multiple labels/aliases can refer to the same catalog entry. They are
+        # corroborating labels, not competing identity hypotheses.
+        distinct: list[tuple[RecognitionCandidate, CharacterRecord | None]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in ranked:
+            record = self.catalog.resolve(item.name)
+            identity = (
+                ("known", record.character_id)
+                if record is not None
+                else ("unknown", _normalize_name(item.name))
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            distinct.append((item, record))
+
+        top, record = distinct[0]
+        second = distinct[1][0] if len(distinct) > 1 else None
         if second is not None and top.confidence - second.confidence < self.min_margin:
             return CharacterRecognitionResult(
                 status="review", character=None, confidence=top.confidence,
@@ -157,7 +174,6 @@ class CharacterRecognitionEngine:
                 proposed_name=top.name, reason="low_confidence",
             )
 
-        record = self.catalog.resolve(top.name)
         if record is None:
             return CharacterRecognitionResult(
                 status="unknown", character=None, confidence=top.confidence,
