@@ -4,6 +4,10 @@ const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
 
+export function isSavedAccountStatus(status) {
+  return status === "connected" || status === "authorized";
+}
+
 const RENDER_CORE_HEALTH_URL = "https://kagecatch-core-preview.onrender.com/healthz";
 
 async function keepRenderCoreWarm(env, controller) {
@@ -691,7 +695,7 @@ async function handleCallback(callback, env) {
         await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 حساب شما رمز دومرحله‌ای دارد.\n\nرمز را در پیام بعدی بفرست. پیام ورودی بلافاصله برای حذف اقدام می‌شود.", reply_markup: BACK_MENU });
         return;
       }
-      if (result.status >= 200 && result.status < 300 && ["connected", "authorized"].includes(result.data?.status)) {
+      if (result.status >= 200 && result.status < 300 && isSavedAccountStatus(result.data?.status)) {
         await authStateRequest(env, callback.from.id, "delete");
         await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست تلگرام ذخیره شد؛ اما فعال‌شدن کلاینت نیازمند بررسی Core است.", reply_markup: BACK_MENU });
         return;
@@ -852,9 +856,9 @@ async function handleWebhook(request, env) {
       try {
         await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
         const result = await coreRequest(env, "POST", "/v1/accounts/" + message.from.id + "/connect/password", { password: message.text });
-        if (result.status >= 200 && result.status < 300 && result.data?.status === "connected") {
+        if (result.status >= 200 && result.status < 300 && isSavedAccountStatus(result.data?.status)) {
           await authStateRequest(env, message.from.id, "delete");
-          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "✅ حساب تلگرام با موفقیت متصل شد.", reply_markup: BACK_MENU });
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست ذخیره شد؛ اتصال کلاینت در تلاش مجدد فعال می‌شود.", reply_markup: BACK_MENU });
         } else {
           const pendingStatus = await coreRequest(env, "GET", "/v1/accounts/" + message.from.id + "/connect/status");
           if (pendingStatus.status === 200 && pendingStatus.data?.status !== "pending") {
