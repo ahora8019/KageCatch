@@ -30,7 +30,7 @@ class TelethonCatchAdapter:
         if target is None:
             raise ValueError("unsupported catch source")
         if not target.enabled:
-            raise RuntimeError("catch source is currently frozen")
+            raise RuntimeError("catch source is disabled pending explicit command approval")
         self.source = source
         self.media_kind = target.media_kind
         self.target_username = target.username
