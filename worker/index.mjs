@@ -1,10 +1,18 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
+import { buildLoginCodeKeyboard, maskLoginCode, parseLoginCodeCallback, validatePhoneNumber } from "./telegram_login_ui.mjs";
 import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, getTelegramSafetySnapshot, recoverTelegramGlobalPause, recoverTelegramChatCircuit, isTelegramMutatingMethod, isValidTelegramMethod } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
-const CONNECTION_LINK_TTL_SECONDS = 300;
-const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
+
+export function isSavedAccountStatus(status) {
+  return status === "connected" || status === "authorized";
+}
+
+export function isPendingAuthorizationConflict(status, data) {
+  return status === 409 && (data?.detail === "authorization_already_pending" || data?.error === "authorization_already_pending");
+}
+
 const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
 
 const RENDER_CORE_HEALTH_URL = "https://kagecatch-core-preview.onrender.com/healthz";
@@ -360,7 +368,7 @@ export function resolveCallback(data) {
   switch (data) {
     case "account:connect":
       return {
-        text: "🟢 وصل کردن حساب\n\nروی دکمهٔ اتصال امن بزن تا لینک مخصوص خودت ساخته بشه و صفحهٔ ورود باز بشه.",
+        text: "🟢 اتصال حساب تلگرام\n\nشماره تلفنت رو با پیش‌شماره کشور بفرست؛ کد ورود رو با صفحه‌کلید داخل همین بات وارد می‌کنی.",
         keyboard: BACK_MENU,
       };
     case "account:list":
@@ -384,7 +392,7 @@ export function resolveCallback(data) {
       return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: BACK_MENU };
     case "security:open":
       return {
-        text: "🔒 امنیت و نشست‌ها\n\nهیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود. نشست‌های ذخیره‌شده باید رمزنگاری شوند و امکان لغو دسترسی داشته باشند.\n\nحذف پیام فقط بهترین تلاش است و حذف کامل از زیرساخت تلگرام را تضمین نمی‌کند.",
+        text: "🔒 امنیت و نشست‌ها\n\nکد ورود و رمز دومرحله‌ای در گفت‌وگوی خصوصی بات دریافت می‌شوند و از سرور KageCatch عبور می‌کنند. وضعیت ورود موقت با AES-GCM رمزنگاری می‌شود و محتویات کد و رمز در لاگ ثبت نمی‌شوند.\n\nحذف پیام فقط بهترین تلاش است؛ چت بات تلگرام رمزنگاری سرتاسری نیست و حذف کامل از زیرساخت تلگرام تضمین نمی‌شود.",
         keyboard: BACK_MENU,
       };
     case "account:disconnect":
@@ -689,7 +697,7 @@ authPromise=authenticate();refresh();
   return new Response(html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
     "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
-    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org 'nonce-" + nonce + "'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors *",
+    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org 'nonce-" + nonce + "'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org",
   }});
 }
 
@@ -701,6 +709,23 @@ export class ConnectionLinkStore {
     let body;
     try { if (!(request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) throw new Error('content type'); body = await request.json(); }
     catch { return json({ error: 'invalid_request' }, 400); }
+    if (url.pathname === '/auth-state') {
+      const { telegramUserId, action, state: authState } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !['get', 'set', 'delete'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      const key = 'telegram-auth-state:' + telegramUserId;
+      if (action === 'delete') { await this.state.storage.delete(key); return json({ status: 'deleted' }); }
+      if (action === 'set') {
+        if (!authState || !Array.isArray(authState.iv) || authState.iv.length !== 12 || !Array.isArray(authState.ciphertext) || authState.ciphertext.length < 16 || authState.ciphertext.length > 2048 || !Number.isSafeInteger(authState.expiresAt) || authState.expiresAt <= Date.now() || authState.expiresAt > Date.now() + 300000) return json({ error: 'invalid_auth_state' }, 400);
+        await this.state.storage.put(key, authState);
+        return json({ status: 'saved' });
+      }
+      const stored = await this.state.storage.get(key);
+      if (!stored || stored.expiresAt <= Date.now()) {
+        if (stored) await this.state.storage.delete(key);
+        return json({ state: null });
+      }
+      return json({ state: stored });
+    }
     if (url.pathname === '/claim-nonce') {
       const { nonce, expiresAt } = body || {};
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
@@ -870,61 +895,9 @@ export class ConnectionLinkStore {
         return draft ? json({ draft }) : json({ error: 'no_confirmable_broadcast' }, 409);
       }
     }
-    if (url.pathname === '/create') {
-      const { telegramUserId, ttlSeconds } = body || {};
-      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 600) return json({ error: 'invalid_request' }, 400);
-      const bytes = crypto.getRandomValues(new Uint8Array(32));
-      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      const token = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-      const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      await this.state.storage.put(key, { telegramUserId, expiresAt: Date.now() + ttlSeconds * 1000 });
-      return json({ token, expiresIn: ttlSeconds }, 201);
-    }
-    if (url.pathname === '/consume') {
-      const token = body?.token;
-      if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(token)) return json({ error: 'invalid_link' }, 400);
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-      const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const bytes = crypto.getRandomValues(new Uint8Array(32));
-      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      const sessionToken = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-      const sessionDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sessionToken));
-      const sessionKey = 'browser:' + Array.from(new Uint8Array(sessionDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const record = await this.state.storage.transaction(async (txn) => {
-        const value = await txn.get(key);
-        if (!value) return null;
-        await txn.delete(key);
-        if (value.expiresAt <= Date.now()) return null;
-        await txn.put(sessionKey, { telegramUserId: value.telegramUserId, expiresAt: Date.now() + 10 * 60 * 1000 });
-        return value;
-      });
-      if (!record) return json({ error: 'invalid_or_expired_link' }, 410);
-      return json({ sessionToken, expiresIn: 600 }, 200);
-    }
-    if (url.pathname === '/browser-session') {
-      const sessionToken = body?.sessionToken;
-      if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(sessionToken)) return json({ error: 'invalid_session' }, 401);
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sessionToken));
-      const key = 'browser:' + Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const record = await this.state.storage.get(key);
-      if (!record || record.expiresAt <= Date.now()) {
-        if (record) await this.state.storage.delete(key);
-        return json({ error: 'invalid_or_expired_session' }, 401);
-      }
-      return json({ telegramUserId: record.telegramUserId }, 200);
-    }
     return json({ error: 'not_found' }, 404);
   }
 }
-
-async function createConnectionLink(env, telegramUserId) {
-  if (!env.CONNECT_LINKS) throw new Error('CONNECT_LINKS binding is not configured');
-  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName('connection-links-v1'));
-  const response = await stub.fetch('https://connect-links.internal/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ telegramUserId, ttlSeconds: CONNECTION_LINK_TTL_SECONDS }) });
-  if (!response.ok) throw new Error('Connection link service unavailable');
-  const result = await response.json();
-  return CONNECTION_LINK_BASE + '/connect/' + encodeURIComponent(result.token);}
 
 async function registryRequest(env, path, payload) {
   if (!env.CONNECT_LINKS) throw new Error('User registry unavailable');
@@ -932,6 +905,51 @@ async function registryRequest(env, path, payload) {
   const response = await stub.fetch('https://connect-links.internal' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
   if (!response.ok) { const error = new Error('User registry unavailable'); error.status = response.status; throw error; }
   return response.json();
+}
+
+// OTP and 2FA flow state is encrypted at rest with AES-GCM and authenticated to its Telegram user ID.
+async function authStateRequest(env, telegramUserId, action, state = null) {
+  if (!env.CONNECT_LINKS) throw new Error("Temporary auth state store unavailable");
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  let encrypted = null;
+  if (action === "set") {
+    if (!env.CORE_API_SECRET || !state || !Number.isSafeInteger(state.expiresAt)) throw new Error("Auth state encryption is not configured");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
+    const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(String(telegramUserId)) }, key, new TextEncoder().encode(JSON.stringify(state)));
+    encrypted = { iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)), expiresAt: state.expiresAt };
+  }
+  const response = await stub.fetch("https://connect-links.internal/auth-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId, action, state: encrypted }),
+  });
+  if (!response.ok) throw new Error("Temporary auth state operation failed");
+  const result = await response.json();
+  if (action !== "get" || !result.state) return result;
+  if (!env.CORE_API_SECRET) throw new Error("Auth state encryption is not configured");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
+  const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(result.state.iv), additionalData: new TextEncoder().encode(String(telegramUserId)) }, key, new Uint8Array(result.state.ciphertext));
+  return { state: JSON.parse(new TextDecoder().decode(plaintext)) };
+}
+
+async function beginTelegramLogin(env, telegramUserId, phone) {
+  if (!validatePhoneNumber(phone)) throw new Error("invalid_phone");
+  const path = "/v1/accounts/" + telegramUserId;
+  const result = await coreRequest(env, "POST", path + "/connect", { phone: phone.trim() });
+  if (isPendingAuthorizationConflict(result.status, result.data)) {
+    const pending = await coreRequest(env, "GET", path + "/connect/status");
+    if (pending.status === 200 && pending.data?.status === "pending") return "code_sent";
+  }
+  if (result.status < 200 || result.status >= 300) throw new Error(result.data?.error || result.data?.detail || "telegram_code_request_failed");
+  if (result.data?.status === "already_authorized") {
+    const reconnect = await coreRequest(env, "POST", path + "/reconnect");
+    if (reconnect.status >= 200 && reconnect.status < 300) return "connected";
+    return "reauthorization_required";
+  }
+  return result.data?.status || "code_sent";
 }
 
 async function getTelegramUser(env, userId) {
@@ -1066,7 +1084,7 @@ async function handleOwnerCallback(callback, env) {
 async function handleCallback(callback, env) {
   if (await handlePanelCallback(callback, env, telegramApi)) return;
   const chat = callback.message?.chat;
-  if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id)) {
+  if (chat?.type !== "private" || !Number.isSafeInteger(chat.id) || !Number.isSafeInteger(callback.from?.id) || chat.id !== callback.from.id) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "این بخش فقط در گفت‌وگوی خصوصی در دسترس است.", show_alert: true });
     return;
   }
@@ -1079,6 +1097,64 @@ async function handleCallback(callback, env) {
   if (callback.data?.startsWith('owner:') && role !== 'OWNER') {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ این بخش فقط برای Owner است.", show_alert: true });
     return;
+  }
+  if (typeof callback.data === "string" && callback.data.startsWith("auth:")) {
+    try { await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id }); } catch {}
+    const action = parseLoginCodeCallback(callback.data);
+    const current = await authStateRequest(env, callback.from.id, "get");
+    const state = current.state;
+    if (!action) return;
+    if (action.action === "cancel") {
+      await coreRequest(env, "POST", "/v1/accounts/" + callback.from.id + "/connect/cancel");
+      await authStateRequest(env, callback.from.id, "delete");
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+      return;
+    }
+    if (!state || state.stage !== "code" || state.expiresAt <= Date.now()) {
+      await authStateRequest(env, callback.from.id, "delete");
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⏳ درخواست ورود منقضی شده. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+      return;
+    }
+    let code = state.code || "";
+    if (action.action === "digit") {
+      if (code.length < 8) code += action.digit;
+      await authStateRequest(env, callback.from.id, "set", { ...state, code });
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 کد ورود را وارد کن\n\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
+      return;
+    }
+    if (action.action === "delete") {
+      code = code.slice(0, -1);
+      await authStateRequest(env, callback.from.id, "set", { ...state, code });
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 کد ورود را وارد کن\n\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
+      return;
+    }
+    if (action.action === "submit") {
+      if (!/^[0-9]{4,8}$/.test(code)) {
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⚠️ کد باید بین ۴ تا ۸ رقم باشد.\n\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
+        return;
+      }
+      const result = await coreRequest(env, "POST", "/v1/accounts/" + callback.from.id + "/connect/code", { code });
+      if (result.status >= 200 && result.status < 300 && result.data?.status === "password_required") {
+        await authStateRequest(env, callback.from.id, "set", { stage: "password", expiresAt: Date.now() + 300000 });
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 حساب شما رمز دومرحله‌ای دارد.\n\nرمز را در پیام بعدی بفرست. پیام ورودی بلافاصله برای حذف اقدام می‌شود.", reply_markup: BACK_MENU });
+        return;
+      }
+      if (result.status >= 200 && result.status < 300 && isSavedAccountStatus(result.data?.status)) {
+        await authStateRequest(env, callback.from.id, "delete");
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست تلگرام ذخیره شد؛ اما فعال‌شدن کلاینت نیازمند بررسی Core است.", reply_markup: BACK_MENU });
+        return;
+      }
+      const pendingStatus = await coreRequest(env, "GET", "/v1/accounts/" + callback.from.id + "/connect/status");
+      if (pendingStatus.status === 200 && pendingStatus.data?.status !== "pending") {
+        await authStateRequest(env, callback.from.id, "delete");
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⏳ تلاش‌های ورود پایان یافت یا درخواست منقضی شد. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+        return;
+      }
+      const nextCode = result.status === 400 ? "" : code;
+      await authStateRequest(env, callback.from.id, "set", { ...state, code: nextCode });
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.status === 400 ? "❌ کد اشتباه است. دوباره وارد کن.\n\n" + maskLoginCode("") : "⚠️ ارتباط با Core برقرار نشد؛ دوباره تلاش کن.", reply_markup: buildLoginCodeKeyboard() });
+      return;
+    }
   }
   // Acknowledge before Core/Durable Object work so Telegram does not time out long monitoring callbacks.
   try { await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id }); } catch {}
@@ -1101,11 +1177,8 @@ async function handleCallback(callback, env) {
     }
   }
   if (callback.data === 'account:connect') {
-    const link=await createConnectionLink(env,callback.from.id);
-    result = {
-      text: '🟢 بزن بریم حسابت رو وصل کنیم! لینک امن مخصوص خودت آماده شد؛ تا ۵ دقیقه اعتبار داره.',
-      keyboard: { inline_keyboard: [[{ text: '🌸 اتصال امن حساب', url: link }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] },
-    };
+    await authStateRequest(env, callback.from.id, "set", { stage: "phone", expiresAt: Date.now() + 300000 });
+    result = { text: "🌸 اتصال حساب تلگرام\n\nشماره تلفنت رو با پیش‌شماره کشور بفرست.\nنمونه: +98912…\n\n⏳ این درخواست ۵ دقیقه اعتبار داره.", keyboard: BACK_MENU };
   }
   if (result.alert) {
     // The callback was already acknowledged; the message itself carries the validation notice.
@@ -1116,153 +1189,6 @@ async function handleCallback(callback, env) {
     text: result.text,
     reply_markup: result.keyboard,
   });
-}
-
-const CONNECTION_LOGIN_HTML = `<!doctype html>
-<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><meta name="robots" content="noindex,nofollow,noarchive"><title>اتصال حساب | KageCatch</title>
-<style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#100d17;color:#f7edf7}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:22px;background:radial-gradient(ellipse at top,#382039 0,transparent 55%),#100d17}.card{width:min(100%,440px);padding:26px;border:1px solid #553c58;border-radius:24px;background:#1b1622;box-shadow:0 20px 70px #0008}h1{font-size:24px;margin:0 0 10px}p{color:#c5b5c9;line-height:1.9}.field{display:grid;gap:8px;margin:18px 0}label{font-weight:650}input{width:100%;padding:15px;border-radius:13px;border:1px solid #59455e;background:#120e19;color:white;font-size:17px}button{width:100%;padding:15px;border:0;border-radius:14px;background:#e98fc8;color:#271426;font-weight:750;font-size:16px;margin-top:12px}button:disabled{opacity:.55}.hint{font-size:13px;color:#a99bad}.status{min-height:52px;margin-top:16px;color:#f2b7df;line-height:1.8}.hidden{display:none}.brand{color:#eea0d1;font-size:12px;letter-spacing:3px;margin-bottom:18px}
-</style></head><body><main class="card"><div class="brand">KAGECATCH · SECURE LOGIN</div><h1>اتصال حساب تلگرام 🌸</h1><p id="intro">شماره‌ات رو وارد کن تا کد ورود تلگرام برات ارسال بشه.</p>
-<form id="login"><div class="field" id="phone-field"><label for="phone">شماره تلفن</label><input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+989..." required></div>
-<div class="field hidden" id="code-field"><label for="code">کد ورود تلگرام</label><input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"></div>
-<div class="field hidden" id="password-field"><label for="password">رمز دومرحله‌ای</label><input id="password" name="password" type="password" autocomplete="off" maxlength="256"></div>
-<button id="submit" type="submit">ارسال کد</button></form><div id="status" class="status" role="status" aria-live="polite"></div><button id="retry-status" type="button" hidden>بررسی دوبارهٔ وضعیت ذخیره نشست</button><p class="hint">این صفحه فقط برای اتصال حساب KageCatch است. کد و رمزت ذخیره یا در چت بات فرستاده نمی‌شوند.</p></main>
-<script>
-(()=>{const form=document.querySelector("#login"),status=document.querySelector("#status"),intro=document.querySelector("#intro"),submit=document.querySelector("#submit"),phoneField=document.querySelector("#phone-field"),codeField=document.querySelector("#code-field"),passwordField=document.querySelector("#password-field");let stage="phone",sessionToken="",busy=false;submit.disabled=true;
-const show=(next,message)=>{stage=next;phoneField.classList.toggle("hidden",next!=="phone");codeField.classList.toggle("hidden",next!=="code");passwordField.classList.toggle("hidden",next!=="password");document.querySelector("#phone").required=next==="phone";document.querySelector("#code").required=next==="code";document.querySelector("#password").required=next==="password";submit.textContent=next==="phone"?"ارسال کد":next==="code"?"تأیید کد":"تأیید و اتصال";intro.textContent=next==="phone"?"شماره‌ات رو وارد کن تا کد ورود تلگرام برات ارسال بشه.":next==="code"?"کدی که تلگرام فرستاده رو همین‌جا وارد کن.": "رمز دومرحله‌ای تلگرامت رو وارد کن.";status.textContent=message||"";};
-const retryStatus=document.querySelector("#retry-status");
-const api=async(action,data={})=>{const r=await fetch("/connect/api",{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer "+sessionToken},body:JSON.stringify({action,...data}),cache:"no-store"});const body=await r.json().catch(()=>({}));if(!r.ok)throw new Error(body.error||"request_failed");return body;};
-const finishAuthorization=result=>{
- if(result?.status==="connected"){form.classList.add("hidden");retryStatus.hidden=true;status.textContent="حساب تلگرامت با موفقیت تأیید و متصل شد! 🎉";return true;}
- if(result?.status==="authorized"){form.classList.add("hidden");retryStatus.hidden=true;status.textContent="ورود تأیید شده و نشست به‌صورت امن ذخیره شده؛ اتصال کلاینت هنوز کامل نیست. از پنل وضعیت را بررسی کن.";return true;}
- return false;
-};
-const pollPersistence=async()=>{
- if(busy||!sessionToken)return;
- busy=true;submit.disabled=true;retryStatus.hidden=true;retryStatus.disabled=true;form.classList.add("hidden");
- status.textContent="تلگرام ورود را تأیید کرده؛ ذخیرهٔ امن نشست در حال تکمیل است. این صفحه را باز نگه دار.";
- try{
-  for(let attempt=0;attempt<10;attempt++){
-   if(attempt>0)await new Promise(resolve=>setTimeout(resolve,2000));
-   let result;
-   try{result=await api("auth-status");}
-   catch{status.textContent="ارتباط با سرویس موقتاً برقرار نشد؛ بررسی وضعیت ادامه دارد.";continue;}
-   if(finishAuthorization(result))return;
-   if(result.status==="persistence_pending"||result.status==="pending"){
-    status.textContent="ذخیره نشست هنوز تکمیل نشده؛ بدون ارسال دوبارهٔ کد یا رمز، وضعیت را بررسی می‌کنیم.";
-    continue;
-   }
-   if(result.status==="expired"){
-    status.textContent="مهلت ورود تمام شده است. از بات یک لینک اتصال تازه بگیر.";
-    return;
-   }
-   if(result.status==="not_pending"||result.status==="not_connected"){
-    status.textContent="وضعیت نشست برای بازیابی پیدا نشد. از بات یک لینک اتصال تازه بگیر.";
-    return;
-   }
-   status.textContent="سرویس هنوز نتیجهٔ نهایی را اعلام نکرده؛ بررسی ادامه دارد.";
-  }
-  retryStatus.hidden=false;
-  status.textContent="ذخیره نشست هنوز تکمیل نشده. می‌توانی دوباره وضعیت را بررسی کنی؛ کد ورود یا رمز دومرحله‌ای را دوباره نفرست.";
- }finally{
-  busy=false;retryStatus.disabled=false;submit.disabled=!sessionToken||form.classList.contains("hidden");
- }
-};
-retryStatus.addEventListener("click",pollPersistence);
-(async()=>{const linkToken=location.pathname.split("/").pop();if(!/^[A-Za-z0-9_-]{40,}$/.test(linkToken)){show("phone","لینک اتصال معتبر نیست.");submit.disabled=true;return;}try{const r=await fetch("/connect/exchange",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:linkToken}),cache:"no-store"});const body=await r.json();if(!r.ok)throw new Error(body.error||"link_expired");sessionToken=body.sessionToken;history.replaceState(null,"","/connect");submit.disabled=false;status.textContent="لینک امن تأیید شد؛ می‌تونیم شروع کنیم."; }catch{show("phone","این لینک منقضی شده یا قبلاً استفاده شده. از داخل بات یه لینک تازه بگیر.");submit.disabled=true;}})();
-form.addEventListener("submit",async event=>{
- event.preventDefault();
- if(busy||!sessionToken)return;
- busy=true;submit.disabled=true;
- const submittedStage=stage;
- let pollAfterSubmit=false;
- try{
-  let result;
-  if(stage==="phone"){
-   const phone=document.querySelector("#phone").value.trim();
-   if(!/^\\+[1-9]\\d{7,14}$/.test(phone))throw new Error("invalid_phone");
-   result=await api("start",{phone});
-   if(result.status==="already_authorized"){
-    result=await api("reconnect");
-    if(finishAuthorization(result))return;
-    if(result.status==="persistence_pending"){pollAfterSubmit=true;form.classList.add("hidden");status.textContent="نشست قبلی تأیید شده؛ ذخیرهٔ امن آن در حال بازیابی است.";}
-    else throw new Error("authorization_incomplete");
-   }else if(result.status==="code_sent"){
-    show("code","کد ورود ارسال شد. فقط همین‌جا واردش کن.");
-   }else if(result.status==="persistence_pending"){
-    pollAfterSubmit=true;form.classList.add("hidden");status.textContent="نشست قبلی تأیید شده؛ ذخیرهٔ امن آن در حال بازیابی است.";
-   }else if(!finishAuthorization(result)){
-    throw new Error("authorization_incomplete");
-   }
-  }else if(stage==="code"){
-   result=await api("code",{code:document.querySelector("#code").value.trim()});
-   if(result.status==="password_required"){show("password","کد تأیید شد؛ رمز دومرحله‌ای لازم است.");return;}
-   if(finishAuthorization(result))return;
-   if(result.status==="persistence_pending"){
-    pollAfterSubmit=true;form.classList.add("hidden");status.textContent="تلگرام ورود را تأیید کرده؛ ذخیرهٔ امن نشست هنوز در حال تکمیل است.";
-   }else throw new Error("authorization_incomplete");
-  }else{
-   result=await api("password",{password:document.querySelector("#password").value});
-   if(finishAuthorization(result))return;
-   if(result.status==="persistence_pending"){
-    pollAfterSubmit=true;form.classList.add("hidden");status.textContent="تلگرام ورود را تأیید کرده؛ ذخیرهٔ امن نشست هنوز در حال تکمیل است.";
-   }else throw new Error("authorization_incomplete");
-  }
- }catch(error){
-  const messages={invalid_phone:"شماره رو با کد کشور وارد کن.",telegram_code_request_failed:"تلگرام فعلاً نتونست کد بفرسته؛ کمی بعد دوباره امتحان کن.",invalid_telegram_code:"کد ورود درست نیست؛ دوباره بررسیش کن.",authorization_expired:"مهلت ورود تموم شد. از بات لینک تازه بگیر.",invalid_2fa_password:"رمز دومرحله‌ای درست نیست.",core_unavailable:"ارتباط با سرویس برقرار نشد؛ دوباره تلاش کن.",authorization_incomplete:"وضعیت نهایی اتصال هنوز مشخص نیست؛ وضعیت را دوباره بررسی کن."};
-  status.textContent=messages[error.message]||"اتصال انجام نشد. دوباره تلاش کن.";
- }finally{
-  if(submittedStage==="code")document.querySelector("#code").value="";
-  if(submittedStage==="password")document.querySelector("#password").value="";
-  if(submittedStage==="phone"&&form.classList.contains("hidden"))document.querySelector("#phone").value="";
-  busy=false;submit.disabled=!sessionToken||form.classList.contains("hidden");
- }
- if(pollAfterSubmit)await pollPersistence();
-});
-})();
-</script></body></html>`;
-function securePageHeaders(extra={}){return { "content-type":"text/html; charset=utf-8","cache-control":"no-store, max-age=0","referrer-policy":"no-referrer","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors *","permissions-policy":"camera=(), microphone=(), geolocation=()","x-robots-tag":"noindex, nofollow, noarchive",...extra};}
-async function connectionLanding(request, env, token) {
-  if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
-  if (!/^[A-Za-z0-9_-]{40,}$/.test(token)) return new Response("Invalid link", { status: 404 });
-  return new Response(CONNECTION_LOGIN_HTML, { headers: securePageHeaders() });
-}
-async function connectionExchange(request, env) {
-  if(request.method!=="POST")return json({error:"method_not_allowed"},405);
-  if(!(request.headers.get("content-type")||"").toLowerCase().startsWith("application/json"))return json({error:"unsupported_media_type"},415);
-  let body;try{body=await request.json();}catch{return json({error:"invalid_request"},400);}
-  if(typeof body?.token!=="string"||body.token.length>128||! /^[A-Za-z0-9_-]{40,}$/.test(body.token)||!env.CONNECT_LINKS)return json({error:"invalid_link"},400);
-  const stub=env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
-  const response=await stub.fetch("https://connect-links.internal/consume",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:body.token})});
-  if(!response.ok)return json({error:"invalid_or_expired_link"},410);
-  return json(await response.json());
-}
-async function standaloneConnectApi(request,env){
-  if(request.method!=="POST")return json({error:"method_not_allowed"},405);
-  if(!(request.headers.get("content-type")||"").toLowerCase().startsWith("application/json"))return json({error:"unsupported_media_type"},415);
-  const bearer=(request.headers.get("authorization")||"").match(/^Bearer ([A-Za-z0-9_-]{40,})$/);
-  if(!bearer||!env.CONNECT_LINKS)return json({error:"unauthorized"},401);
-  let body;try{body=await request.json();}catch{return json({error:"invalid_request"},400);}
-  const stub=env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
-  const sessionResponse=await stub.fetch("https://connect-links.internal/browser-session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionToken:bearer[1]})});
-  if(!sessionResponse.ok)return json({error:"session_expired"},401);
-  const {telegramUserId}=await sessionResponse.json();
-  const path="/v1/accounts/"+telegramUserId;
-  const action=body?.action;
-  const spec=action==="status"?{method:"GET",path}
-    :action==="auth-status"?{method:"GET",path:path+"/connect/status"}
-    :action==="start"?{method:"POST",path:path+"/connect",payload:{phone:body.phone}}
-    :action==="code"?{method:"POST",path:path+"/connect/code",payload:{code:body.code}}
-    :action==="password"?{method:"POST",path:path+"/connect/password",payload:{password:body.password}}
-    :action==="reconnect"?{method:"POST",path:path+"/reconnect"}
-    :action==="cancel"?{method:"POST",path:path+"/connect/cancel"}:null;
-  if(!spec)return json({error:"unknown_action"},400);
-  const result=await coreRequest(env,spec.method,spec.path,spec.payload??null);
-  if(result.status<200||result.status>=300)return json({error:result.data?.error||result.data?.detail||"core_request_failed"},result.status);
-  if (["start", "code", "password", "reconnect"].includes(action)) {
-    try { await registryRequest(env, "/activity/record", { telegramUserId, action: "account:connect" }); } catch {}
-  }
-  return json(result.data,result.status);
 }
 
 function logWebhookFailure(stage, updateId, error) {
@@ -1333,6 +1259,63 @@ async function handleWebhook(request, env) {
     const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
     if (role === 'BLOCKED' || role === 'DENIED') {
       await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⛔ ابتدا باید دسترسی شما توسط Owner فعال شود." });
+      return new Response("OK", { status: 200 });
+    }
+    const authSnapshot = await authStateRequest(env, message.from.id, "get");
+    const authState = authSnapshot.state;
+    if (authState && authState.expiresAt <= Date.now()) await authStateRequest(env, message.from.id, "delete");
+    else if (authState?.stage === "phone") {
+      if (command === "/cancel") {
+        await authStateRequest(env, message.from.id, "delete");
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+        return new Response("OK", { status: 200 });
+      }
+      try {
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        if (!validatePhoneNumber(message.text)) throw new Error("invalid_phone");
+        const status = await beginTelegramLogin(env, message.from.id, message.text);
+        if (status === "connected") {
+          await authStateRequest(env, message.from.id, "delete");
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "✅ حساب تلگرام شما از قبل مجاز بود و اتصال برقرار شد.", reply_markup: BACK_MENU });
+        } else if (status === "reauthorization_required") {
+          await authStateRequest(env, message.from.id, "delete");
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ برای این حساب نشست قبلی وجود دارد اما تلگرام ورود مجدد می‌خواهد. ابتدا نشست قبلی را لغو کن و دوباره اتصال را شروع کن.", reply_markup: BACK_MENU });
+        } else {
+          await authStateRequest(env, message.from.id, "set", { stage: "code", code: "", expiresAt: Date.now() + 300000 });
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "🔐 کد ورود را با صفحه‌کلید زیر وارد کن.\\n\\n" + maskLoginCode(""), reply_markup: buildLoginCodeKeyboard() });
+        }
+      } catch (error) {
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: error.message === "invalid_phone" ? "شماره معتبر نیست. با فرمت بین‌المللی مثل +98912… بفرست." : "❌ درخواست کد انجام نشد. دوباره تلاش کن.", reply_markup: BACK_MENU });
+      }
+      return new Response("OK", { status: 200 });
+    } else if (authState?.stage === "password") {
+      if (command === "/cancel") {
+        await authStateRequest(env, message.from.id, "delete");
+        await coreRequest(env, "POST", "/v1/accounts/" + message.from.id + "/connect/cancel");
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+        return new Response("OK", { status: 200 });
+      }
+      try {
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        const result = await coreRequest(env, "POST", "/v1/accounts/" + message.from.id + "/connect/password", { password: message.text });
+        if (result.status >= 200 && result.status < 300 && isSavedAccountStatus(result.data?.status)) {
+          await authStateRequest(env, message.from.id, "delete");
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست ذخیره شد؛ اتصال کلاینت در تلاش مجدد فعال می‌شود.", reply_markup: BACK_MENU });
+        } else {
+          const pendingStatus = await coreRequest(env, "GET", "/v1/accounts/" + message.from.id + "/connect/status");
+          if (pendingStatus.status === 200 && pendingStatus.data?.status !== "pending") {
+            await authStateRequest(env, message.from.id, "delete");
+            await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⏳ تلاش‌های ورود پایان یافت یا درخواست منقضی شد. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+          } else {
+            await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "❌ رمز دومرحله‌ای تأیید نشد. دوباره تلاش کن یا /cancel را بزن.", reply_markup: BACK_MENU });
+          }
+        }
+      } catch {
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ اتصال به Core ناموفق بود. دوباره تلاش کن." });
+      }
       return new Response("OK", { status: 200 });
     }
     try { await registryRequest(env, '/activity/record', { telegramUserId: message.from.id, action: command.startsWith('/') ? 'command' : 'message', firstName: message.from.first_name, username: message.from.username }); } catch {}
@@ -1678,8 +1661,6 @@ export default {
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
-    if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
-    if (url.pathname === "/connect/api") return standaloneConnectApi(request, env);
     if (url.pathname === "/api/session") return miniAppSession(request, env);
     if (url.pathname === "/api/owner/safety/status") return miniAppOwnerSafety(request, env, "status");
     if (url.pathname === "/api/owner/safety/recover") return miniAppOwnerSafety(request, env, "recover");
@@ -1693,7 +1674,6 @@ export default {
     if (url.pathname === "/api/account/disconnect") return miniAppCoreProxy(request, env, "disconnect");
     if (url.pathname === "/api/account/revoke") return miniAppCoreProxy(request, env, "revoke");
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
-    if (url.pathname.startsWith("/connect/")) return connectionLanding(request, env, decodeURIComponent(url.pathname.slice("/connect/".length)));
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
     return json({ error: "not_found" }, 404);
   },
