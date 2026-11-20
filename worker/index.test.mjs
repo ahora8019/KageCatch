@@ -1539,7 +1539,7 @@ test("native account login completes in private Telegram chat with optional 2FA 
       }
       const payload = init.body ? JSON.parse(init.body) : null;
       coreCalls.push({ url: target, payload });
-      if (/\\/v1\\/accounts\\/(500123|500124)\\/connect$/.test(target)) return new Response(JSON.stringify({ status: "code_sent" }), { status: 200 });
+      if (target.endsWith("/v1/accounts/500123/connect") || target.endsWith("/v1/accounts/500124/connect")) return new Response(JSON.stringify({ status: "code_sent" }), { status: 200 });
       if (target.endsWith("/v1/accounts/500123/connect/code")) return new Response(JSON.stringify({ status: "password_required" }), { status: 200 });
       if (target.endsWith("/v1/accounts/500124/connect/code")) return new Response(JSON.stringify({ status: "connected" }), { status: 200 });
       if (target.endsWith("/v1/accounts/500123/connect/password")) return new Response(JSON.stringify({ status: "connected" }), { status: 200 });
@@ -1576,7 +1576,7 @@ test("native account login completes in private Telegram chat with optional 2FA 
   const keypadMessage = telegramCalls.find((call) => call.method === "sendMessage" && call.payload.reply_markup?.inline_keyboard?.flat().some((button) => button.callback_data === "auth:submit"));
   assert.ok(keypadMessage);
   const keypadButtons = keypadMessage.payload.reply_markup.inline_keyboard.flat();
-  assert.ok(keypadButtons.every((button) => !/\\d{4,}/.test(button.callback_data)));
+  assert.ok(keypadButtons.every((button) => !/[0-9]{4,}/.test(button.callback_data)));
 
   for (const [index, digit] of ["1", "2", "3", "4", "5"].entries()) {
     assert.equal((await webhook(3 + index, callback(3 + index, "auth:digit:" + digit, 77))).status, 200);
