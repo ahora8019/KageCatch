@@ -38,7 +38,7 @@ The authorization state machine is isolated from the bot transport and must neve
 
 The previous dashboard remains available at `/panel` temporarily as a fallback while the standalone login flow is reviewed and tested. It is no longer the default account-connection path. Do not remove the legacy route until the standalone login is deployed, verified end-to-end, and the user explicitly approves retiring it.
 
-See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md).
+See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md). See also the [v1.0.0 Release Readiness gate](docs/RELEASE_READINESS.md) before any production rollout.
 
 ## Durable group panel queue
 
