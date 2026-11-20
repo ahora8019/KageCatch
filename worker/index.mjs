@@ -327,16 +327,16 @@ async function health(env) {
         const tableNames = Array.isArray(tableResult?.results)
           ? tableResult.results.map((row) => String(row.name))
           : [];
-        let migrationCount = null;
-        let latestMigration = null;
+        let migrationNames = null;
         if (tableNames.includes("d1_migrations")) {
           const migration = await env.KAGECATCH_DB.prepare(
-            "SELECT COUNT(*) AS count, (SELECT name FROM d1_migrations ORDER BY id DESC LIMIT 1) AS latest FROM d1_migrations"
-          ).first();
-          migrationCount = Number.isSafeInteger(migration?.count) ? migration.count : null;
-          latestMigration = typeof migration?.latest === "string" ? migration.latest : null;
+            "SELECT name FROM d1_migrations ORDER BY id"
+          ).all();
+          migrationNames = Array.isArray(migration?.results)
+            ? migration.results.map((row) => String(row.name))
+            : [];
         }
-        return { tableNames, migrationCount, latestMigration };
+        return { tableNames, migrationNames };
       } catch {
         return null;
       }
@@ -364,8 +364,9 @@ async function health(env) {
       d1_storage: d1RequiredTables === 3 ? "ready" : d1RequiredTables === null ? "unavailable" : "schema_incomplete",
       d1_required_tables: d1RequiredTables,
       d1_tables: d1?.tableNames ?? [],
-      d1_migration_count: d1?.migrationCount ?? null,
-      d1_latest_migration: d1?.latestMigration ?? null,
+      d1_migration_count: d1?.migrationNames?.length ?? null,
+      d1_latest_migration: d1?.migrationNames?.at(-1) ?? null,
+      d1_migration_names: d1?.migrationNames ?? null,
       python_core: core.status === 200 && core.data?.status === "ready" ? "connected" : core.status === 503 && core.data?.status === "degraded" ? "degraded" : "unreachable",
       version: VERSION,
     });
