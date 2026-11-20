@@ -58,6 +58,36 @@ def _configuration_presence(core_secret: str | None = None) -> dict[str, bool]:
     }
 
 
+
+def _configured_spawn_recognition():
+    """Build the inbound-only Senpai spawn detector and conservative resolver."""
+    from .character_resolver import CharacterResolver
+    from .spawn_detector import SpawnDetector
+    from .targets.senpai_catcher import SenpaiCatcherAdapter
+
+    sender_id_raw = os.getenv("KAGECATCH_SENPAI_BOT_ID", "").strip()
+    if sender_id_raw:
+        try:
+            sender_id = int(sender_id_raw)
+        except ValueError as exc:
+            raise ValueError("KAGECATCH_SENPAI_BOT_ID must be a positive integer") from exc
+        if sender_id <= 0:
+            raise ValueError("KAGECATCH_SENPAI_BOT_ID must be a positive integer")
+        adapter = SenpaiCatcherAdapter(sender_id=sender_id)
+    else:
+        sender_username = os.getenv(
+            "KAGECATCH_SENPAI_BOT_USERNAME", "SenpaiCatcherBot"
+        ).strip()
+        if not sender_username:
+            raise ValueError("KAGECATCH_SENPAI_BOT_USERNAME must not be empty")
+        adapter = SenpaiCatcherAdapter(sender_username=sender_username)
+
+    # The adapter only calls trace.moe after an exact sender/video/spawn-phrase
+    # match. It sends the extracted first frame, never the full Telegram video.
+    # Catch command grammar remains unconfigured and therefore disabled.
+    return SpawnDetector(adapters=(adapter,)), CharacterResolver()
+
+
 def _configured_runtime():
     api_id = os.getenv("KAGECATCH_API_ID")
     api_hash = os.getenv("KAGECATCH_API_HASH")
@@ -96,6 +126,7 @@ def _configured_runtime():
     )
     runtime._selfbot_controller = selfbot
     runtime._panel_queue_client = panel_queue if panel_requester is not None else None
+    runtime._spawn_detector, runtime._character_resolver = _configured_spawn_recognition()
     from .telegram_auth_flow import TelegramAuthorizationFlow
     auth_flow = TelegramAuthorizationFlow(client_factory=lambda session_string="": factory(session_string), session_manager=manager)
     return manager, runtime, auth_flow
@@ -128,6 +159,12 @@ def create_app(
         auth_flow = configured_auth_flow
     elif session_manager is None and runtime is not None:
         session_manager = getattr(runtime, "_session_manager", None)
+
+    if runtime is not None:
+        if spawn_detector is None:
+            spawn_detector = getattr(runtime, "_spawn_detector", None)
+        if character_resolver is None:
+            character_resolver = getattr(runtime, "_character_resolver", None)
 
     replay_guard = nonce_store or InMemoryNonceStore(clock=clock)
     @asynccontextmanager
