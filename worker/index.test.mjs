@@ -25,7 +25,7 @@ test("main menu is inline-first and exposes the agreed account controls", () => 
 
 test("account and security callbacks disclose only current unavailable state", () => {
   assert.match(resolveCallback("account:list").text, /گزینهٔ «اتصال حساب»/);
-  assert.match(resolveCallback("security:open").text, /هیچ کد ورود یا رمز دومرحله‌ای در بات دریافت نمی‌شود/);
+  assert.match(resolveCallback("security:open").text, /کد ورود در کیبورد بات وارد می‌شود/);
   assert.match(resolveCallback("account:disconnect").text, /حساب متصلی ثبت نشده/);
 });
 
