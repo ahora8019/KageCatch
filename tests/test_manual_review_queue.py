@@ -174,6 +174,29 @@ class ManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
                 candidate_index=0,
             )
 
+    async def test_enqueue_is_idempotent_for_same_logical_review(self):
+        first = await self.queue.enqueue(
+            user_id="user-1", spawn_id=101, anime_name="KonoSuba",
+            candidates=("Megumin", "Aqua"), idempotency_key="review:user-1:chat:101",
+        )
+        second = await self.queue.enqueue(
+            user_id="user-1", spawn_id=101, anime_name="KonoSuba",
+            candidates=("Megumin", "Aqua"), idempotency_key="review:user-1:chat:101",
+        )
+        self.assertEqual(first.review_id, second.review_id)
+        self.assertEqual(await self.queue.get_pending(user_id="user-1"), [first])
+
+    async def test_idempotency_key_cannot_be_reused_for_different_review(self):
+        await self.queue.enqueue(
+            user_id="user-1", spawn_id=101, anime_name="KonoSuba",
+            candidates=("Megumin",), idempotency_key="same-key",
+        )
+        with self.assertRaises(ValueError):
+            await self.queue.enqueue(
+                user_id="user-1", spawn_id=102, anime_name="Re:Zero",
+                candidates=("Rem",), idempotency_key="same-key",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

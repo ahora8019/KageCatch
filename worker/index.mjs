@@ -1,6 +1,6 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
 import { buildLoginCodeKeyboard, maskLoginCode, parseLoginCodeCallback, validatePhoneNumber } from "./telegram_login_ui.mjs";
-import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, getTelegramSafetySnapshot, recoverTelegramGlobalPause, recoverTelegramChatCircuit, isTelegramMutatingMethod, isValidTelegramMethod } from "./telegram_safety.mjs";
+import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, isTelegramMutatingMethod, isValidTelegramMethod } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
@@ -13,7 +13,6 @@ export function isPendingAuthorizationConflict(status, data) {
   return status === 409 && (data?.detail === "authorization_already_pending" || data?.error === "authorization_already_pending");
 }
 
-const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
 
 const RENDER_CORE_HEALTH_URL = "https://kagecatch-core-preview.onrender.com/healthz";
 const RENDER_KEEPALIVE_TIMEOUT_MS = 75_000;
@@ -81,37 +80,6 @@ async function verifySecret(provided, expected) {
   return difference === 0;
 }
 
-export async function verifyWebAppInitData(initData, botToken, nowSeconds = Math.floor(Date.now() / 1000)) {
-  if (typeof initData !== "string" || !initData || initData.length > 8192 || typeof botToken !== "string" || !botToken) return null;
-  const params = new URLSearchParams(initData);
-  const suppliedHash = params.get("hash");
-  if (!suppliedHash || !/^[a-f0-9]{64}$/i.test(suppliedHash)) return null;
-  const entries = [...params.entries()];
-  if (new Set(entries.map(([key]) => key)).size !== entries.length) return null;
-  const authDate = Number(params.get("auth_date"));
-  if (!Number.isSafeInteger(authDate) || authDate > nowSeconds + 30 || nowSeconds - authDate > 86400) return null;
-  const checkString = entries
-    .filter(([key]) => key !== "hash")
-    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(([key, value]) => key + "=" + value)
-    .join("\n");
-  const encoder = new TextEncoder();
-  const sourceKey = await crypto.subtle.importKey("raw", encoder.encode("WebAppData"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const secretBytes = await crypto.subtle.sign("HMAC", sourceKey, encoder.encode(botToken));
-  const signingKey = await crypto.subtle.importKey("raw", secretBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", signingKey, encoder.encode(checkString)));
-  const expectedHash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  let difference = expectedHash.length ^ suppliedHash.length;
-  for (let i = 0; i < Math.min(expectedHash.length, suppliedHash.length); i += 1) {
-    difference |= expectedHash.charCodeAt(i) ^ suppliedHash.toLowerCase().charCodeAt(i);
-  }
-  if (difference !== 0) return null;
-  let user;
-  try { user = JSON.parse(params.get("user") || "null"); } catch { return null; }
-  if (!user || !Number.isSafeInteger(user.id) || user.id <= 0) return null;
-  return { user, authDate };
-}
-
 async function coreRequest(env, method, path, payload = null) {
   if (!env.CORE_API_URL || !env.CORE_API_SECRET || String(env.CORE_API_SECRET).length < 32) {
     return { status: 503, data: { error: "core_not_configured" } };
@@ -154,136 +122,6 @@ async function coreRequest(env, method, path, payload = null) {
   } catch {
     return { status: 502, data: { error: "core_unavailable" } };
   }
-}
-
-async function miniAppCoreProxy(request, env, action) {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
-  let body;
-  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
-  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
-  if (!verified) return json({ error: "unauthorized" }, 401);
-  let actor;
-  try { actor = await getTelegramUser(env, verified.user.id); }
-  catch { return json({ error: "identity_service_unavailable" }, 503); }
-  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
-  if (role === "BLOCKED" || role === "DENIED") return json({ error: "forbidden" }, 403);
-  const userId = verified.user.id;
-  const accountPath = "/v1/accounts/" + userId;
-  const requestSpec = action === "status"
-    ? { method: "GET", path: accountPath }
-    : action === "connect"
-      ? { method: "POST", path: accountPath + "/connect", payload: { phone: body.phone } }
-      : action === "connect-code"
-        ? { method: "POST", path: accountPath + "/connect/code", payload: { code: body.code } }
-        : action === "connect-password"
-          ? { method: "POST", path: accountPath + "/connect/password", payload: { password: body.password } }
-          : action === "connect-status"
-            ? { method: "GET", path: accountPath + "/connect/status" }
-            : action === "connect-cancel"
-              ? { method: "POST", path: accountPath + "/connect/cancel" }
-              : action === "reconnect"
-                ? { method: "POST", path: accountPath + "/reconnect" }
-                : action === "disconnect"
-                  ? { method: "POST", path: accountPath + "/disconnect" }
-                  : action === "revoke"
-                    ? { method: "DELETE", path: accountPath }
-                    : null;
-  if (!requestSpec) return json({ error: "unknown_account_action" }, 400);
-  const result = await coreRequest(env, requestSpec.method, requestSpec.path, requestSpec.payload ?? null);
-  return json(result.data, result.status);
-}
-
-async function miniAppSession(request, env) {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
-  let body;
-  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
-  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
-  if (!verified) return json({ error: "unauthorized" }, 401);
-  let actor;
-  try { actor = await getTelegramUser(env, verified.user.id); }
-  catch { return json({ error: "identity_service_unavailable" }, 503); }
-  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
-  if (role === "BLOCKED" || role === "DENIED") return json({ error: "forbidden" }, 403);
-  return json({
-    authenticated: true,
-    user: {
-      id: verified.user.id,
-      first_name: typeof verified.user.first_name === "string" ? verified.user.first_name : "",
-      username: typeof verified.user.username === "string" ? verified.user.username : null,
-    },
-    role,
-    status: actor?.status ?? "active",
-    core_status: "not_connected",
-    account_status: "not_connected",
-  });
-}
-
-async function miniAppOwnerSafety(request, env, operation) {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) {
-    return json({ error: "unsupported_media_type" }, 415);
-  }
-  let body;
-  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
-  if (!env.TELEGRAM_BOT_TOKEN || !/^\d+$/.test(String(env.OWNER_TELEGRAM_ID || ""))) {
-    return json({ error: "owner_auth_not_configured" }, 503);
-  }
-  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
-  if (!verified) return json({ error: "unauthorized" }, 401);
-  let actor;
-  try { actor = await getTelegramUser(env, verified.user.id); }
-  catch { return json({ error: "identity_service_unavailable" }, 503); }
-  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
-  if (role !== "OWNER") return json({ error: "forbidden" }, 403);
-  if (!env.KAGECATCH_DB) return json({ error: "safety_store_unavailable" }, 503);
-
-  if (operation === "status") {
-    try {
-      return json(await getTelegramSafetySnapshot(env.KAGECATCH_DB, Date.now()));
-    } catch {
-      return json({ error: "safety_state_unavailable" }, 503);
-    }
-  }
-  if (operation !== "recover") return json({ error: "invalid_action" }, 400);
-
-  if (body.action === "global_pause") {
-    if (body.confirmation !== "RESET_GLOBAL_PAUSE") return json({ error: "explicit_confirmation_required" }, 400);
-    const expectedUntil = typeof body.expected_paused_until_ms === "string"
-      ? body.expected_paused_until_ms
-      : "";
-    const expectedReason = body.expected_pause_reason;
-    if (!/^\d{1,20}$/.test(expectedUntil)
-      || !["telegram_429", "invalid_credentials"].includes(expectedReason)) {
-      return json({ error: "invalid_global_recovery_snapshot" }, 400);
-    }
-    try {
-      const result = await recoverTelegramGlobalPause(env.KAGECATCH_DB, expectedUntil, expectedReason, Date.now());
-      if (!result.recovered) return json({ error: "safety_state_changed_refresh_required" }, 409);
-      return json({ status: "recovered", scope: "global_pause", cleared_reason: result.clearedReason });
-    } catch {
-      return json({ error: "safety_recovery_unavailable" }, 503);
-    }
-  }
-
-  if (body.action === "chat_circuit") {
-    if (body.confirmation !== "RESET_CHAT_CIRCUIT") return json({ error: "explicit_confirmation_required" }, 400);
-    const chatIdValid = (typeof body.chat_id === "string"
-      && (/^-?\d{1,20}$/.test(body.chat_id.trim()) || /^@[A-Za-z0-9_]{5,32}$/.test(body.chat_id.trim())))
-      || (Number.isSafeInteger(body.chat_id) && body.chat_id !== 0);
-    if (!chatIdValid || !Number.isSafeInteger(body.expected_updated_at_ms) || body.expected_updated_at_ms < 0) {
-      return json({ error: "invalid_chat_recovery_snapshot" }, 400);
-    }
-    try {
-      const result = await recoverTelegramChatCircuit(env.KAGECATCH_DB, body.chat_id, body.expected_updated_at_ms, Date.now());
-      if (!result.recovered) return json({ error: "circuit_state_changed_refresh_required" }, 409);
-      return json({ status: "recovered", scope: "chat_circuit", chat_id: result.chatId });
-    } catch {
-      return json({ error: "safety_recovery_unavailable" }, 503);
-    }
-  }
-  return json({ error: "invalid_action" }, 400);
 }
 
 // Export the central Bot API boundary so integration tests exercise the same safety gate used by webhook handlers.
@@ -344,7 +182,6 @@ export function buildRoleMenu(role = "MEMBER") {
     [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
     [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
     [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
-    [{ text: "🧩 پنل کاربری", callback_data: "home:panel" }],
     ...memberRows,
   ] };
   return { inline_keyboard: memberRows };
@@ -500,205 +337,6 @@ async function health(env) {
   } catch {
     return json({ service: "KageCatch Control", status: "degraded", webhook_auth: "enabled", version: VERSION }, 503);
   }
-}
-
-function panelPage() {
-  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  const html = `<!doctype html><html lang="fa" dir="rtl"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#100e17"><title>KageCatch | Dashboard</title>
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,sans-serif;background:#100e17;color:#f7f0fa;--panel:#1a1722;--line:#382e40;--pink:#ed9dcc;--muted:#a99db0;--green:#82d5ae;--amber:#e8bd75}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 80% 0,#48233e 0,transparent 40%),#100e17}
-button{font:inherit;color:inherit;cursor:pointer}.shell{max-width:1380px;margin:auto;padding:calc(22px + env(safe-area-inset-top)) 22px 22px;display:grid;grid-template-columns:230px 1fr;gap:20px}
-aside{height:calc(100vh - 44px);min-height:600px;position:sticky;top:22px;background:#1a1722eF;border:1px solid var(--line);border-radius:22px;padding:20px 14px;display:flex;flex-direction:column}
-.brand{display:flex;gap:11px;align-items:center;padding:5px 7px 25px}.logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(140deg,#f2b5da,#a96d9e);display:grid;place-items:center;color:#261629;font-size:22px}.brand b{letter-spacing:.12em;font-size:15px}.brand small{display:block;color:var(--muted);font-size:9px;letter-spacing:.16em;margin-top:3px}
-.nav-label{color:#796f83;font-size:10px;letter-spacing:.13em;padding:12px}.nav{display:grid;gap:5px}.nav button{background:none;border:1px solid transparent;border-radius:12px;padding:12px;text-align:right;color:#b9adbf;font-size:12px}.nav button.active,.nav button:hover{background:#302438;border-color:#4a364c;color:#ffe4f3}.nav button.active{box-shadow:inset -2px 0 var(--pink)}.profile{margin-top:auto;border-top:1px solid var(--line);padding:16px 8px 0;color:var(--muted);font-size:10px;line-height:1.9}
-main{min-width:0}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:4px 0 24px}.eyebrow{font-size:10px;letter-spacing:.16em;color:var(--pink)}h1{font-size:clamp(23px,3vw,32px);margin:7px 0}p{color:var(--muted);font-size:12px;margin:0;line-height:1.9}.pill{border:1px solid #385646;background:#1b2b24;color:var(--green);border-radius:99px;padding:9px 12px;font-size:10px;white-space:nowrap}
-.view{display:none}.view.active{display:block}.hero{padding:24px;border:1px solid #583a51;border-radius:20px;background:linear-gradient(115deg,#38243a,#211b2b 75%);margin-bottom:15px;position:relative;overflow:hidden}.hero:after{content:"🌸";position:absolute;left:25px;top:5px;font-size:90px;opacity:.1}.hero h2{font-size:20px;margin:8px 0}.actions{display:flex;gap:9px;margin-top:15px;flex-wrap:wrap}.actions button:disabled{opacity:.45;cursor:not-allowed}#account-login-link{display:inline-block;margin:12px 4px;color:var(--pink);font-size:12px}.primary,.secondary{border-radius:11px;padding:10px 14px;font-size:11px;border:1px solid transparent}.primary{background:var(--pink);color:#291927;font-weight:700}.secondary{background:#ffffff08;border-color:#59455c}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:15px}.stat,.card{background:#1a1722;border:1px solid var(--line);border-radius:16px;padding:16px}.stat label{font-size:10px;color:var(--muted)}.stat strong{display:block;font-size:25px;margin:12px 0 3px}.stat small{font-size:9px;color:#8d8297}
-.columns{display:grid;grid-template-columns:1.2fr 1fr;gap:13px}.card h3{font-size:13px;margin:0 0 14px}.service,.target{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#15131c;border:1px solid #302938;border-radius:12px;padding:12px;margin-top:9px}.service b,.target b{display:block;font-size:11px}.service small,.target small{display:block;color:var(--muted);font-size:9px;margin-top:4px}.tag{font-size:9px;border-radius:99px;padding:6px 8px;white-space:nowrap}.ok{background:#1d3028;color:var(--green)}.wait{background:#352b20;color:var(--amber)}.off{background:#30232a;color:#d9a0ad}
-.empty{padding:34px 12px;text-align:center;color:var(--muted);font-size:11px;line-height:2}.empty b{display:block;color:#f2e4f4;font-size:13px;margin:8px}.notice{margin-top:13px;padding:13px;background:#241c2b;border:1px solid #4a394e;border-radius:12px;color:#cdbfd1;font-size:10px;line-height:1.9}
-footer{display:flex;justify-content:space-between;color:#776d80;font-size:9px;padding:20px 3px}.mobile{display:none}
-.skip-link{position:absolute;top:8px;right:8px;z-index:20;transform:translateY(-160%);background:var(--pink);color:#241622;padding:10px 14px;border-radius:10px;font-size:12px;font-weight:700}.skip-link:focus{transform:translateY(0)}
-:focus-visible{outline:2px solid #ffd1eb;outline-offset:3px}
-.stat,.card{box-shadow:0 10px 30px #00000014;transition:border-color .18s ease,transform .18s ease}
-.card:hover,.stat:hover{border-color:#59435a}
-.nav button,.mobile button,.primary,.secondary{transition:background .18s ease,border-color .18s ease,color .18s ease,transform .18s ease}
-.nav button:active,.mobile button:active,.primary:active,.secondary:active{transform:scale(.98)}
-.service,.target{min-height:62px}
-.empty{max-width:560px;margin:auto}
-#health{display:inline-flex;align-items:center;gap:7px}
-#health::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 0 4px #ffffff0a}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
-@media(max-width:850px){.shell{display:block;padding:15px}aside{display:none}.stats{grid-template-columns:repeat(2,1fr)}.columns{grid-template-columns:1fr}.mobile{display:flex;position:fixed;z-index:5;bottom:calc(9px + env(safe-area-inset-bottom));left:9px;right:9px;justify-content:flex-start;gap:4px;overflow-x:auto;background:#211b2bf2;border:1px solid #4a394e;border-radius:16px;padding:8px;backdrop-filter:blur(16px);scrollbar-width:none}.mobile::-webkit-scrollbar{display:none}.mobile button{flex:1 0 58px;min-width:58px;border:0;background:none;color:#b9adbf;font-size:10px;display:grid;justify-items:center;align-content:center;gap:3px;border-radius:10px;padding:7px 3px}.mobile button.active{color:var(--pink);background:#39283a}main{padding-bottom:124px}}
-@media(max-width:480px){.shell{padding:12px}.top{margin:3px 0 15px}.top h1{font-size:22px}.hero{padding:18px}.hero h2{font-size:17px}.stat,.card{padding:13px}.stat strong{font-size:22px}.pill{font-size:9px;padding:8px}}
-
-/* Sakura motion system and secure login dialog */
-body{background:radial-gradient(ellipse at 78% -8%,#71365f55 0,transparent 42%),radial-gradient(ellipse at 8% 60%,#342b6340 0,transparent 36%),#100e17;background-size:140% 140%;animation:ambient-drift 22s ease-in-out infinite alternate}
-@keyframes ambient-drift{from{background-position:0% 0%,100% 100%,0 0}to{background-position:100% 20%,0% 80%,0 0}}
-@keyframes sakura-rise{0%{transform:translate3d(0,18px,0) rotate(-8deg);opacity:0}12%{opacity:.24}88%{opacity:.2}100%{transform:translate3d(26px,-42px,0) rotate(18deg);opacity:0}}
-@keyframes panel-enter{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
-.view.active{animation:panel-enter .36s cubic-bezier(.2,.75,.25,1) both}.hero:before{content:"✿";position:absolute;right:42%;bottom:-30px;font-size:110px;color:#ffd5ed;opacity:.08;animation:sakura-rise 9s ease-in-out infinite;pointer-events:none}
-.login-dialog{width:min(440px,calc(100% - 28px));border:1px solid #75516d;border-radius:24px;padding:0;background:linear-gradient(145deg,#282031,#17141f 75%);color:#f8edf7;box-shadow:0 28px 100px #000b;overflow:hidden}
-.login-dialog::backdrop{background:#08060dbb;backdrop-filter:blur(9px)}.login-dialog form{padding:27px}.dialog-mark{width:44px;height:44px;display:grid;place-items:center;border-radius:15px;background:linear-gradient(140deg,#f3b7da,#a96d9e);color:#2a1728;font-size:25px;margin-bottom:18px}.login-dialog h2{font-size:21px;margin:9px 0}.login-dialog p{font-size:12px}.login-label{display:block;margin:22px 0 8px;font-size:11px;color:#e9c5dd}.login-dialog input{width:100%;height:49px;border:1px solid #60465f;border-radius:12px;background:#100e17;color:#fff;padding:0 14px;font:inherit;font-size:15px;direction:ltr;text-align:left;outline:none}.login-dialog input:focus{border-color:#f0a9d1;box-shadow:0 0 0 3px #f0a9d126}.login-feedback{min-height:40px;margin:10px 0;color:#e8b8d5}.dialog-actions{display:flex;gap:10px;margin-top:15px}.dialog-actions button{flex:1}.security-caption{margin-top:18px!important;font-size:10px!important;color:#95869a!important}.login-dialog button:disabled{opacity:.5;cursor:wait}
-@media(prefers-reduced-motion:reduce){body,.view.active,.hero:before{animation:none!important}}
-</style></head><body>
-<a class="skip-link" href="#main-content">رفتن به محتوای اصلی</a><div class="shell"><aside aria-label="ناوبری اصلی">
-<div class="brand"><div class="logo">🌸</div><div><b>KAGECATCH</b><small>CONTROL CENTER</small></div></div>
-<div class="nav-label">WORKSPACE</div><nav class="nav" aria-label="بخش‌های پنل">
-<button class="active" data-view="overview" aria-current="page">⌂　نمای کلی</button><button data-view="accounts">♙　حساب‌های متصل</button><button data-view="catcher">✧　تنظیمات Catch</button><button data-view="activity">◷　تاریخچه عملیات</button><button data-view="security">⬡　امنیت و نشست‌ها</button><button data-view="settings">⚙　تنظیمات</button></nav>
-<div class="nav-label">MANAGEMENT</div><nav class="nav"><button data-view="admin" id="admin-nav" hidden>♛　مدیریت سامانه</button></nav>
-<div class="profile"><b id="profile-name">حساب تلگرام</b><br><span id="profile-role">برای ورود از داخل بات باز کن</span></div></aside>
-<main id="main-content" tabindex="-1"><header class="top"><div><div class="eyebrow">KAGECATCH / DASHBOARD</div><h1 id="title">داشبورد کنترل</h1><p>مرکز مدیریت حساب‌ها و عملیات Catch</p></div><span class="pill" id="health" role="status" aria-live="polite">در حال بررسی اتصال</span></header>
-<section class="view active" id="view-overview">
-<div class="hero"><div class="eyebrow">WELCOME TO KAGECATCH</div><h2>همه‌چیز برای شروع آماده می‌شود.</h2><p>حساب‌ها، مقصدهای Catch، عملکرد و امنیت نشست‌ها را از یک مرکز مدیریت کن. اتصال حساب و اجرای خودکار پس از راه‌اندازی امن Python Core فعال می‌شود.</p><div class="actions"><button class="primary" data-view="accounts">مدیریت حساب‌ها</button><button class="secondary" data-view="catcher">تنظیمات Catch</button></div></div>
-<div class="stats">
-<div class="stat"><label>حساب‌های متصل</label><strong>—</strong><small>پس از اتصال Core</small></div>
-<div class="stat"><label>Catch امروز</label><strong>—</strong><small>هنوز عملیات زنده ثبت نشده</small></div>
-<div class="stat"><label>نرخ موفقیت</label><strong>—</strong><small>نیازمند داده تأییدشده</small></div>
-<div class="stat"><label>Python Core</label><strong id="core">Offline</strong><small>اتصال در مرحله بعد</small></div></div>
-<div class="columns"><section class="card"><h3>وضعیت اجزای سامانه</h3>
-<div class="service"><div><b>Control Worker</b><small>درگاه کنترل تلگرام</small></div><span class="tag wait" id="worker-tag">در حال بررسی</span></div>
-<div class="service"><div><b>Python Core</b><small>مدیریت نشست و اجرای Catch</small></div><span class="tag off" id="core-tag" role="status" aria-live="polite">متصل نیست</span></div>
-<div class="service"><div><b>Recognition Engine</b><small>تشخیص تصویر و ویدیو</small></div><span class="tag off">در انتظار توسعه</span></div>
-<div class="service"><div><b>Catch Engine</b><small>ارسال و تأیید عملیات</small></div><span class="tag wait">آماده‌سازی</span></div></section>
-<section class="card"><h3>بات‌های مقصد</h3>
-<div class="target"><div><b>HentaCatcherBot</b><small>Image · /catch</small></div><span class="tag ok">پیکربندی‌شده</span></div>
-<div class="target"><div><b>Character_Catcher_Bot</b><small>Image · /catch</small></div><span class="tag ok">پیکربندی‌شده</span></div>
-<div class="target"><div><b>SenpaiCatcherBot</b><small>Video · /pick</small></div><span class="tag wait">در دسترس · گزارش‌شده</span></div></section></div></section>
-<section class="view" id="view-accounts"><div class="card"><h3>حساب‌های تلگرام</h3><div class="empty" id="account-state" aria-live="polite">برای اتصال، ورود امن تلگرام را شروع کن.</div><div class="actions"><button class="primary" id="account-refresh">بررسی وضعیت</button><button class="secondary" id="account-disconnect" disabled>قطع اتصال</button><button class="secondary" id="account-reconnect" disabled>اتصال مجدد</button><button class="secondary" id="account-revoke" disabled>لغو دسترسی</button><button class="primary" id="account-connect">＋ اتصال حساب تلگرام</button></div><div class="notice">شماره، کد یک‌بارمصرف و رمز دومرحله‌ای فقط در فرم امن همین Mini App دریافت می‌شوند. این اطلاعات در چت بات ارسال یا ذخیرهٔ متنی نمی‌شوند.</div></div></section><section class="view" id="view-catcher"><div class="card"><h3>تنظیمات Catch</h3><div class="service"><div><b>حداقل اطمینان تشخیص</b><small>Confidence threshold</small></div><span class="tag wait">قفل‌شده</span></div><div class="service"><div><b>محدودیت عملیات</b><small>Quota per account</small></div><span class="tag wait">قفل‌شده</span></div><div class="service"><div><b>جلوگیری از تکرار</b><small>Duplicate protection</small></div><span class="tag wait">در انتظار Core</span></div><div class="service"><div><b>تأیید نتیجه</b><small>Target response verifier</small></div><span class="tag wait">در انتظار Core</span></div><div class="notice">این تنظیمات تا اتصال Core فقط نمایشی‌اند و هیچ عملیات Catch اجرا نمی‌کنند.</div></div></section>
-<section class="view" id="view-activity"><div class="card"><h3>تاریخچه عملیات</h3><div class="empty">◷<b>هنوز رویدادی ثبت نشده است</b>پس از راه‌اندازی Core، نتیجه تأییدشده هر عملیات اینجا نمایش داده می‌شود.</div></div></section>
-<section class="view" id="view-security"><div class="card"><h3>امنیت و نشست‌ها</h3><div class="service"><div><b>رمزنگاری Session</b><small>Fernet encryption at rest</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>مدیریت نشست‌ها</b><small>قطع و لغو دسترسی</small></div><span class="tag wait">نیازمند Core</span></div><div class="service"><div><b>گزارش دسترسی</b><small>Audit trail</small></div><span class="tag wait">نیازمند Core</span></div><div class="notice">کد ورود، رمز دومرحله‌ای و StringSession از طریق چت بات دریافت نمی‌شوند.</div></div></section>
-<section class="view" id="view-settings"><div class="card"><h3>تنظیمات عمومی</h3><div class="empty">⚙<b>تنظیمات هنوز فعال نیستند</b>زبان، اعلان‌ها و ترجیحات Catch پس از احراز هویت Mini App فعال می‌شوند.</div></div></section>
-<section class="view" id="view-admin"><div class="card"><h3>مدیریت سامانه</h3><div class="empty">♛<b>بخش مدیریت سامانه</b>هویت مالک از داده امضاشده Telegram و نقش ثبت‌شده در سمت سرور تأیید می‌شود. ابزارهای مدیریت عملیاتی هنوز در حال توسعه‌اند.</div></div></section>
-<dialog id="login-dialog" class="login-dialog" aria-labelledby="login-title"><form id="login-form"><div class="dialog-mark">✿</div><div class="eyebrow">SECURE TELEGRAM AUTH</div><h2 id="login-title">اتصال حساب تلگرام</h2><p id="login-description">شماره تلفن را همراه کد کشور وارد کن.</p><label class="login-label" id="login-label" for="login-value">شماره تلفن</label><input id="login-value" name="login-value" type="tel" inputmode="tel" autocomplete="tel" placeholder="+98912…" required maxlength="20"><p id="login-feedback" class="login-feedback" role="status" aria-live="polite"></p><div class="dialog-actions"><button type="button" class="secondary" id="login-cancel">انصراف</button><button type="submit" class="primary" id="login-submit">ارسال کد</button></div><p class="security-caption">🔒 ارتباط رمزنگاری‌شده · اطلاعات ورود در پیام‌های بات دریافت نمی‌شود.</p></form></dialog><footer><span>KageCatch · Control Center</span><span>Worker v0.9.0 · Sakura Control Center</span></footer></main></div>
-<nav class="mobile" aria-label="ناوبری موبایل"><button class="active" data-view="overview" aria-current="page">⌂<span>خانه</span></button><button data-view="accounts">♙<span>حساب‌ها</span></button><button data-view="catcher">✧<span>Catch</span></button><button data-view="activity">◷<span>رویدادها</span></button><button data-view="security">⬡<span>امنیت</span></button><button data-view="settings">⚙<span>تنظیمات</span></button><button data-view="admin" id="admin-mobile" hidden>♛<span>مدیریت</span></button></nav>
-<script nonce="${nonce}">
-const tg=window.Telegram?.WebApp;if(tg){tg.setHeaderColor("#100e17");tg.setBackgroundColor("#100e17");tg.ready();tg.expand();}
-let session=null;let authPromise=null;
-const titles={overview:"داشبورد کنترل",accounts:"حساب‌های متصل",catcher:"تنظیمات Catch",activity:"تاریخچه عملیات",security:"امنیت و نشست‌ها",settings:"تنظیمات",admin:"مدیریت سامانه"};
-function showView(name){if(name==="admin"&&session?.role!=="OWNER"){name="overview";}document.querySelectorAll(".view").forEach(x=>x.classList.toggle("active",x.id==="view-"+name));document.querySelectorAll("nav [data-view]").forEach(x=>{const active=x.dataset.view===name;x.classList.toggle("active",active);if(active)x.setAttribute("aria-current","page");else x.removeAttribute("aria-current");});document.querySelector("#title").textContent=titles[name]||titles.overview;window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});}
-document.querySelectorAll("[data-view]").forEach(x=>x.addEventListener("click",()=>showView(x.dataset.view)));
-let authFailureMessage="فعلاً نتونستیم وارد پنل بشیم؛ چند لحظه دیگه دوباره تلاش کن.";
-async function authenticate(){const name=document.querySelector("#profile-name"),role=document.querySelector("#profile-role"),state=document.querySelector("#account-state");if(!tg?.initData){authFailureMessage="پنل رو از دکمهٔ داخل بات باز کن تا بتونیم حسابت رو بشناسیم.";name.textContent="خوش اومدی!";role.textContent="برای اتصال حساب، پنل رو از داخل بات باز کن.";state.textContent=authFailureMessage;return;}try{const response=await fetch("/api/session",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData}),cache:"no-store"});if(!response.ok){const failure=await response.json().catch(()=>({}));throw Object.assign(new Error(failure.error||"auth"),{status:response.status,code:failure.error});}session=await response.json();authFailureMessage="";name.textContent=session.user.first_name||"دوست KageCatch";role.textContent=session.role==="OWNER"?"مدیر KageCatch":"عضو KageCatch";if(session.role==="OWNER"){document.querySelector("#admin-nav").hidden=false;document.querySelector("#admin-mobile").hidden=false;}refreshAccountStatus();}catch(error){authFailureMessage=error.status===401?"اطلاعات ورود تلگرام تأیید نشد؛ پنل رو کامل ببند و دوباره از بات باز کن.":error.status===403?"این حساب اجازهٔ ورود به پنل رو نداره؛ با مدیر KageCatch تماس بگیر.":error.status===503?"ارتباط پنل با سرویس حساب‌ها برقرار نیست؛ کمی بعد دوباره امتحان کن.":"فعلاً نتونستیم وارد پنل بشیم؛ چند لحظه دیگه دوباره تلاش کن.";name.textContent="یه مشکلی پیش اومد";role.textContent="ورود به پنل کامل نشد.";state.textContent=authFailureMessage;}}
-async function accountApi(path,payload={}){if(!tg?.initData||!session)throw Object.assign(new Error("telegram_auth_required"),{status:401});const response=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData:tg.initData,...payload}),cache:"no-store"});const data=await response.json().catch(()=>({error:"invalid_response"}));if(!response.ok)throw Object.assign(new Error(data.error||"core_error"),{status:response.status,data});return data;}
-async function refreshAccountStatus(){
-  const state=document.querySelector("#account-state");
-  const disconnect=document.querySelector("#account-disconnect");
-  const reconnect=document.querySelector("#account-reconnect");
-  const revoke=document.querySelector("#account-revoke");
-  if(!session){state.textContent="برای مشاهده وضعیت، پنل را از داخل بات باز کن.";disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;return;}
-  state.textContent="در حال بررسی وضعیت حساب…";
-  try{
-    const data=await accountApi("/api/account/status");
-    const connected=data.status==="connected";
-    const authorized=data.status==="authorized";
-    state.textContent=connected?"حساب تلگرام متصل است":authorized?"نشست مجاز ذخیره شده؛ اتصال فعلی قطع است":data.status==="reauth_required"?"نشست نیازمند ورود دوباره است.":"هنوز حسابی متصل نشده است.";
-    disconnect.disabled=!connected;
-    reconnect.disabled=!authorized;
-    revoke.disabled=!authorized&&!connected;
-  }catch(error){
-    state.textContent=error.status===503?"الان امکان اتصال نیست؛ یکم بعد دوباره امتحان کن.":error.status===401?"برای ادامه، پنل رو دوباره از داخل بات باز کن.":"نتونستیم وضعیت حسابت رو بگیریم؛ دوباره امتحان کن.";
-    disconnect.disabled=true;reconnect.disabled=true;revoke.disabled=true;
-  }
-}
-async function confirmAccountAction(path,message){
-  if(!window.confirm(message))return;
-  try{
-    const result=await accountApi(path);
-    document.querySelector("#account-state").textContent=result.status==="revoked"?"دسترسی حساب لغو شد.":result.status==="disconnected"?"اتصال حساب قطع شد.":result.status==="connected"?"حساب دوباره متصل شد.":"عملیات انجام شد.";
-    await refreshAccountStatus();
-  }catch(error){
-    document.querySelector("#account-state").textContent=error.status===503?"هستهٔ اجرایی در دسترس نیست.":"عملیات حساب ناموفق بود.";
-  }
-}
-let loginStage="phone";
-function setLoginStage(stage,message=""){
-  loginStage=stage;
-  const input=document.querySelector("#login-value");
-  const label=document.querySelector("#login-label");
-  const submit=document.querySelector("#login-submit");
-  const description=document.querySelector("#login-description");
-  document.querySelector("#login-feedback").textContent=message;
-  input.value="";
-  if(stage==="phone"){label.textContent="شماره موبایلت";input.type="tel";input.inputMode="tel";input.autocomplete="tel";input.placeholder="+98912…";submit.textContent="ارسال کد";description.textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم.";}
-  if(stage==="code"){label.textContent="کد ورود تلگرام";input.type="text";input.inputMode="numeric";input.autocomplete="one-time-code";input.placeholder="کد ارسال‌شده";submit.textContent="تأیید کد";description.textContent="کدی که تلگرام برات فرستاده رو همین‌جا بنویس.";}
-  if(stage==="password"){label.textContent="رمز دومرحله‌ای";input.type="password";input.inputMode="text";input.autocomplete="current-password";input.placeholder="رمز 2FA";submit.textContent="تأیید و اتصال";description.textContent="حسابت رمز دومرحله‌ای داره؛ اینجا واردش کن.";}
-  input.focus();
-}
-function openLoginDialog(){
-  const dialog=document.querySelector("#login-dialog");
-  setLoginStage("phone");
-  if(!dialog.open)dialog.showModal();
-}
-document.querySelector("#login-cancel").addEventListener("click",async()=>{
-  try{if(session&&loginStage!=="phone")await accountApi("/api/account/connect/cancel");}catch{}
-  document.querySelector("#login-dialog").close();
-});
-async function connectAccount(){if(!session&&authPromise)await authPromise;if(!session){document.querySelector("#account-state").textContent=authFailureMessage;return;}openLoginDialog();document.querySelector("#login-feedback").textContent="شماره‌ات رو با کد کشور وارد کن تا شروع کنیم."; }
-document.querySelector("#login-form").addEventListener("submit",async(event)=>{
-  event.preventDefault();
-  const input=document.querySelector("#login-value");
-  const feedback=document.querySelector("#login-feedback");
-  const submit=document.querySelector("#login-submit");
-  const value=input.value.trim();
-  if(!value)return;
-  submit.disabled=true;
-  feedback.textContent="داریم آماده‌اش می‌کنیم…";
-  try{
-    let result;
-    if(loginStage==="phone"){
-      if(!/^\\+[1-9]\\d{7,14}$/.test(value))throw Object.assign(new Error("invalid_phone"),{status:400});
-      result=await accountApi("/api/account/connect",{phone:value});
-      if(result.status==="already_authorized"){
-        await accountApi("/api/account/reconnect");
-        document.querySelector("#login-dialog").close();
-        await refreshAccountStatus();
-        return;
-      }
-      if(result.status!=="code_sent")throw Object.assign(new Error("code_request_failed"),{status:502});
-      setLoginStage("code","کد ورود ارسال شد. کد را فقط همین‌جا وارد کن.");
-      return;
-    }
-    if(loginStage==="code"){
-      result=await accountApi("/api/account/connect/code",{code:value});
-      if(result.status==="password_required"){
-        setLoginStage("password","کد تأیید شد؛ رمز دومرحله‌ای لازم است.");
-        return;
-      }
-    }else if(loginStage==="password"){
-      result=await accountApi("/api/account/connect/password",{password:value});
-    }
-    if(result?.status==="connected"||result?.status==="authorized"){
-      document.querySelector("#login-dialog").close();
-      document.querySelector("#account-state").textContent="حسابت با موفقیت وصل شد! 🎉";
-      await refreshAccountStatus();
-      return;
-    }
-    throw Object.assign(new Error("authorization_incomplete"),{status:502});
-  }catch(error){
-    feedback.textContent=error.data?.error==="invalid_telegram_code"?"کدی که وارد کردی درست نیست؛ دوباره چکش کن.":error.data?.error==="invalid_2fa_password"?"رمز دومرحله‌ای درست نیست؛ دوباره امتحان کن.":error.message==="invalid_phone"?"شماره رو با کد کشور وارد کن؛ مثل +98912…":error.status===503?"الان امکان اتصال نیست؛ کمی بعد دوباره امتحان کن.":error.status===401?"پنل رو از داخل چت KageCatch باز کن و دوباره تلاش کن.":"اتصال انجام نشد؛ یک بار دیگه امتحان کن.";
-    if(loginStage==="password")input.value="";
-  }finally{
-    submit.disabled=false;
-    if(document.querySelector("#login-dialog").open)input.focus();
-  }
-});
-document.querySelector("#account-connect").addEventListener("click",connectAccount);
-document.querySelector("#account-refresh").addEventListener("click",refreshAccountStatus);
-document.querySelector("#account-reconnect").addEventListener("click",()=>confirmAccountAction("/api/account/reconnect","حساب مجاز دوباره به Telegram متصل شود؟"));
-document.querySelector("#account-disconnect").addEventListener("click",()=>confirmAccountAction("/api/account/disconnect","اتصال فعال این حساب قطع شود؟"));
-document.querySelector("#account-revoke").addEventListener("click",()=>confirmAccountAction("/api/account/revoke","نشست ذخیره‌شده حذف و دسترسی این حساب لغو شود؟"));
-async function refresh(){const pill=document.querySelector("#health"),tag=document.querySelector("#worker-tag");try{const r=await fetch("/health",{cache:"no-store"});const s=await r.json();const ok=r.ok&&s.status==="webhook_ready";pill.textContent=ok?"● Control Plane فعال":"● نیازمند بررسی";pill.style.color=ok?"var(--green)":"var(--amber)";tag.textContent=ok?"فعال":"اختلال";tag.className="tag "+(ok?"ok":"wait");const coreState=s.python_core||"unreachable";document.querySelector("#core").textContent=coreState==="connected"?"Online":coreState==="degraded"?"Degraded":"Offline";const coreTag=document.querySelector("#core-tag");if(coreTag){coreTag.textContent=coreState==="connected"?"متصل":coreState==="degraded"?"دسترسی برقرار · نیازمند پیکربندی":"عدم دسترسی";coreTag.className="tag "+(coreState==="connected"?"ok":coreState==="degraded"?"wait":"off");}}catch{pill.textContent="● عدم دسترسی";tag.textContent="نامشخص";tag.className="tag off";document.querySelector("#core").textContent="Offline";}}
-authPromise=authenticate();refresh();
-</script></body></html>`;
-  return new Response(html, { headers: {
-    "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-    "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
-    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org 'nonce-" + nonce + "'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org",
-  }});
 }
 
 export class ConnectionLinkStore {
@@ -964,7 +602,7 @@ function activityLabel(action) {
     "catch:open": "ورود به کنترل Catch", "bots:open": "مشاهده بات‌های مقصد", "account:connect": "اتصال حساب تلگرام",
     "account:list": "مشاهده حساب متصل", "stats:open": "مشاهده آمار", "settings:open": "باز کردن تنظیمات",
     "security:open": "مشاهده امنیت حساب", "account:disconnect": "قطع اتصال حساب", "help:open": "مشاهده راهنما",
-    "home:panel": "بازگشت به پنل کاربری", "home:admin": "باز کردن پنل Owner", "owner:monitor": "باز کردن نظارت کاربران",
+    "home:admin": "بازگشت به منوی Owner", "owner:monitor": "باز کردن نظارت کاربران",
     "owner:invites": "مدیریت دعوت‌ها", "owner:members": "مدیریت اعضا", "owner:stats": "مشاهده نمای کلی",
   };
   if (labels[action]) return labels[action];
@@ -1001,7 +639,7 @@ async function handleOwnerCallback(callback, env) {
       return '👤 ' + name + '\n' + accountLabel + '\n🕒 آخرین فعالیت: ' + seen + '\n⚡ آخرین بخش: ' + action;
     });
     const rows = members.map((user) => [{ text: 'جزئیات ' + (user.firstName || user.telegramUserId), callback_data: 'owner:monitor:user:' + user.telegramUserId }]);
-    rows.push([{ text: '🔄 بروزرسانی', callback_data: 'owner:monitor' }, { text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
+    rows.push([{ text: '🔄 بروزرسانی', callback_data: 'owner:monitor' }, { text: '⬅️ منوی Owner', callback_data: 'home:admin' }]);
     return { text: '👁️ نظارت کاربران KageCatch\n\n' + (lines.join('\n\n') || 'هنوز عضوی وجود ندارد.') + '\n\nاین وضعیت، فعال‌بودن کلاینت در Core را نشان می‌دهد؛ ذخیره‌بودن نشست به‌تنهایی به معنی اجرای کلاینت نیست.', keyboard: { inline_keyboard: rows } };
   }
   const monitorUser = data.match(/^owner:monitor:user:(\d+)$/);
@@ -1022,7 +660,7 @@ async function handleOwnerCallback(callback, env) {
     const usable = invites.filter((invite) => !invite.revokedAt && invite.expiresAt > Date.now() && invite.uses < invite.maxUses);
     const lines = usable.slice(0, 10).map((invite) => '• ' + invite.id.slice(0, 8) + ' — ' + invite.uses + '/' + invite.maxUses + ' استفاده');
     const revokeRows = usable.slice(0, 10).map((invite) => [{ text: 'لغو دعوت ' + invite.id.slice(0, 6), callback_data: 'owner:invite:revoke:' + invite.id }]);
-    return { text: '🎟️ مدیریت دعوت‌ها\n\nدعوت جدید بساز و لینک رو برای کاربر بفرست. لینک‌ها تعداد استفاده و تاریخ انقضا دارن.\n\nدعوت‌های فعال:\n' + (lines.join('\n') || 'دعوت فعالی وجود نداره.'), keyboard: { inline_keyboard: [[{ text: '＋ دعوت ۱ نفره · ۲۴ ساعت', callback_data: 'owner:invite:create:1' }, { text: '＋ دعوت ۱۰ نفره · ۷ روز', callback_data: 'owner:invite:create:10' }], ...revokeRows, [{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]] } };
+    return { text: '🎟️ مدیریت دعوت‌ها\n\nدعوت جدید بساز و لینک رو برای کاربر بفرست. لینک‌ها تعداد استفاده و تاریخ انقضا دارن.\n\nدعوت‌های فعال:\n' + (lines.join('\n') || 'دعوت فعالی وجود نداره.'), keyboard: { inline_keyboard: [[{ text: '＋ دعوت ۱ نفره · ۲۴ ساعت', callback_data: 'owner:invite:create:1' }, { text: '＋ دعوت ۱۰ نفره · ۷ روز', callback_data: 'owner:invite:create:10' }], ...revokeRows, [{ text: '⬅️ منوی Owner', callback_data: 'home:admin' }]] } };
   }
   const createInviteMatch = data.match(/^owner:invite:create:(1|10)$/);
   if (createInviteMatch) {
@@ -1068,7 +706,7 @@ async function handleOwnerCallback(callback, env) {
     const users = result.users || [];
     const lines = users.map((u) => '• ' + u.telegramUserId + ' — ' + u.role + ' — ' + u.status);
     const keyboard = users.filter((u) => u.role !== 'OWNER').slice(0, 20).map((u) => [{ text: (u.status === 'blocked' ? '🔓 آزادسازی ' : '🚫 مسدودسازی ') + u.telegramUserId, callback_data: 'owner:' + (u.status === 'blocked' ? 'unblock:' : 'block:') + u.telegramUserId }]);
-    keyboard.push([{ text: '⬅️ پنل Owner', callback_data: 'home:admin' }]);
+    keyboard.push([{ text: '⬅️ منوی Owner', callback_data: 'home:admin' }]);
     return { text: '👥 اعضای KageCatch\n\n' + (lines.join('\n') || 'هنوز عضوی ثبت نشده است.'), keyboard: { inline_keyboard: keyboard } };
   }
   const manage = data.match(/^owner:(block|unblock):(\d+)$/);
@@ -1160,14 +798,12 @@ async function handleCallback(callback, env) {
   try { await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id }); } catch {}
   try { await registryRequest(env, '/activity/record', { telegramUserId: callback.from.id, action: callback.data || 'message', firstName: callback.from.first_name, username: callback.from.username }); } catch {}
   let result;
-  if (callback.data === "home:panel") {
-    result = { text: "🧩 پنل کاربری KageCatch\n\nیک بخش را انتخاب کن:", keyboard: buildRoleMenu(role) };
-  } else if (callback.data === "home:admin" && role === "OWNER") {
+  if (callback.data === "home:admin" && role === "OWNER") {
     result = { text: "👑 پنل مدیریت KageCatch\n\nبخش مدیریتی موردنظرت را انتخاب کن:", keyboard: buildRoleMenu("OWNER") };
   } else if (callback.data === "home:status") {
     result = { text: "📊 وضعیت KageCatch\n\nControl Worker: فعال\nPython Core: متصل نیست\nاتصال حساب: هنوز فعال نشده\nاجرای Catch: غیرفعال", keyboard: { inline_keyboard: [[{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
   } else if (callback.data === "home:help") {
-    result = { text: "❓ راهنمای KageCatch\n\nبرای ورود به امکانات، پنل کاربری را انتخاب کن. دستورهای /panel و /status هم میانبر هستند.", keyboard: { inline_keyboard: [[{ text: "🧩 پنل کاربری", callback_data: "home:panel" }], [{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
+    result = { text: "❓ راهنمای KageCatch\n\nاز منوی همین گفت‌وگو برای کنترل بات استفاده کن. دستورهای /start، /panel و /status هم میانبر هستند.", keyboard: { inline_keyboard: [[{ text: "⬅️ منوی شروع", callback_data: "menu:main" }]] } };
   } else if (callback.data?.startsWith("owner:")) {
     result = await handleOwnerCallback(callback, env);
   } else {
@@ -1661,19 +1297,6 @@ export default {
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
-    if (url.pathname === "/api/session") return miniAppSession(request, env);
-    if (url.pathname === "/api/owner/safety/status") return miniAppOwnerSafety(request, env, "status");
-    if (url.pathname === "/api/owner/safety/recover") return miniAppOwnerSafety(request, env, "recover");
-    if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
-    if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
-    if (url.pathname === "/api/account/connect/code") return miniAppCoreProxy(request, env, "connect-code");
-    if (url.pathname === "/api/account/connect/password") return miniAppCoreProxy(request, env, "connect-password");
-    if (url.pathname === "/api/account/connect/status") return miniAppCoreProxy(request, env, "connect-status");
-    if (url.pathname === "/api/account/connect/cancel") return miniAppCoreProxy(request, env, "connect-cancel");
-    if (url.pathname === "/api/account/reconnect") return miniAppCoreProxy(request, env, "reconnect");
-    if (url.pathname === "/api/account/disconnect") return miniAppCoreProxy(request, env, "disconnect");
-    if (url.pathname === "/api/account/revoke") return miniAppCoreProxy(request, env, "revoke");
-    if (url.pathname === "/panel" && request.method === "GET") return panelPage();
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
     return json({ error: "not_found" }, 404);
   },

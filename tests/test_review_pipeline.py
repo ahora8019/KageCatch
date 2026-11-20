@@ -335,6 +335,33 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await pipeline.process(event=object(), user_id="")
 
+    async def test_unverified_spawn_is_queued_for_background_recognition_only_with_valid_origin(self):
+        class FakeRecognitionProducer:
+            def __init__(self):
+                self.calls = []
+
+            async def process_spawn(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"status": "queued", "job_id": "job-123"}
+
+        producer = FakeRecognitionProducer()
+        spawn = self._spawn()
+        event = type("Event", (), {"chat_id": -100123, "media_kind": "video"})()
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(spawn), resolver=FakeResolver(),
+            review_queue=FakeQueue(), recognition_producer=producer,
+        )
+
+        result = await pipeline.process(event=event, user_id="12345")
+
+        self.assertEqual(result, {"status": "review_queued", "spawn_id": 91, "job_id": "job-123"})
+        self.assertEqual(len(producer.calls), 1)
+        self.assertIs(producer.calls[0]["spawn"], spawn)
+        self.assertEqual(producer.calls[0]["user_id"], "12345")
+        self.assertEqual(producer.calls[0]["chat_id"], -100123)
+        self.assertEqual(producer.calls[0]["media_kind"], "video")
+
+
 
 if __name__ == "__main__":
     unittest.main()

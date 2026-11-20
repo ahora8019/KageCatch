@@ -4,18 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply, isSavedAccountStatus } from "./index.mjs";
 
-test("panel explains login requirements and never leaves the connect button silent", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"));
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /authFailureMessage/);
-  assert.match(html, /authFailureMessage/);
-  assert.match(html, /error\.status===401/);
-  assert.match(html, /error\.status===403/);
-  assert.match(html, /error\.status===503/);
-  assert.match(html, /if\(!session\)\{document\.querySelector\("#account-state"\)/);
-  assert.match(html, /main\{padding-bottom:124px\}/);
-});
+
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
   const menu = buildMainMenu();
@@ -51,7 +40,7 @@ test("unknown callback is rejected safely", () => {
   assert.equal(resolveCallback("account:unknown").alert, true);
 });
 
-test("/start opens the native member dashboard directly", () => {
+test("/start opens the native member menu directly", () => {
   const start = commandReply("/start");
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("catch:open"));
@@ -66,7 +55,7 @@ test("/panel opens the member feature menu directly as an explicit choice", () =
   assert.ok(callbacks.includes("account:list"));
 });
 
-test("owner start menu combines owner controls with the native member dashboard", () => {
+test("owner start menu combines Owner controls with member bot controls", () => {
   const callbacks = buildStartMenu("OWNER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("owner:stats"));
   assert.ok(callbacks.includes("owner:members"));
@@ -193,16 +182,7 @@ test("temporary auth state store accepts encrypted short-lived payloads only", a
   assert.equal(plaintext.status, 400);
 });
 
-test("panel exposes the secure phone, code, and optional 2FA connection flow", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /api\/account\/connect\/code/);
-  assert.match(html, /api\/account\/connect\/password/);
-  assert.match(html, /ارسال کد/);
-  assert.match(html, /کدی که تلگرام برات فرستاده رو همین‌جا بنویس/);
-  assert.match(html, /رمز دومرحله‌ای/);
-});
+
 
 
 test("owner role is assigned only to the configured numeric Telegram ID", () => {
@@ -383,234 +363,37 @@ test("Telegram menus stay native and do not redirect members into the Mini App",
   }
 });
 
-test("professional panel is responsive, Persian-first, and reports offline core honestly", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type"), /text\/html/);
-  assert.match(response.headers.get("cache-control"), /no-store/);
-  const html = await response.text();
-  assert.match(html, /KageCatch/);
-  assert.match(html, /viewport/);
-  assert.match(html, /Python Core/);
-  assert.match(html, /متصل نیست/);
-  assert.match(html, /Telegram/);
-  assert.match(html, /aria-label/);
-  const nonce = html.match(/<script nonce="([^"]+)">/)?.[1];
-  assert.ok(nonce);
-  assert.match(response.headers.get("content-security-policy"), new RegExp("nonce-" + nonce));
-});
 
 
-test("dashboard provides accessible navigation, live status, and clear operational boundaries", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
-  const html = await response.text();
-  assert.match(html, /class="skip-link"/);
-  assert.match(html, /aria-live="polite"/);
-  assert.match(html, /aria-current="page"/);
-  assert.match(html, /id="core-tag"/);
-  assert.match(html, /prefers-reduced-motion/);
-  assert.match(html, /:focus-visible/);
-  assert.match(html, /عملیات Catch اجرا نمی‌کنند/);
-  assert.match(html, /تاریخچه عملیات/);
-});
+
+
 
 import { createHash, createHmac } from "node:crypto";
 
-function makeWebAppInitData(botToken, user, authDate = Math.floor(Date.now() / 1000)) {
-  const params = new URLSearchParams({
-    auth_date: String(authDate),
-    query_id: "AAHdF6IQAAAAAN0XohDhrOrc",
-    user: JSON.stringify(user),
-  });
-  const check = [...params.entries()].sort(([a],[b]) => a.localeCompare(b)).map(([key,value]) => key + "=" + value).join("\n");
-  const secret = createHmac("sha256", "WebAppData").update(botToken).digest();
-  const hash = createHmac("sha256", secret).update(check).digest("hex");
-  params.set("hash", hash);
-  return params.toString();
-}
 
-test("Mini App initData verification accepts a fresh Telegram signature", async () => {
-  const { verifyWebAppInitData } = await import("./index.mjs");
-  const user = { id: 7135051954, first_name: "Ahura", username: "ahora_8019" };
-  const initData = makeWebAppInitData("test-bot-token", user);
-  const verified = await verifyWebAppInitData(initData, "test-bot-token");
-  assert.equal(verified.user.id, user.id);
-  assert.equal(verified.user.username, user.username);
-});
 
-test("Mini App initData verification rejects tampering and expired signatures", async () => {
-  const { verifyWebAppInitData } = await import("./index.mjs");
-  const user = { id: 2001, first_name: "Member" };
-  const initData = makeWebAppInitData("test-bot-token", user);
-  const tampered = initData.replace("Member", "Attacker");
-  assert.equal(await verifyWebAppInitData(tampered, "test-bot-token"), null);
-  const olderThanFiveMinutes = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 600);
-  assert.ok(await verifyWebAppInitData(olderThanFiveMinutes, "test-bot-token"), "a still-open Mini App must remain authenticated after five minutes");
-  const expired = makeWebAppInitData("test-bot-token", user, Math.floor(Date.now() / 1000) - 86401);
-  assert.equal(await verifyWebAppInitData(expired, "test-bot-token"), null);
-});
 
-test("Mini App session API trusts only signed Telegram identity and server-side role", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  await store.fetch(new Request("https://do.internal/register", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 7135051954, ownerTelegramId: "7135051954" }),
-  }));
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const token = "test-bot-token";
-  const initData = makeWebAppInitData(token, { id: 7135051954, first_name: "Ahura" });
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ initData }),
-  }), { KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
-  assert.equal(response.status, 200);
-  const body = await response.json();
-  assert.equal(body.role, "OWNER");
-  assert.equal(body.user.id, 7135051954);
-  assert.equal(body.core_status, "not_connected");
-});
 
-test("Mini App session API rejects forged Telegram identity", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ initData: "user=%7B%22id%22%3A7135051954%7D&auth_date=1&hash=deadbeef" }),
-  }), { KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token" });
-  assert.equal(response.status, 401);
-});
+
+
+
+
+
 
 // Mini App authentication regression coverage.
 
 
-test("Mini App session role is read from the registry, not from client-supplied claims", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const post = (path, payload) => store.fetch(new Request("https://do.internal" + path, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
-  }));
-  await post("/register", { telegramUserId: 2001, ownerTelegramId: "7135051954" });
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const token = "test-bot-token";
-  const initData = makeWebAppInitData(token, { id: 2001, first_name: "Member", role: "OWNER" });
-  const request = () => worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/session", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ initData, role: "OWNER" }),
-  }), { KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: token, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding });
-  const memberResponse = await request();
-  assert.equal(memberResponse.status, 200);
-  assert.equal((await memberResponse.json()).role, "MEMBER");
-  await post("/manage-user", { telegramUserId: 2001, action: "block" });
-  assert.equal((await request()).status, 403);
-});
 
 
-test("Worker proxies account status to Core with an HMAC signature and trusted Telegram ID", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  await store.fetch(new Request("https://do.internal/register", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 2001, ownerTelegramId: "7135051954" }),
-  }));
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const botToken = "test-bot-token";
-  const coreSecret = "kagecatch-core-test-secret-32-bytes";
-  const initData = makeWebAppInitData(botToken, { id: 2001, first_name: "Member" });
-  let coreRequest;
-  const env = {
-    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: botToken,
-    OWNER_TELEGRAM_ID: "7135051954",
-    CONNECT_LINKS: binding,
-    CORE_API_URL: "https://core.example.test",
-    CORE_API_SECRET: coreSecret,
-    FETCH: async (url, init) => {
-      coreRequest = { url, method: init.method, headers: init.headers };
-      const timestamp = init.headers["X-KageCatch-Timestamp"];
-      const nonce = init.headers["X-KageCatch-Nonce"];
-      const bodyHash = createHash("sha256").update("").digest("hex");
-      const message = [timestamp, nonce, "GET", "/v1/accounts/2001", bodyHash].join("\n");
-      const expected = createHmac("sha256", coreSecret).update(message).digest("hex");
-      assert.equal(init.headers["X-KageCatch-Signature"], expected);
-      return new Response(JSON.stringify({ telegram_user_id: 2001, status: "not_connected", session_saved: false, connected: false }), {
-        status: 200, headers: { "content-type": "application/json" },
-      });
-    },
-  };
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/status", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ initData, telegram_user_id: 7135051954 }),
-  }), env);
-  assert.equal(response.status, 200);
-  assert.equal(coreRequest.url, "https://core.example.test/v1/accounts/2001");
-  assert.equal(coreRequest.method, "GET");
-  assert.equal((await response.json()).status, "not_connected");
-});
-
-test("Worker does not call Core for forged Mini App identity", async () => {
-  let called = false;
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/status", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ initData: "user=%7B%22id%22%3A2001%7D&auth_date=1&hash=deadbeef" }),
-  }), {
-    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token",
-    CORE_API_URL: "https://core.example.test",
-    CORE_API_SECRET: "kagecatch-core-test-secret-32-bytes",
-    FETCH: async () => { called = true; return new Response("{}", { status: 200 }); },
-  });
-  assert.equal(response.status, 401);
-  assert.equal(called, false);
-});
 
 
-test("Worker exposes the Telegram deep-link flow only to a verified Mini App user", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  await store.fetch(new Request("https://do.internal/register", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 2001, ownerTelegramId: "7135051954" }),
-  }));
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const botToken = "test-bot-token";
-  const coreSecret = "kagecatch-core-test-secret-32-bytes";
-  const initData = makeWebAppInitData(botToken, { id: 2001, first_name: "Member" });
-  let observed;
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/connect", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ initData }),
-  }), {
-    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: botToken, OWNER_TELEGRAM_ID: "7135051954", CONNECT_LINKS: binding,
-    CORE_API_URL: "https://core.example.test", CORE_API_SECRET: coreSecret,
-    FETCH: async (url, init) => {
-      observed = { url, method: init.method };
-      return new Response(JSON.stringify({ status: "pending", login_url: "tg://login?token=one-time", expires_in: 30 }), {
-        status: 200, headers: { "content-type": "application/json" },
-      });
-    },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(observed.url, "https://core.example.test/v1/accounts/2001/connect");
-  assert.equal(observed.method, "POST");
-  const body = await response.json();
-  assert.equal(body.login_url, "tg://login?token=one-time");
-  assert.equal(body.status, "pending");
-});
 
-test("Mini App account UI uses accessible inline login steps instead of blocking browser prompts", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
-  const html = await response.text();
-  assert.match(html, /account-connect/);
-  assert.ok(html.includes("/api/account/connect"));
-  assert.ok(html.includes("/api/account/connect/code"));
-  assert.ok(html.includes("/api/account/connect/password"));
-  assert.match(html, /id="login-dialog"/);
-  assert.match(html, /id="login-value"/);
-  assert.match(html, /one-time-code/);
-  assert.match(html, /current-password/);
-  assert.match(html, /aria-live="polite"/);
-  assert.equal(html.includes("window.prompt("), false);
-  assert.match(html, /@keyframes/);
-  assert.doesNotMatch(html, /login_url/);
-  const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)?.[1];
-  assert.ok(script, "Mini App script must be present");
-  assert.doesNotThrow(() => new Function(script), "Mini App script must parse before it is served");
-});
+
+
+
+
+
+
 
 
 test("health distinguishes a reachable but unconfigured Python Core from an unreachable Core", async () => {
@@ -640,16 +423,10 @@ test("health distinguishes a reachable but unconfigured Python Core from an unre
   assert.equal(calls.length, 3);
 });
 
-test("dashboard labels the Core as degraded instead of offline when the bridge reaches it", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
-  const html = await response.text();
-  assert.match(html, /core-tag/);
-  assert.match(html, /دسترسی برقرار · نیازمند پیکربندی/);
-  assert.match(html, /در دسترس · گزارش‌شده/);
-});
 
 
-test("Telegram member menu is a native bot-first dashboard with Catch, bot targets, and settings", () => {
+
+test("Telegram member menu exposes native Catch, bot target, and settings controls", () => {
   const menu = buildRoleMenu("MEMBER");
   const buttons = menu.inline_keyboard.flat();
   const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
@@ -683,41 +460,7 @@ test("/start opens the native role menu directly instead of a redundant landing 
 });
 
 
-test("Mini App forwards phone login payloads only to the signed Python Core endpoint", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  await store.fetch(new Request("https://do.internal/register", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 445566778, ownerTelegramId: "" }),
-  }));
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const calls = [];
-  const env = {
-    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-bot-token",
-    CONNECT_LINKS: binding,
-    CORE_API_URL: "https://core.example",
-    CORE_API_SECRET: "test-core-secret-with-more-than-thirty-two-bytes",
-    FETCH: async (url, init) => {
-      calls.push({ url: String(url), init });
-      return new Response(JSON.stringify({ status: "code_sent" }), { status: 200, headers: { "content-type": "application/json" } });
-    },
-  };
-  const initData = makeWebAppInitData("test-bot-token", { id: 445566778, first_name: "Member" });
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/api/account/connect", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ initData, phone: "+10000000000" }),
-  }), env);
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: "code_sent" });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "https://core.example/v1/accounts/445566778/connect");
-  const forwarded = JSON.parse(calls[0].init.body);
-  assert.deepEqual(forwarded, { phone: "+10000000000" });
-  assert.equal(Object.hasOwn(forwarded, "initData"), false);
-  assert.ok(calls[0].init.headers["X-KageCatch-Signature"]);
-});
+
 
 
 async function makeSignedSessionStoreRequest(method, userId, payload, secret, nonce = crypto.randomUUID().replaceAll("-", ""), namespace = "session-store") {
@@ -925,13 +668,7 @@ test("internal session store refuses invalid user identifiers and oversized payl
 });
 
 
-test("Mini App account connection waits for Telegram authentication to finish", async () => {
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/panel"), {});
-  const html = await response.text();
-  assert.match(html, /let authPromise\s*=\s*null/);
-  assert.match(html, /if\(!session\s*&&\s*authPromise\)\s*await authPromise/);
-  assert.match(html, /authPromise\s*=\s*authenticate\(\)/);
-});
+
 
 
 test("owner menu exposes a dedicated invite-management section", () => {
