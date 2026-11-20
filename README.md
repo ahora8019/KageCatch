@@ -34,12 +34,6 @@ Session components:
 
 The Control Worker now runs account authorization entirely inside the private Telegram bot chat. The user sends their phone number, enters the Telegram login code with an Inline Keyboard (digits are never embedded in callback data), and supplies a 2FA password as a private message only when Telegram requests it. Phone/password messages are deleted on a best-effort basis; Telegram does not guarantee complete erasure. The OTP is held in a short-lived per-user state encrypted with AES-GCM and bound to the Telegram user ID; the 2FA password is never persisted or logged. The browser connection-link endpoints and Telegram Mini App dashboard have been retired from the Worker. Real-account validation remains pending; no live catch has been performed.
 
-## Legacy Telegram Mini App
-
-The previous dashboard remains available at `/panel` temporarily as a fallback while the standalone login flow is reviewed and tested. It is no longer the default account-connection path. Do not remove the legacy route until the standalone login is deployed, verified end-to-end, and the user explicitly approves retiring it.
-
-See [Professional Panel and Core Roadmap](docs/PRO_PANEL_AND_CORE_ROADMAP.md).
-
 ## Durable group panel queue
 
 Group commands `.panel` and `.پنل` are accepted only from the authorized account owner in a group/supergroup. The Python Core sends a timestamped HMAC-signed request to `POST /internal/panel-requests`; the Worker stores it in the independent `panel_requests` D1 table with a deterministic idempotency key. After the Worker accepts a signed request, it immediately dispatches the queue in the request's `waitUntil` background task; panel delivery does not wait for the ten-minute Render keep-alive Cron. The `*/10 * * * *` Cron only sends a lightweight GET to the Render Core `/healthz` endpoint. Abandoned delivery claims are recovered when the queue is next dispatched, and delivery attempts are bounded to three.
