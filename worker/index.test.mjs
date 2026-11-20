@@ -161,259 +161,36 @@ function createDurableObjectState() {
   return { storage };
 }
 
-test("connection link store creates an opaque, short-lived token bound to one Telegram user", async () => {
+test("legacy browser and one-time login links are no longer exposed", async () => {
+  for (const path of ["/connect/opaque-token-value", "/connect/exchange", "/connect/api"]) {
+    const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev" + path, {
+      method: path.endsWith("/exchange") || path.endsWith("/api") ? "POST" : "GET",
+      headers: { "content-type": "application/json" },
+      body: path.endsWith("/exchange") || path.endsWith("/api") ? "{}" : undefined,
+    }));
+    assert.equal(response.status, 404);
+  }
+});
+
+test("temporary auth state store accepts encrypted short-lived payloads only", async () => {
   const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const response = await store.fetch(new Request("https://do.internal/create", {
+  const state = createDurableObjectState();
+  const store = new ConnectionLinkStore(state);
+  const encrypted = { iv: Array(12).fill(7), ciphertext: Array(32).fill(9), expiresAt: Date.now() + 120000 };
+  const saved = await store.fetch(new Request("https://do.internal/auth-state", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 123456789, ttlSeconds: 300 }),
+    body: JSON.stringify({ telegramUserId: 500123, action: "set", state: encrypted }),
   }));
-  assert.equal(response.status, 201);
-  const result = await response.json();
-  assert.match(result.token, /^[A-Za-z0-9_-]{40,}$/);
-  assert.equal(result.expiresIn, 300);
-  assert.equal(Object.hasOwn(result, "telegramUserId"), false);
-});
-
-test("connection link exchanges once for a short-lived browser session bound to its Telegram user", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const created = await store.fetch(new Request("https://do.internal/create", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 987654321, ttlSeconds: 300 }),
-  }));
-  const { token, id } = await created.json();
-  const consume = () => store.fetch(new Request("https://do.internal/consume", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
-  }));
-  const first = await consume();
-  assert.equal(first.status, 200);
-  const { sessionToken } = await first.json();
-  assert.match(sessionToken, /^[A-Za-z0-9_-]{40,}$/);
-  const validate = await store.fetch(new Request("https://do.internal/browser-session", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionToken }),
-  }));
-  assert.deepEqual(await validate.json(), { telegramUserId: 987654321 });
-  assert.equal((await consume()).status, 410);
-  assert.equal((await store.fetch(new Request("https://do.internal/browser-session", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionToken: "bad" }),
-  }))).status, 401);
-});
-
-test("connection link store rejects expired links", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const created = await store.fetch(new Request("https://do.internal/create", {
+  assert.equal(saved.status, 200);
+  const persisted = (await state.storage.list({ prefix: "telegram-auth-state:" })).get("telegram-auth-state:500123");
+  assert.deepEqual(persisted, encrypted);
+  const plaintext = await store.fetch(new Request("https://do.internal/auth-state", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 123456789, ttlSeconds: 60 }),
+    body: JSON.stringify({ telegramUserId: 500123, action: "set", state: { stage: "code", code: "12345", expiresAt: Date.now() + 120000 } }),
   }));
-  const { token } = await created.json();
-  const originalNow = Date.now;
-  Date.now = () => originalNow() + 61_000;
-  const response = await store.fetch(new Request("https://do.internal/consume", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
-  }));
-  Date.now = originalNow;
-  assert.equal(response.status, 410);
-});
-
-test("connection link store rejects malformed requests and unsupported methods", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  assert.equal((await store.fetch(new Request("https://do.internal/create"))).status, 405);
-  const invalid = await store.fetch(new Request("https://do.internal/create", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: "not-a-number", ttlSeconds: 300 }),
-  }));
-  assert.equal(invalid.status, 400);
-});
-
-
-test("connection link store permits only one winner for concurrent consume attempts", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const created = await store.fetch(new Request("https://do.internal/create", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 112233445, ttlSeconds: 300 }),
-  }));
-  const { token } = await created.json();
-  const consume = () => store.fetch(new Request("https://do.internal/consume", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token }),
-  }));
-  const results = await Promise.all([consume(), consume()]);
-  assert.deepEqual(results.map((response) => response.status).sort(), [200, 410]);
-});
-
-
-test("standalone connection page collects credentials only in a no-store HTTPS form", async () => {
-  const token = "A".repeat(43);
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/" + token), {});
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("cache-control"), /no-store/);
-  assert.match(response.headers.get("content-security-policy"), /default-src 'none'/);
-  const html = await response.text();
-  assert.match(html, /اتصال حساب تلگرام/);
-  assert.match(html, /name="phone"/);
-  assert.match(html, /name="code"/);
-  assert.match(html, /name="password"/);
-  assert.match(html, /history\.replaceState/);
-  assert.match(html, /autocomplete="one-time-code"/);
-  assert.doesNotMatch(html, /telegram\.org|cdn\.|https?:\/\//);
-});
-
-test("standalone connection page exchanges its one-time link without rendering it into a credential form", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const created = await store.fetch(new Request("https://do.internal/create", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 445566778, ttlSeconds: 300 }),
-  }));
-  const { token } = await created.json();
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/exchange", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
-  }), { CONNECT_LINKS: binding });
-  assert.equal(response.status, 200);
-  const { sessionToken } = await response.json();
-  assert.ok(sessionToken);
-  const replay = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/exchange", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
-  }), { CONNECT_LINKS: binding });
-  assert.equal(replay.status, 410);
-});
-
-
-test("standalone connect API rejects missing browser sessions and binds requests to the link owner", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const created = await store.fetch(new Request("https://do.internal/create", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 445566778, ttlSeconds: 300 }),
-  }));
-  const { token } = await created.json();
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const denied = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/api", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "start", phone: "+989121234567" }),
-  }), { CONNECT_LINKS: binding });
-  assert.equal(denied.status, 401);
-  const exchanged = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/exchange", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
-  }), { CONNECT_LINKS: binding });
-  const { sessionToken } = await exchanged.json();
-  let captured;
-  const env = {
-    CONNECT_LINKS: binding, CORE_API_URL: "https://core.example", CORE_API_SECRET: "x".repeat(40),
-    FETCH: async (url, init) => { captured = { url, init }; return new Response(JSON.stringify({ status: "code_sent" }), { status: 200 }); },
-  };
-  const allowed = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/api", {
-    method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + sessionToken },
-    body: JSON.stringify({ action: "start", phone: "+989121234567" }),
-  }), env);
-  assert.equal(allowed.status, 200);
-  assert.equal(captured.url, "https://core.example/v1/accounts/445566778/connect");
-  assert.deepEqual(JSON.parse(captured.init.body), { phone: "+989121234567" });
-  assert.ok(captured.init.headers["X-KageCatch-Signature"]);
-});
-
-
-test("standalone connection page reports persistence_pending truthfully and polls Core status", async () => {
-  const token = "B".repeat(43);
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/" + token), {});
-  assert.equal(response.status, 200);
-  const html = await response.text();
-  assert.match(html, /persistence_pending/);
-  assert.match(html, /api\("auth-status"\)/);
-  assert.match(html, /auth-status/);
-  assert.doesNotMatch(html, /ورود تأیید و نشست ذخیره شد/);
-  assert.match(html, /ذخیره نشست هنوز تکمیل نشده/);
-  const scriptStart = html.indexOf("<script>");
-  const scriptEnd = html.indexOf("</script>");
-  const script = scriptStart >= 0 && scriptEnd > scriptStart ? html.slice(scriptStart + 8, scriptEnd) : "";
-  assert.ok(script, "standalone login script must be present");
-  assert.doesNotThrow(() => new Function(script), "standalone login script must parse");
-});
-
-test("standalone connect API proxies persistence status without resubmitting credentials", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  const created = await store.fetch(new Request("https://do.internal/create", {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 445566778, ttlSeconds: 300 }),
-  }));
-  const { token } = await created.json();
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const exchanged = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/exchange", {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }),
-  }), { CONNECT_LINKS: binding });
-  const { sessionToken } = await exchanged.json();
-
-  let captured;
-  const env = {
-    CONNECT_LINKS: binding,
-    CORE_API_URL: "https://core.example",
-    CORE_API_SECRET: "x".repeat(40),
-    FETCH: async (url, init) => {
-      captured = { url, init };
-      return new Response(JSON.stringify({ status: "persistence_pending" }), { status: 200 });
-    },
-  };
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/connect/api", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer " + sessionToken },
-    body: JSON.stringify({ action: "auth-status" }),
-  }), env);
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { status: "persistence_pending" });
-  assert.equal(captured.url, "https://core.example/v1/accounts/445566778/connect/status");
-  assert.equal(captured.init.method, "GET");
-  assert.equal(captured.init.body, undefined);
-});
-
-test("private connect callback launches the standalone secure login page", async () => {
-  const { ConnectionLinkStore } = await import("./index.mjs");
-  const store = new ConnectionLinkStore(createDurableObjectState());
-  await store.fetch(new Request("https://do.internal/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ telegramUserId: 556677889, ownerTelegramId: "" }) }));
-  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
-  const telegramCalls = [];
-  const env = {
-    KAGECATCH_DB: createTelegramSafetyDb(), TELEGRAM_BOT_TOKEN: "test-token",
-    TELEGRAM_WEBHOOK_SECRET: "test-webhook-secret",
-    CONNECT_LINKS: binding,
-    FETCH: async (url, init) => {
-      telegramCalls.push({ method: url.split("/").pop(), payload: JSON.parse(init.body) });
-      return new Response(JSON.stringify({ ok: true, result: {} }), { status: 200, headers: { "content-type": "application/json" } });
-    },
-  };
-  const update = {
-    update_id: 42,
-    callback_query: {
-      id: "callback-42",
-      from: { id: 556677889 },
-      message: { message_id: 7, chat: { id: 556677889, type: "private" } },
-      data: "account:connect",
-    },
-  };
-  const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
-    method: "POST",
-    headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret" },
-    body: JSON.stringify(update),
-  }), env);
-  assert.equal(response.status, 200);
-  const edit = telegramCalls.find((call) => call.method === "editMessageText");
-  assert.ok(edit);
-  const button = edit.payload.reply_markup.inline_keyboard[0][0];
-  assert.equal(button.text, "🌸 اتصال امن حساب");
-  assert.match(button.url, /^https:\/\/kagecatch-control\.ahora-project\.workers\.dev\/connect\/[A-Za-z0-9_-]{40,}$/);
-  assert.equal(Object.hasOwn(button, "web_app"), false);
+  assert.equal(plaintext.status, 400);
 });
 
 test("panel exposes the secure phone, code, and optional 2FA connection flow", async () => {
