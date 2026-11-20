@@ -297,6 +297,15 @@ def create_app(
             app.state.recognition_worker_stop,
             app.state.recognition_worker_task,
         )
+        job_queue = app.state.job_queue
+        queue_close = getattr(job_queue, "close", None) if job_queue is not None else None
+        if callable(queue_close):
+            try:
+                await queue_close()
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Recognition job queue shutdown failed"
+                )
         store = app.state.review_store
         close = getattr(store, "close", None) if store is not None else None
         if close is not None:
