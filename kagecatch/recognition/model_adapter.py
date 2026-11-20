@@ -76,7 +76,21 @@ class CharacterModelAdapter:
             return self._review("model_unavailable")
 
         try:
-            return self.engine.recognize(candidates)
+            result = self.engine.recognize(candidates)
+            if getattr(self.model, "requires_human_review", False) and result.status != "review":
+                proposed_name = (
+                    result.character.canonical_name
+                    if result.status == "known" and result.character is not None
+                    else result.proposed_name
+                )
+                return CharacterRecognitionResult(
+                    status="review",
+                    character=None,
+                    confidence=result.confidence,
+                    proposed_name=proposed_name,
+                    reason="model_requires_human_review",
+                )
+            return result
         except Exception:
             # Invalid iterables, malformed candidate values, and unbounded
             # candidate lists all fail closed into human review.
