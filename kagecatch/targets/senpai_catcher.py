@@ -100,23 +100,57 @@ class TelethonFrameExtractor:
         if isinstance(declared_size, int) and declared_size > self.max_video_bytes:
             raise MetadataLookupError("Video exceeds the configured download size limit")
 
+        iter_download = getattr(client, "iter_download", None)
+        if not callable(iter_download):
+            raise MetadataLookupError(
+                "Telethon client does not support bounded streaming downloads"
+            )
+
         try:
+            stream = iter_download(message, request_size=64 * 1024)
+
+            async def collect_bounded_video() -> bytes:
+                chunks: list[bytes] = []
+                total_bytes = 0
+                try:
+                    async for chunk in stream:
+                        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+                            raise MetadataLookupError(
+                                "Telegram video stream returned an invalid chunk"
+                            )
+                        chunk_bytes = bytes(chunk)
+                        total_bytes += len(chunk_bytes)
+                        if total_bytes > self.max_video_bytes:
+                            raise MetadataLookupError(
+                                "Downloaded video exceeds the configured size limit"
+                            )
+                        chunks.append(chunk_bytes)
+                finally:
+                    close = getattr(stream, "aclose", None)
+                    if callable(close):
+                        try:
+                            await close()
+                        except Exception:
+                            # A failed cleanup must not mask the bounded-download result.
+                            pass
+                return b"".join(chunks)
+
             video = await asyncio.wait_for(
-                download_media(message, file=bytes),
+                collect_bounded_video(),
                 timeout=self.download_timeout,
             )
+        except MetadataLookupError:
+            raise
         except asyncio.TimeoutError as exc:
             raise MetadataLookupError("Telegram video download timed out") from exc
         except Exception as exc:
             raise MetadataLookupError("Telegram video download failed") from exc
 
-        if not isinstance(video, (bytes, bytearray)) or not video:
+        if not video:
             raise MetadataLookupError("Telegram returned no video bytes")
-        if len(video) > self.max_video_bytes:
-            raise MetadataLookupError("Downloaded video exceeds the configured size limit")
 
         return await self.frame_extractor.extract_first_frame(
-            SimpleNamespace(video_bytes=bytes(video))
+            SimpleNamespace(video_bytes=video)
         )
 
 
