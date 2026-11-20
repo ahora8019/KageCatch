@@ -66,7 +66,7 @@ class CharacterModelAdapter:
             return self._review("invalid_image")
         if len(image) > self.max_image_bytes:
             return self._review("image_too_large")
-        if media_type not in _SUPPORTED_MEDIA_TYPES:
+        if not isinstance(media_type, str) or media_type not in _SUPPORTED_MEDIA_TYPES:
             return self._review("unsupported_media_type")
 
         try:
@@ -77,7 +77,7 @@ class CharacterModelAdapter:
 
         try:
             return self.engine.recognize(candidates)
-        except (TypeError, ValueError):
+        except Exception:
             # Invalid iterables, malformed candidate values, and unbounded
             # candidate lists all fail closed into human review.
             return self._review("invalid_model_output")
