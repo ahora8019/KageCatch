@@ -144,7 +144,9 @@ class CloudflareWorkersAIVisionModel:
             # Never include request headers, token values, or raw provider bodies.
             raise VisionModelProviderError("Cloudflare Workers AI request failed") from exc
 
-        result = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise VisionModelProviderError("Cloudflare Workers AI reported an unsuccessful inference")
+        result = data.get("result")
         raw_output = result.get("response") if isinstance(result, dict) else None
         if not isinstance(raw_output, str):
             raise VisionModelProviderError("Cloudflare vision response has an invalid schema")
