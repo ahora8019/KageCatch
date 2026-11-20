@@ -715,9 +715,9 @@ async function handleCallback(callback, env) {
         await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 حساب شما رمز دومرحله‌ای دارد.\n\nرمز را در پیام بعدی بفرست. پیام ورودی بلافاصله برای حذف اقدام می‌شود.", reply_markup: BACK_MENU });
         return;
       }
-      if (result.status >= 200 && result.status < 300 && result.data?.status === "connected") {
+      if (result.status >= 200 && result.status < 300 && ["connected", "authorized"].includes(result.data?.status)) {
         await authStateRequest(env, callback.from.id, "delete");
-        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "✅ حساب تلگرام با موفقیت متصل شد.", reply_markup: BACK_MENU });
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست تلگرام ذخیره شد؛ اما فعال‌شدن کلاینت نیازمند بررسی Core است.", reply_markup: BACK_MENU });
         return;
       }
       const nextCode = result.status === 400 ? "" : code;
