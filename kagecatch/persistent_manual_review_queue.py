@@ -56,7 +56,7 @@ class PersistentManualReviewQueue:
             raise ValueError("invalid idempotency_key")
         now = self._now()
         review_id = (
-            hashlib.sha256(("kagecatch-review:" + idempotency_key).encode("utf-8")).hexdigest()[:32]
+            hashlib.sha256(("kagecatch-review:" + user_id + ":" + idempotency_key).encode("utf-8")).hexdigest()[:32]
             if idempotency_key is not None else uuid4().hex
         )
         item = ReviewItem(
