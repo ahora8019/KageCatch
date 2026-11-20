@@ -61,15 +61,31 @@ class TelethonCatchAdapter:
             raise RuntimeError("Telegram did not return a sent message identifier")
         reference = f"{self.target_username}:{message_id}"
         receipt = CatchReceipt(reference=reference, character_name=character_name)
-        self._sent[reference] = message
+        self._sent[reference] = SentCatch(
+            receipt=receipt,
+            target_username=self.target_username,
+            outgoing_message=message,
+        )
         return receipt
 
     async def verify_catch(self, receipt: CatchReceipt) -> bool:
-        message = self._sent.get(receipt.reference)
-        if message is None or self.response_verifier is None:
+        sent = self._sent.get(receipt.reference)
+        if (
+            sent is None
+            or self.response_verifier is None
+            or sent.receipt != receipt
+            or sent.target_username != self.target_username
+        ):
             return False
-        return bool(
-            await self.response_verifier(
-                self.client, self.target_username, message, receipt
+        try:
+            result = await self.response_verifier(
+                self.client,
+                sent.target_username,
+                sent.outgoing_message,
+                sent.receipt,
             )
-        )
+        except Exception:
+            # A missing listener or verifier failure must never become success.
+            return False
+        # Do not coerce arbitrary truthy values (e.g. "false" or 1) to success.
+        return result is True
