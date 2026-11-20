@@ -154,6 +154,57 @@ class CoreApiTests(unittest.TestCase):
 
         self.assertEqual(pipeline.events, [("2001", event)])
 
+    def test_recognition_queue_never_replaces_guarded_incoming_pipeline(self):
+        class SelfbotRegistry:
+            def __init__(self):
+                self.handler = None
+            def set_incoming_handler(self, handler):
+                self.handler = handler
+
+        class RuntimeWithSelfbot(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self._selfbot_controller = SelfbotRegistry()
+
+        class Queue:
+            async def recover_expired(self):
+                return 0
+            async def claim_next(self, worker_id, *, lease_seconds=60, job_types=None):
+                return None
+
+        class Detector:
+            async def detect(self, event):
+                raise AssertionError("queue producer must not own raw incoming detection")
+
+        class Resolver:
+            async def resolve(self, metadata):
+                return None
+
+        class Pipeline:
+            def __init__(self):
+                self.events = []
+            async def process(self, *, event, user_id):
+                self.events.append((user_id, event))
+                return {"status": "review_queued"}
+
+        runtime = RuntimeWithSelfbot()
+        guarded = Pipeline()
+        fallback = Pipeline()
+        app = create_app(
+            core_secret=SECRET, runtime=runtime, session_manager=self.sessions,
+            auth_flow=self.auth_flow, review_pipeline=fallback,
+            catch_pipeline=guarded, review_queue=object(),
+            spawn_detector=Detector(), character_resolver=Resolver(),
+            job_queue=Queue(),
+        )
+        event = object()
+        with TestClient(app):
+            self.assertIsNotNone(app.state.recognition_producer)
+            asyncio.run(runtime._selfbot_controller.handler("2001", event))
+
+        self.assertEqual(guarded.events, [("2001", event)])
+        self.assertEqual(fallback.events, [])
+
     def test_public_liveness_endpoint_discloses_no_private_state(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)
