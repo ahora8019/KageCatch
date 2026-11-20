@@ -560,6 +560,20 @@ export class ConnectionLinkStore {
     let body;
     try { if (!(request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) throw new Error('content type'); body = await request.json(); }
     catch { return json({ error: 'invalid_request' }, 400); }
+    if (url.pathname === '/auth-state') {
+      const { telegramUserId, action, state: authState } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !['get', 'set', 'delete'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      const key = 'telegram-auth-state:' + telegramUserId;
+      if (action === 'delete') { await this.state.storage.delete(key); return json({ status: 'deleted' }); }
+      if (action === 'set') {
+        if (!authState || !['phone', 'code', 'password'].includes(authState.stage) || !Number.isSafeInteger(authState.expiresAt) || authState.expiresAt <= Date.now() || authState.expiresAt > Date.now() + 300000 || (authState.code !== undefined && (typeof authState.code !== 'string' || !/^\\d{0,8}$/.test(authState.code))) || (authState.phone !== undefined && (typeof authState.phone !== 'string' || authState.phone.length > 16))) return json({ error: 'invalid_auth_state' }, 400);
+        await this.state.storage.put(key, authState);
+        return json({ status: 'saved' });
+      }
+      const current = await this.state.storage.get(key);
+      if (!current || current.expiresAt <= Date.now()) { if (current) await this.state.storage.delete(key); return json({ state: null }); }
+      return json({ state: current });
+    }
     if (url.pathname === '/claim-nonce') {
       const { nonce, expiresAt } = body || {};
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
@@ -783,6 +797,29 @@ async function registryRequest(env, path, payload) {
   const response = await stub.fetch('https://connect-links.internal' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
   if (!response.ok) { const error = new Error('User registry unavailable'); error.status = response.status; throw error; }
   return response.json();
+}
+
+async function authStateRequest(env, telegramUserId, action, state = null) {
+  if (!env.CONNECT_LINKS) throw new Error("Temporary auth state store unavailable");
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const response = await stub.fetch("https://connect-links.internal/auth-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId, action, state }),
+  });
+  if (!response.ok) throw new Error("Temporary auth state operation failed");
+  return response.json();
+}
+
+async function beginTelegramLogin(env, telegramUserId, phone) {
+  if (!validatePhoneNumber(phone)) throw new Error("invalid_phone");
+  const result = await coreRequest(env, "POST", "/v1/accounts/" + telegramUserId + "/connect", { phone: phone.trim() });
+  if (result.status < 200 || result.status >= 300) throw new Error(result.data?.error || "telegram_code_request_failed");
+  if (result.data?.status === "already_authorized") {
+    const reconnect = await coreRequest(env, "POST", "/v1/accounts/" + telegramUserId + "/reconnect");
+    if (reconnect.status >= 200 && reconnect.status < 300) return "connected";
+  }
+  return result.data?.status || "code_sent";
 }
 
 async function getTelegramUser(env, userId) {
