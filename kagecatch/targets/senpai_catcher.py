@@ -268,12 +268,19 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
             frame = await self.frame_extractor.extract_first_frame(event)
             if not isinstance(frame, (bytes, bytearray)) or not frame:
                 raise MetadataLookupError("Frame extractor returned no image bytes")
-            payload = await self.trace_client.search(bytes(frame))
         except MetadataLookupError:
             raise
         except Exception as exc:
             # Do not log event contents, media, or exception payloads.
-            raise MetadataLookupError("Senpai metadata extraction failed") from exc
+            raise MetadataLookupError("Senpai frame extraction failed") from exc
+
+        scene_lookup_status = "available"
+        try:
+            payload = await self.trace_client.search(bytes(frame))
+        except Exception:
+            # trace.moe is optional anime context; character recognition can still run.
+            payload = {"result": []}
+            scene_lookup_status = "unavailable"
         results = payload.get("result") if isinstance(payload, Mapping) else None
         if not isinstance(results, list):
             raise MetadataLookupError("trace.moe returned an invalid response")
@@ -335,6 +342,10 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         additional = {
             key: first[key] for key in ("from", "to", "anilist") if key in first
         }
+        additional["scene_lookup_status"] = (
+            "matched" if results else
+            ("unavailable" if scene_lookup_status == "unavailable" else "no_match")
+        )
         additional["character_recognition_status"] = recognition_status
         if recognition_reason is not None:
             additional["character_recognition_reason"] = recognition_reason
