@@ -82,3 +82,15 @@ The already-detected Spawn model does not itself carry a media-kind field. The p
 ## Core ingress guard implemented on the queue branch
 
 The branch Core wiring has been hardened: `create_app` accepts an optional `catch_pipeline`, stores it separately, and selects it ahead of the direct review pipeline for the selfbot incoming handler. The recognition producer and worker may be initialized when the queue is configured, but the producer is no longer bound to raw Telegram events. A regression test configures both a Catch pipeline and the queue and asserts the Catch pipeline remains the only incoming handler. This is a defensive wiring change, not yet the complete queue-to-review adapter: the CatchPipeline manual-review seam still needs to pass validated chat/media origin to `process_spawn` and the worker-to-review delivery path must be tested end-to-end.
+
+
+## Queue-backed manual-review path implemented on the branch
+
+- Added `kagecatch/catch_pipeline.py` based on the guarded mainline implementation, with an optional RecognitionJobProducer dependency.
+- Core attaches the configured producer to CatchPipeline after initializing the queue runtime.
+- All manual-review branches pass the same already-detected Spawn to the queue; Catch eligibility, atomic admission, adapter validation, and receipt verification remain on the original immediate-dispatch branch.
+- The queue payload contains normalized recognition metadata and origin identifiers only. The event object is not serialized.
+- Enqueue failure or invalid chat origin is surfaced as `review_persistence_failed`; it does not silently run the resolver inline.
+- Added CatchPipeline integration tests and a Core regression test proving the queue cannot replace the guarded incoming handler.
+
+Validation remains pending: no workflow run has been reported for the current branch HEAD, and the branch remains divergent from main.
