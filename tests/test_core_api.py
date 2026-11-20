@@ -167,10 +167,14 @@ class CoreApiTests(unittest.TestCase):
                 self._selfbot_controller = SelfbotRegistry()
 
         class Queue:
+            def __init__(self):
+                self.closed = False
             async def recover_expired(self):
                 return 0
             async def claim_next(self, worker_id, *, lease_seconds=60, job_types=None):
                 return None
+            async def close(self):
+                self.closed = True
 
         class Detector:
             async def detect(self, event):
@@ -188,6 +192,7 @@ class CoreApiTests(unittest.TestCase):
                 return {"status": "review_queued"}
 
         runtime = RuntimeWithSelfbot()
+        queue = Queue()
         guarded = Pipeline()
         fallback = Pipeline()
         app = create_app(
@@ -195,7 +200,7 @@ class CoreApiTests(unittest.TestCase):
             auth_flow=self.auth_flow, review_pipeline=fallback,
             catch_pipeline=guarded, review_queue=object(),
             spawn_detector=Detector(), character_resolver=Resolver(),
-            job_queue=Queue(),
+            job_queue=queue,
         )
         event = object()
         with TestClient(app):
@@ -204,6 +209,9 @@ class CoreApiTests(unittest.TestCase):
 
         self.assertEqual(guarded.events, [("2001", event)])
         self.assertEqual(fallback.events, [])
+        self.assertTrue(app.state.recognition_worker_stop.is_set())
+        self.assertTrue(app.state.recognition_worker_task.done())
+        self.assertTrue(queue.closed)
 
     def test_public_liveness_endpoint_discloses_no_private_state(self):
         response = self.client.get("/healthz")
@@ -364,6 +372,48 @@ class CoreApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "persistence_pending"})
         self.assertEqual(self.auth_flow.cancelled, ["2001"])
+
+
+    def test_catch_pipeline_takes_precedence_on_runtime_incoming_listener(self):
+        class SelfbotRegistry:
+            def __init__(self):
+                self.handler = None
+
+            def set_incoming_handler(self, handler):
+                self.handler = handler
+
+        class RuntimeWithSelfbot(FakeRuntime):
+            def __init__(self):
+                super().__init__()
+                self._selfbot_controller = SelfbotRegistry()
+
+        class Pipeline:
+            def __init__(self, status):
+                self.status = status
+                self.events = []
+
+            async def process(self, *, event, user_id):
+                self.events.append((user_id, event))
+                return {"status": self.status}
+
+        runtime = RuntimeWithSelfbot()
+        review_pipeline = Pipeline("review_queued")
+        catch_pipeline = Pipeline("verified")
+        app = create_app(
+            core_secret=SECRET,
+            runtime=runtime,
+            session_manager=self.sessions,
+            auth_flow=self.auth_flow,
+            review_pipeline=review_pipeline,
+            catch_pipeline=catch_pipeline,
+        )
+        event = object()
+        with TestClient(app):
+            self.assertIsNotNone(runtime._selfbot_controller.handler)
+            asyncio.run(runtime._selfbot_controller.handler("2001", event))
+
+        self.assertEqual(catch_pipeline.events, [("2001", event)])
+        self.assertEqual(review_pipeline.events, [])
 
 
 class RecognitionWorkerShutdownTests(unittest.IsolatedAsyncioTestCase):
