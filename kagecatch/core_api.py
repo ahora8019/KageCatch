@@ -272,9 +272,23 @@ def create_app(
         if stop_event is not None:
             stop_event.set()
         if worker_task is not None:
-            worker_task.cancel()
-            with suppress(asyncio.CancelledError):
+            # Let an active job finish while its lease heartbeat is still
+            # running. Cancelling immediately would abandon every in-flight
+            # job at normal shutdown and force an avoidable lease recovery.
+            done, _ = await asyncio.wait({worker_task}, timeout=10.0)
+            if not done:
+                logging.getLogger("kagecatch.core").warning(
+                    "Recognition worker did not drain before shutdown deadline; cancelling it"
+                )
+                worker_task.cancel()
+            try:
                 await worker_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logging.getLogger("kagecatch.core").exception(
+                    "Recognition worker exited with an error during shutdown"
+                )
         store = app.state.review_store
         close = getattr(store, "close", None) if store is not None else None
         if close is not None:
