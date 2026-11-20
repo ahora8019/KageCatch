@@ -30,8 +30,12 @@ class RecognitionJobProducer:
             chat_id = getattr(event, "chat_id", None)
             if isinstance(chat_id, bool) or not isinstance(chat_id, int):
                 chat_id = getattr(message, "chat_id", None)
+            media_kind = getattr(event, "media_kind", None)
+            if not isinstance(media_kind, str):
+                media_kind = getattr(message, "media_kind", None)
             return await self.process_spawn(
                 user_id=user_id, spawn=spawn, chat_id=chat_id,
+                media_kind=media_kind if isinstance(media_kind, str) else "unknown",
             )
         except Exception:
             # Do not log event objects, media, metadata payloads, or credentials.
@@ -40,6 +44,7 @@ class RecognitionJobProducer:
 
     async def process_spawn(
         self, *, user_id: str, spawn: Any, chat_id: int,
+        media_kind: str = "unknown",
     ) -> dict[str, Any]:
         """Queue an already-detected spawn; never invokes the detector.
 
@@ -50,6 +55,8 @@ class RecognitionJobProducer:
         if not isinstance(user_id, str) or not user_id.strip() or len(user_id) > 128:
             raise ValueError("valid user_id is required")
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id == 0:
+            return {"status": "invalid_origin"}
+        if media_kind not in {"video", "photo", "document", "unknown"}:
             return {"status": "invalid_origin"}
 
         try:
@@ -81,7 +88,7 @@ class RecognitionJobProducer:
                     "source": target_name,
                     "chat_id": chat_id,
                     "message_id": message_id,
-                    "media_kind": "video",
+                    "media_kind": media_kind,
                 },
                 "recognition": {
                     "anime_name": anime_name.strip()[:256],
