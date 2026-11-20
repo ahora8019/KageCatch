@@ -1145,8 +1145,8 @@ async function handleCallback(callback, env) {
       return;
     }
     if (action.action === "submit") {
-      if (!/^\\d{4,8}$/.test(code)) {
-        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⚠️ کد باید بین ۴ تا ۸ رقم باشد.\\n\\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
+      if (!/^[0-9]{4,8}$/.test(code)) {
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⚠️ کد باید بین ۴ تا ۸ رقم باشد.\n\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
         return;
       }
       const result = await coreRequest(env, "POST", "/v1/accounts/" + callback.from.id + "/connect/code", { code });
@@ -1194,7 +1194,7 @@ async function handleCallback(callback, env) {
   }
   if (callback.data === 'account:connect') {
     await authStateRequest(env, callback.from.id, "set", { stage: "phone", expiresAt: Date.now() + 300000 });
-    result = { text: "🌸 اتصال حساب تلگرام\\n\\nشماره تلفنت رو با پیش‌شماره کشور بفرست.\\nنمونه: +98912…\\n\\n⏳ این درخواست ۵ دقیقه اعتبار داره.", keyboard: BACK_MENU };
+    result = { text: "🌸 اتصال حساب تلگرام\n\nشماره تلفنت رو با پیش‌شماره کشور بفرست.\nنمونه: +98912…\n\n⏳ این درخواست ۵ دقیقه اعتبار داره.", keyboard: BACK_MENU };
   }
   if (result.alert) {
     // The callback was already acknowledged; the message itself carries the validation notice.
