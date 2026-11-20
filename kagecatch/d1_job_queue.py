@@ -67,7 +67,17 @@ class D1JobQueue:
         await self._transition("dead_letter", job_id, worker_id, lease_generation)
 
     async def _transition(self, action: str, job_id: str, worker_id: str, lease_generation: int) -> None:
+        self._validate_fenced_transition(job_id, worker_id, lease_generation)
         await self._request({"action":action, "job_id":job_id, "worker_id":worker_id, "lease_generation":lease_generation})
+
+    @staticmethod
+    def _validate_fenced_transition(job_id: str, worker_id: str, lease_generation: int) -> None:
+        if not isinstance(job_id, str) or not job_id.strip() or len(job_id) > 128:
+            raise ValueError("job_id must contain 1 to 128 characters")
+        if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 128:
+            raise ValueError("worker_id must contain 1 to 128 characters")
+        if isinstance(lease_generation, bool) or not isinstance(lease_generation, int) or lease_generation < 0:
+            raise ValueError("lease_generation must be a non-negative integer")
 
     async def renew_lease(self, job_id: str, worker_id: str, *, lease_generation: int, lease_seconds: float = 60) -> float:
         if isinstance(lease_seconds,bool) or not isinstance(lease_seconds,(int,float)) or not math.isfinite(float(lease_seconds)) or not 1 <= lease_seconds <= 3600:
