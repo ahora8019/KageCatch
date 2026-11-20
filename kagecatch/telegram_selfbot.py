@@ -56,6 +56,15 @@ class TelegramSelfbotController:
         async def incoming(event):
             self.incoming_event_counts[user_id] = self.incoming_event_counts.get(user_id, 0) + 1
             if self._incoming_handler is not None:
+                # Telethon may leave event.sender unresolved until get_sender()
+                # is awaited. Resolve it before username-based target filtering.
+                get_sender = getattr(event, "get_sender", None)
+                if callable(get_sender):
+                    try:
+                        await get_sender()
+                    except Exception:
+                        # A failed sender lookup safely results in no target match.
+                        pass
                 result = self._incoming_handler(user_id, event)
                 if hasattr(result, "__await__"):
                     await result
