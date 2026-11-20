@@ -61,6 +61,12 @@ class CatchPipeline:
         if not self._has_trusted_character_identity(detected):
             return await self._manual_review(detected, user_id)
 
+        # The recognizer's metadata must belong to the same target that emitted
+        # the spawn; otherwise fail closed rather than route a mismatched identity.
+        metadata_source = getattr(getattr(detected, "metadata", None), "source", None)
+        if not isinstance(detected.target_name, str) or metadata_source != detected.target_name:
+            return await self._manual_review(detected, user_id)
+
         if getattr(self.catch_engine, "enabled", False) is not True:
             return await self._manual_review(detected, user_id)
 
