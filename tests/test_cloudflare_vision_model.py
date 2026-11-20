@@ -126,6 +126,37 @@ class CloudflareWorkersAIVisionModelTests(unittest.IsolatedAsyncioTestCase):
             await client.aclose()
         self.assertFalse(called)
 
+
+    async def test_oversized_response_stream_stops_reading_after_limit_is_exceeded(self):
+        class TrackingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.chunks_yielded = 0
+                self.closed = False
+
+            async def __aiter__(self):
+                for _ in range(4):
+                    self.chunks_yielded += 1
+                    yield b"x" * 32768
+
+            async def aclose(self):
+                self.closed = True
+
+        stream = TrackingStream()
+
+        async def handler(request):
+            return httpx.Response(200, stream=stream)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        model = CloudflareWorkersAIVisionModel(ACCOUNT_ID, API_TOKEN, client=client)
+        try:
+            with self.assertRaises(VisionModelProviderError):
+                await model.predict(b"jpeg-bytes", media_type="image/jpeg")
+        finally:
+            await client.aclose()
+
+        self.assertEqual(stream.chunks_yielded, 3)
+        self.assertTrue(stream.closed)
+
     async def test_does_not_expose_token_when_provider_request_fails(self):
         async def handler(request):
             return httpx.Response(401, json={"errors": [{"message": "unauthorized"}]})
