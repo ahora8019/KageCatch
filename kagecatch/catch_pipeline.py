@@ -67,10 +67,10 @@ class CatchPipeline:
         # the spawn; otherwise fail closed rather than route a mismatched identity.
         metadata_source = getattr(getattr(detected, "metadata", None), "source", None)
         if not isinstance(detected.target_name, str) or metadata_source != detected.target_name:
-            return await self._manual_review(detected, user_id)
+            return await self._manual_review(detected, user_id, event)
 
         if getattr(self.catch_engine, "enabled", False) is not True:
-            return await self._manual_review(detected, user_id)
+            return await self._manual_review(detected, user_id, event)
 
         try:
             enabled = self.catch_is_enabled(user_id)
@@ -79,18 +79,18 @@ class CatchPipeline:
         except Exception:
             enabled = False
         if enabled is not True:
-            return await self._manual_review(detected, user_id)
+            return await self._manual_review(detected, user_id, event)
 
         chat_id = self._get_chat_id(event)
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id == 0:
-            return await self._manual_review(detected, user_id)
+            return await self._manual_review(detected, user_id, event)
 
         try:
             adapter = self.adapter_factory(user_id, event, detected)
             if inspect.isawaitable(adapter):
                 adapter = await adapter
         except Exception:
-            return await self._manual_review(detected, user_id)
+            return await self._manual_review(detected, user_id, event)
 
         source = detected.target_name
         media_kind = getattr(adapter, "media_kind", None)
@@ -99,7 +99,7 @@ class CatchPipeline:
             or not isinstance(media_kind, str)
             or getattr(adapter, "source", None) != source
         ):
-            return await self._manual_review(detected, user_id)
+            return await self._manual_review(detected, user_id, event)
 
         metadata = detected.metadata
         candidate = Candidate(
@@ -107,7 +107,7 @@ class CatchPipeline:
             confidence=float(metadata.character_confidence),
         )
         if candidate.confidence < self.catch_engine.confidence_threshold:
-            return await self._manual_review(detected, user_id)
+            return await self._manual_review(detected, user_id, event)
 
         catch_spawn = Spawn(
             source=source,
