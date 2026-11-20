@@ -278,8 +278,11 @@ class SenpaiCatcherAdapter(BaseTargetAdapter):
         if not isinstance(results, list):
             raise MetadataLookupError("trace.moe returned an invalid response")
         if not results:
-            return CharacterMetadata(anime_name=None, source="trace.moe", character_name=None,
-                                     character_confidence=0.0)
+            return CharacterMetadata(
+                anime_name=None, source=self.target_name, character_name=None,
+                character_confidence=0.0,
+                additional={"character_recognition_status": "not_run_no_scene_match"},
+            )
         first = results[0]
         if not isinstance(first, Mapping):
             raise MetadataLookupError("trace.moe result entry is invalid")
