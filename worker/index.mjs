@@ -185,7 +185,7 @@ export function resolveCallback(data) {
   switch (data) {
     case "account:connect":
       return {
-        text: "🟢 اتصال حساب تلگرام\\n\\nشماره تلفنت رو با پیش‌شماره کشور بفرست؛ مثل +98912…\\nکد ورود را با کیبورد داخل بات وارد می‌کنی.",
+        text: "🟢 اتصال حساب تلگرام\n\nشماره تلفنت رو با پیش‌شماره کشور بفرست؛ مثل +98912…\nکد ورود را با کیبورد داخل بات وارد می‌کنی.",
         keyboard: BACK_MENU,
       };
     case "account:list":
@@ -209,7 +209,7 @@ export function resolveCallback(data) {
       return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: BACK_MENU };
     case "security:open":
       return {
-        text: "🔒 امنیت و نشست‌ها\\n\\nکد ورود در کیبورد بات وارد می‌شود و در callback ذخیره نمی‌شود؛ فقط وضعیت موقت رمزنگاری‌شده نگهداری می‌شود. رمز دومرحله‌ای در پیام خصوصی دریافت و بلافاصله برای حذف آن اقدام می‌کنیم. نشست نهایی در Core رمزنگاری می‌شود. حذف پیام تضمین حذف از زیرساخت تلگرام نیست.",
+        text: "🔒 امنیت و نشست‌ها\n\nکد ورود در کیبورد بات وارد می‌شود و در callback ذخیره نمی‌شود؛ فقط وضعیت موقت رمزنگاری‌شده نگهداری می‌شود. رمز دومرحله‌ای در پیام خصوصی دریافت و بلافاصله برای حذف آن اقدام می‌کنیم. نشست نهایی در Core رمزنگاری می‌شود. حذف پیام تضمین حذف از زیرساخت تلگرام نیست.",
         keyboard: BACK_MENU,
       };
     case "account:disconnect":
@@ -748,7 +748,7 @@ async function handleCallback(callback, env) {
   }
   if (callback.data === 'account:connect') {
     await authStateRequest(env, callback.from.id, "set", { stage: "phone", expiresAt: Date.now() + 300000 });
-    result = { text: "🌸 اتصال حساب تلگرام\\n\\nشماره تلفنت رو با پیش‌شماره کشور بفرست.\\nنمونه: +98912…\\n\\n⏳ این درخواست ۵ دقیقه اعتبار داره.", keyboard: BACK_MENU };
+    result = { text: "🌸 اتصال حساب تلگرام\n\nشماره تلفنت رو با پیش‌شماره کشور بفرست.\nنمونه: +98912…\n\n⏳ این درخواست ۵ دقیقه اعتبار داره.", keyboard: BACK_MENU };
   }
   if (result.alert) {
     // The callback was already acknowledged; the message itself carries the validation notice.
@@ -803,7 +803,7 @@ async function handleWebhook(request, env) {
       try {
         let actor = await getTelegramUser(env, message.from.id);
         const startPayload = message.text.trim().split(/\s+/, 2)[1] || '';
-        if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
+        if (String(message.from.id) === String(env.OWNER_TELEGRAM_ID || '') && /^\d+$/.test(String(env.OWNER_TELEGRAM_ID || ''))) {
           actor = await registryRequest(env, '/register', { telegramUserId: message.from.id, ownerTelegramId: env.OWNER_TELEGRAM_ID });
         } else if (!actor && command === '/start' && startPayload.startsWith('inv_')) {
           try {
