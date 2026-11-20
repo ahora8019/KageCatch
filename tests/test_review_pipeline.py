@@ -103,6 +103,34 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.items[0]["candidates"], ("Sakura",))
 
 
+    async def test_extreme_character_confidence_fails_closed_without_crashing(self):
+        from kagecatch.models.spawn import CharacterMetadata, SpawnEvent
+
+        spawn = SpawnEvent(
+            message_id=95,
+            character_name="Sakura",
+            confidence_score=0.99,
+            metadata=CharacterMetadata(
+                anime_name=None,
+                source="senpai_catcher",
+                character_name="Sakura",
+                character_confidence=10 ** 10000,
+                additional={"character_recognition_status": "known"},
+            ),
+            target_name="senpai_catcher",
+        )
+        queue = FakeQueue()
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(spawn),
+            resolver=FakeResolver(),
+            review_queue=queue,
+        )
+
+        result = await pipeline.process(event=object(), user_id="12345")
+
+        self.assertEqual(result["status"], "no_candidates")
+        self.assertEqual(queue.items, [])
+
     async def test_unverified_model_suggestion_is_queued_for_human_review(self):
         from kagecatch.models.spawn import CharacterMetadata, SpawnEvent
 
