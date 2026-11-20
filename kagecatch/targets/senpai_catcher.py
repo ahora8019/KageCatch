@@ -1,8 +1,8 @@
-"""SenpaiCatcher video-spawn recognition using trace.moe scene matching.
+"""SenpaiCatcher video-spawn recognition with independent anime and character lookup.
 
-trace.moe identifies anime scenes. Its response is not treated as a character
-recognition result; character_name therefore remains None unless a future,
-separately validated character recognizer is integrated.
+trace.moe supplies anime-scene context only. A separately injected character
+recognizer may attach a catalog-verified identity; ambiguous or unknown results
+never become catchable character names.
 """
 
 from __future__ import annotations
