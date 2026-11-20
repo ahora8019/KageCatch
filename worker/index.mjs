@@ -689,7 +689,7 @@ authPromise=authenticate();refresh();
   return new Response(html, { headers: {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
     "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
-    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org 'nonce-" + nonce + "'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org",
+    "content-security-policy": "default-src 'self'; script-src 'self' https://telegram.org 'nonce-" + nonce + "'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors *",
   }});
 }
 
@@ -1221,7 +1221,7 @@ form.addEventListener("submit",async event=>{
 });
 })();
 </script></body></html>`;
-function securePageHeaders(extra={}){return { "content-type":"text/html; charset=utf-8","cache-control":"no-store, max-age=0","referrer-policy":"no-referrer","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'","permissions-policy":"camera=(), microphone=(), geolocation=()","x-robots-tag":"noindex, nofollow, noarchive",...extra};}
+function securePageHeaders(extra={}){return { "content-type":"text/html; charset=utf-8","cache-control":"no-store, max-age=0","referrer-policy":"no-referrer","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors *","permissions-policy":"camera=(), microphone=(), geolocation=()","x-robots-tag":"noindex, nofollow, noarchive",...extra};}
 async function connectionLanding(request, env, token) {
   if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
   if (!/^[A-Za-z0-9_-]{40,}$/.test(token)) return new Response("Invalid link", { status: 404 });
