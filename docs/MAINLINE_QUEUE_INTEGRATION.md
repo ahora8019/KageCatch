@@ -54,7 +54,7 @@
 
 - Latest confirmed green CI run is on older commit `2d1aac2d88379df033d173d1bf422c213e2d4783`; it does **not** validate the current branch head.
 - The current branch head has no reported GitHub check runs or combined commit statuses.
-- The PR remains Draft and GitHub reports it as not mergeable. The branch history is still divergent from main (218 commits ahead and 5 behind at the last check).
+- The PR remains Draft and GitHub reports it as not mergeable. Branch history is still divergent from main; use the live PR comparison for exact ahead/behind counts.
 - File-level reconciliation has restored the latest mainline behavior in the files listed above; it has **not** rebased the branch history or established merge readiness.
 - Python and Worker test suites have not been executed against the current head in this environment.
 
