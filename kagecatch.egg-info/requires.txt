@@ -1,0 +1,12 @@
+cryptography<47,>=42
+
+[api]
+fastapi<1,>=0.115
+uvicorn[standard]<1,>=0.30
+httpx<1,>=0.27
+telethon<2,>=1.36
+
+[telegram]
+telethon<2,>=1.36
+
+[test]

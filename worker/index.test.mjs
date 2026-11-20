@@ -1639,3 +1639,44 @@ test("saved account statuses include connected and authorized only", () => {
   assert.equal(isSavedAccountStatus("authorized"), true);
   assert.equal(isSavedAccountStatus("pending"), false);
 });
+
+test("web dashboard, Mini App, browser login, and account proxy routes are retired", async () => {
+  const base = "https://kagecatch-control.ahora-project.workers.dev";
+  const removed = [
+    ["/panel", "GET"],
+    ["/connect/example-token-which-is-long-enough-to-be-valid-12345678901234567890", "GET"],
+    ["/connect/exchange", "POST"],
+    ["/connect/api", "POST"],
+    ["/api/session", "POST"],
+    ["/api/owner/safety/status", "POST"],
+    ["/api/owner/safety/recover", "POST"],
+    ["/api/account/status", "POST"],
+    ["/api/account/connect", "POST"],
+    ["/api/account/connect/code", "POST"],
+    ["/api/account/connect/password", "POST"],
+    ["/api/account/connect/status", "POST"],
+    ["/api/account/connect/cancel", "POST"],
+    ["/api/account/reconnect", "POST"],
+    ["/api/account/disconnect", "POST"],
+    ["/api/account/revoke", "POST"],
+  ];
+  for (const [path, method] of removed) {
+    const response = await worker.fetch(new Request(base + path, {
+      method,
+      headers: { "content-type": "application/json" },
+      ...(method === "POST" ? { body: "{}" } : {}),
+    }), {});
+    assert.equal(response.status, 404, `${method} ${path} must be retired`);
+  }
+});
+
+test("Owner bot menu keeps Telegram controls and contains no dashboard or Mini App entry", () => {
+  const buttons = buildRoleMenu("OWNER").inline_keyboard.flat();
+  const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
+  assert.ok(callbacks.includes("owner:members"));
+  assert.ok(callbacks.includes("owner:invites"));
+  assert.ok(callbacks.includes("owner:broadcast"));
+  assert.ok(callbacks.includes("owner:emergency"));
+  assert.ok(!callbacks.includes("home:panel"));
+  assert.ok(buttons.every((button) => !button.url && !button.web_app));
+});

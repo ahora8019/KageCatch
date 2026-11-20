@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: kagecatch
+Version: 0.1.0
+Summary: Multi-user Telegram character catch orchestration core
+Requires-Python: >=3.11
+Requires-Dist: cryptography<47,>=42
+Provides-Extra: telegram
+Requires-Dist: telethon<2,>=1.36; extra == "telegram"
+Provides-Extra: api
+Requires-Dist: fastapi<1,>=0.115; extra == "api"
+Requires-Dist: uvicorn[standard]<1,>=0.30; extra == "api"
+Requires-Dist: httpx<1,>=0.27; extra == "api"
+Requires-Dist: telethon<2,>=1.36; extra == "api"
+Provides-Extra: test
