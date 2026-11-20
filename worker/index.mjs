@@ -469,7 +469,7 @@ async function authStateRequest(env, telegramUserId, action, state = null) {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
     const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt"]);
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(state)));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(String(telegramUserId)) }, key, new TextEncoder().encode(JSON.stringify(state)));
     encrypted = { iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)), expiresAt: state.expiresAt };
   }
   const response = await stub.fetch("https://connect-links.internal/auth-state", {
@@ -483,7 +483,7 @@ async function authStateRequest(env, telegramUserId, action, state = null) {
   if (!env.CORE_API_SECRET) throw new Error("Auth state encryption is not configured");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
   const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["decrypt"]);
-  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(result.state.iv) }, key, new Uint8Array(result.state.ciphertext));
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(result.state.iv), additionalData: new TextEncoder().encode(String(telegramUserId)) }, key, new Uint8Array(result.state.ciphertext));
   return { state: JSON.parse(new TextDecoder().decode(plaintext)) };
 }
 
