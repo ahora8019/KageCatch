@@ -8,8 +8,10 @@ from kagecatch.recognition_job_producer import RecognitionJobProducer
 class FakeDetector:
     def __init__(self, spawn=None, error=None):
         self.spawn, self.error = spawn, error
+        self.calls = 0
 
     async def detect(self, event):
+        self.calls += 1
         if self.error:
             raise self.error
         return self.spawn
@@ -72,6 +74,38 @@ class RecognitionJobProducerTests(unittest.IsolatedAsyncioTestCase):
         )
         result = await producer.process("12345", object())
         self.assertEqual(result, {"status": "enqueue_failed"})
+        self.assertEqual(queue.calls, [])
+
+
+    async def test_process_spawn_queues_existing_detection_without_running_detector(self):
+        queue = FakeQueue()
+        detector = FakeDetector(spawn())
+        producer = RecognitionJobProducer(detector=detector, queue=queue)
+
+        result = await producer.process_spawn(
+            user_id="12345", spawn=spawn(), chat_id=-1001,
+        )
+
+        self.assertEqual(result, {"status": "queued", "job_id": "job-123"})
+        self.assertEqual(detector.calls, 0)
+        job_type, payload, options = queue.calls[0]
+        self.assertEqual(job_type, "spawn.recognize")
+        self.assertEqual(options["idempotency_key"], "spawn:12345:-1001:91")
+        self.assertEqual(payload["origin"]["source"], "SenpaiCatcherBot")
+        self.assertNotIn("event", payload)
+        self.assertNotIn("session", payload)
+
+    async def test_process_spawn_rejects_invalid_chat_id_without_queueing(self):
+        queue = FakeQueue()
+        detector = FakeDetector(spawn())
+        producer = RecognitionJobProducer(detector=detector, queue=queue)
+
+        result = await producer.process_spawn(
+            user_id="12345", spawn=spawn(), chat_id=True,
+        )
+
+        self.assertEqual(result, {"status": "invalid_origin"})
+        self.assertEqual(detector.calls, 0)
         self.assertEqual(queue.calls, [])
 
     async def test_invalid_user_id_is_rejected(self):
