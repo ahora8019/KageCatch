@@ -56,7 +56,7 @@ class RecognitionJobProducer:
             raise ValueError("valid user_id is required")
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id == 0:
             return {"status": "invalid_origin"}
-        if media_kind not in {"video", "photo", "image", "document", "unknown"}:
+        if not isinstance(media_kind, str) or media_kind not in {"video", "photo", "image", "document", "unknown"}:
             return {"status": "invalid_origin"}
 
         try:
