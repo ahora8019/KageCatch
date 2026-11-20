@@ -1496,3 +1496,51 @@ test("durable manual review create is idempotent and rejects conflicting reuse",
   assert.equal(conflict.status, 409);
   assert.equal(db.rows.size, 1);
 });
+
+async function makeSignedJobQueueRequest(payload, secret, nonce = crypto.randomUUID().replaceAll("-", "")) {
+  const path = "/internal/job-queue", body = JSON.stringify(payload), timestamp = String(Math.floor(Date.now() / 1000));
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))), b => b.toString(16).padStart(2, "0")).join("");
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = Array.from(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode([timestamp, nonce, "POST", path, hash].join("\n")))), b => b.toString(16).padStart(2, "0")).join("");
+  return new Request("https://kagecatch-control.ahora-project.workers.dev" + path, { method: "POST", headers: {
+    "content-type": "application/json", "X-KageCatch-Timestamp": timestamp,
+    "X-KageCatch-Nonce": nonce, "X-KageCatch-Signature": sig,
+  }, body });
+}
+
+function createFakeJobQueueDatabase() {
+  const rows = new Map();
+  return { rows, prepare(sql) { let values=[]; return { bind(...v) { values=v; return this; },
+    async run() {
+      if (sql.startsWith("INSERT OR IGNORE INTO catch_jobs")) {
+        const [job_id,job_type,payload_json,priority,max_attempts,idempotency_key,run_after,created_at,updated_at]=values;
+        if ([...rows.values()].some(r=>idempotency_key && r.idempotency_key===idempotency_key)) return {meta:{changes:0}};
+        rows.set(job_id,{job_id,job_type,payload_json,priority,status:"queued",attempts:0,max_attempts,idempotency_key,worker_id:null,lease_until:null,lease_generation:0,run_after,created_at,updated_at}); return {meta:{changes:1}};
+      }
+      throw new Error("unexpected fake D1 run: "+sql);
+    },
+    async first() { if(sql.includes("WHERE job_id = ?")) return rows.get(values[0])||null; if(sql.includes("WHERE idempotency_key = ?")) return [...rows.values()].find(r=>r.idempotency_key===values[0])||null; throw new Error("unexpected fake D1 first: "+sql); },
+    async all() {
+      if(sql.includes("UPDATE catch_jobs SET status='running'")) {
+        const [worker_id,lease_until,updated_at,now,...types]=values;
+        const row=[...rows.values()].filter(r=>r.status==="queued"&&r.run_after<=now&&(!types.length||types.includes(r.job_type))).sort((a,b)=>b.priority-a.priority||a.created_at-b.created_at)[0];
+        if(!row)return {results:[]}; Object.assign(row,{status:"running",attempts:row.attempts+1,lease_generation:row.lease_generation+1,worker_id,lease_until,updated_at}); return {results:[{...row}]};
+      }
+      throw new Error("unexpected fake D1 all: "+sql);
+    },
+  }; }};
+}
+
+test("D1 durable job queue authenticates enqueue and atomically claims a fenced lease", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const store = new ConnectionLinkStore(createDurableObjectState());
+  const binding = { idFromName: () => "connection-links-v1", get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }) };
+  const db = createFakeJobQueueDatabase(), secret = "job-queue-core-secret-with-at-least-32-bytes";
+  const env = { CORE_API_SECRET: secret, CONNECT_LINKS: binding, KAGECATCH_DB: db };
+  const created = await worker.fetch(await makeSignedJobQueueRequest({ action:"enqueue", job_type:"spawn.recognize", payload:{spawn_id:9}, priority:3, idempotency_key:"spawn:9" },secret),env);
+  assert.equal(created.status,201); const job=(await created.json()).job; assert.equal(job.status,"queued");
+  const claimed = await worker.fetch(await makeSignedJobQueueRequest({ action:"claim", worker_id:"worker-a", lease_seconds:60, job_types:["spawn.recognize"] },secret),env);
+  assert.equal(claimed.status,200); const lease=(await claimed.json()).job; assert.equal(lease.status,"running"); assert.equal(lease.lease_generation,1);
+  const unsigned=await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/internal/job-queue",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}),env);
+  assert.equal(unsigned.status,401);
+});

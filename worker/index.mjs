@@ -1033,7 +1033,7 @@ async function handleWebhook(request, env) {
           await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ برای این حساب نشست قبلی وجود دارد اما تلگرام ورود مجدد می‌خواهد. ابتدا نشست قبلی را لغو کن و دوباره اتصال را شروع کن.", reply_markup: BACK_MENU });
         } else {
           await authStateRequest(env, message.from.id, "set", { stage: "code", code: "", expiresAt: Date.now() + 300000 });
-          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "🔐 کد ورود را با صفحه‌کلید زیر وارد کن.\\n\\n" + maskLoginCode(""), reply_markup: buildLoginCodeKeyboard() });
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "🔐 کد ورود را با صفحه‌کلید زیر وارد کن.\n\n" + maskLoginCode(""), reply_markup: buildLoginCodeKeyboard() });
         }
       } catch (error) {
         await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: error.message === "invalid_phone" ? "شماره معتبر نیست. با فرمت بین‌المللی مثل +98912… بفرست." : "❌ درخواست کد انجام نشد. دوباره تلاش کن.", reply_markup: BACK_MENU });
@@ -1264,6 +1264,52 @@ async function internalManualReviewStore(request, env) {
 }
 
 
+function jobRowToItem(r) {
+  return {job_id:r.job_id,job_type:r.job_type,payload:JSON.parse(r.payload_json),priority:Number(r.priority),status:r.status,attempts:Number(r.attempts),max_attempts:Number(r.max_attempts),worker_id:r.worker_id??null,lease_until:r.lease_until==null?null:Number(r.lease_until),lease_generation:Number(r.lease_generation)};
+}
+async function internalJobQueue(request,env) {
+  if(request.method!=="POST") return json({error:"method_not_allowed"},405);
+  if(!(request.headers.get("content-type")||"").toLowerCase().startsWith("application/json")) return json({error:"unsupported_media_type"},415);
+  if(!env.CORE_API_SECRET||String(env.CORE_API_SECRET).length<32||!env.KAGECATCH_DB||!env.CONNECT_LINKS) return json({error:"storage_not_configured"},503);
+  const body=new Uint8Array(await request.arrayBuffer()); if(body.byteLength>65536)return json({error:"request_too_large"},413);
+  const ts=request.headers.get("X-KageCatch-Timestamp")||"", nonce=request.headers.get("X-KageCatch-Nonce")||"", sig=request.headers.get("X-KageCatch-Signature")||"";
+  if(!/^\d{10,12}$/.test(ts)||!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)||!/^[a-f0-9]{64}$/.test(sig)||Math.abs(Date.now()/1000-Number(ts))>60)return json({error:"invalid_auth_headers"},401);
+  const hash=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",body)),b=>b.toString(16).padStart(2,"0")).join("");
+  const key=await crypto.subtle.importKey("raw",new TextEncoder().encode(env.CORE_API_SECRET),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
+  const bytes=new Uint8Array(await crypto.subtle.sign("HMAC",key,new TextEncoder().encode([ts,nonce,"POST",new URL(request.url).pathname,hash].join("\n"))));
+  const expected=Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join(""); let diff=expected.length^sig.length; for(let i=0;i<expected.length;i++)diff|=expected.charCodeAt(i)^sig.charCodeAt(i); if(diff)return json({error:"invalid_signature"},401);
+  const stub=env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  const replay=await stub.fetch("https://connect-links.internal/claim-nonce",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({nonce,expiresAt:Date.now()+120000})});
+  if(replay.status===409)return json({error:"request_replayed"},409); if(!replay.ok)return json({error:"replay_guard_unavailable"},503);
+  let p; try{p=JSON.parse(new TextDecoder().decode(body));}catch{return json({error:"invalid_request"},400);} if(!p||typeof p!=="object"||Array.isArray(p))return json({error:"invalid_request"},400);
+  const now=Date.now()/1000, db=env.KAGECATCH_DB;
+  try {
+    if(p.action==="enqueue") {
+      if(typeof p.job_type!=="string"||!p.job_type.trim()||p.job_type.length>128||!p.payload||typeof p.payload!=="object"||Array.isArray(p.payload)||!Number.isSafeInteger(p.priority??0)||!Number.isSafeInteger(p.max_attempts??3)||(p.max_attempts??3)<1||(p.max_attempts??3)>20||(p.idempotency_key!=null&&(typeof p.idempotency_key!=="string"||!p.idempotency_key.trim()||p.idempotency_key.length>256)))return json({error:"invalid_job"},400);
+      const jid=crypto.randomUUID().replace(/-/g,""), pj=JSON.stringify(p.payload), ins=await db.prepare("INSERT OR IGNORE INTO catch_jobs(job_id,job_type,payload_json,priority,status,max_attempts,idempotency_key,run_after,created_at,updated_at) VALUES(?,?,?,?, 'queued',?,?,?,?,?)").bind(jid,p.job_type.trim(),pj,p.priority??0,p.max_attempts??3,p.idempotency_key??null,p.run_after??now,now,now).run();
+      let row=Number(ins?.meta?.changes||0)===1?await db.prepare("SELECT * FROM catch_jobs WHERE job_id=?").bind(jid).first():p.idempotency_key?await db.prepare("SELECT * FROM catch_jobs WHERE idempotency_key=?").bind(p.idempotency_key).first():null;
+      if(row&&(row.job_type!==p.job_type.trim()||row.payload_json!==pj))return json({error:"idempotency_conflict"},409); if(!row)return json({error:"job_insert_failed"},503); return json({job:jobRowToItem(row)},ins?.meta?.changes?201:200);
+    }
+    if(p.action==="claim") {
+      if(typeof p.worker_id!=="string"||!p.worker_id.trim()||p.worker_id.length>128||typeof (p.lease_seconds??60)!=="number"||(p.lease_seconds??60)<1||(p.lease_seconds??60)>3600||(p.job_types!=null&&(!Array.isArray(p.job_types)||!p.job_types.length||p.job_types.some(t=>typeof t!=="string"))))return json({error:"invalid_claim"},400);
+      const types=p.job_types??[], filter=types.length?` AND job_type IN (${types.map(()=>"?").join(",")})`:"";
+      const result=await db.prepare(`UPDATE catch_jobs SET status='running',attempts=attempts+1,lease_generation=lease_generation+1,worker_id=?,lease_until=?,updated_at=? WHERE job_id=(SELECT job_id FROM catch_jobs WHERE status='queued' AND run_after<=?${filter} ORDER BY priority DESC,created_at ASC LIMIT 1) AND status='queued' RETURNING *`).bind(p.worker_id,now+(p.lease_seconds??60),now,now,...types).all();
+      return json({job:result?.results?.[0]?jobRowToItem(result.results[0]):null});
+    }
+    if(p.action==="recover_expired"){const r=await db.prepare("UPDATE catch_jobs SET status=CASE WHEN attempts>=max_attempts THEN 'dead' ELSE 'queued' END,worker_id=NULL,lease_until=NULL,run_after=?,updated_at=? WHERE status='running' AND lease_until<=?").bind(now,now,now).run();return json({recovered:Number(r?.meta?.changes||0)});}
+    if(p.action==="count"){if(!["pending","dead"].includes(p.kind))return json({error:"invalid_count_kind"},400);const r=await db.prepare(p.kind==="dead"?"SELECT COUNT(*) count FROM catch_jobs WHERE status='dead'":"SELECT COUNT(*) count FROM catch_jobs WHERE status IN ('queued','running')").first();return json({count:Number(r?.count||0)});}
+    if(["complete","dead_letter","renew","fail"].includes(p.action)) {
+      if(typeof p.job_id!=="string"||! /^[a-f0-9]{32}$/.test(p.job_id)||typeof p.worker_id!=="string"||!Number.isSafeInteger(p.lease_generation))return json({error:"invalid_lease"},400);
+      const row=await db.prepare("SELECT attempts,max_attempts FROM catch_jobs WHERE job_id=? AND status='running' AND worker_id=? AND lease_generation=? AND lease_until>?").bind(p.job_id,p.worker_id,p.lease_generation,now).first(); if(!row)return json({error:"lease_not_owned"},409);
+      if(p.action==="renew"){const until=now+(p.lease_seconds??60);if(until<=now||until>now+3600)return json({error:"invalid_lease"},400);const r=await db.prepare("UPDATE catch_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND status='running' AND worker_id=? AND lease_generation=? AND lease_until>?").bind(until,now,p.job_id,p.worker_id,p.lease_generation,now).run();if(Number(r?.meta?.changes||0)!==1)return json({error:"lease_not_owned"},409);return json({lease_until:until});}
+      let status=p.action==="complete"?"completed":p.action==="dead_letter"?"dead":Number(row.attempts)>=Number(row.max_attempts)?"dead":"queued";const delay=p.action==="fail"?(p.retry_delay??0):0;if(typeof delay!=="number"||!Number.isFinite(delay)||delay<0||delay>86400)return json({error:"invalid_retry_delay"},400);
+      const r=await db.prepare("UPDATE catch_jobs SET status=?,worker_id=NULL,lease_until=NULL,run_after=?,updated_at=? WHERE job_id=? AND status='running' AND worker_id=? AND lease_generation=? AND lease_until>?").bind(status,now+delay,now,p.job_id,p.worker_id,p.lease_generation,now).run();if(Number(r?.meta?.changes||0)!==1)return json({error:"lease_not_owned"},409);return json({status});
+    }
+    return json({error:"invalid_action"},400);
+  } catch { return json({error:"job_queue_unavailable"},503); }
+}
+
+
 async function internalSessionStore(request, env) {
   const pathname = new URL(request.url).pathname;
   const listUsers = pathname === "/internal/session-store/users";
@@ -1423,6 +1469,7 @@ export default {
       );
     }
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
+    if (url.pathname === "/internal/job-queue") return internalJobQueue(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
