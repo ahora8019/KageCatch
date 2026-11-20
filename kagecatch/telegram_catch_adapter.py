@@ -6,6 +6,7 @@ provided before a receipt can be marked verified.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -22,6 +23,10 @@ class SentCatch:
 
 
 ResponseVerifier = Callable[[Any, str, Any, CatchReceipt], Awaitable[bool]]
+
+# Keep only recent pending verification contexts; each entry retains a Telethon
+# message object and must not grow without bound in a long-lived Core process.
+_MAX_SENT_CATCHES = 256
 
 
 class TelethonCatchAdapter:
@@ -47,7 +52,7 @@ class TelethonCatchAdapter:
         self.response_verifier = response_verifier
         # Live Telegram commands require a deliberate opt-in at composition time.
         self.dispatch_enabled = bool(dispatch_enabled)
-        self._sent: dict[str, Any] = {}
+        self._sent: OrderedDict[str, SentCatch] = OrderedDict()
 
     async def send_catch(self, spawn: Spawn, character_name: str) -> CatchReceipt:
         if not self.dispatch_enabled:
@@ -61,15 +66,33 @@ class TelethonCatchAdapter:
             raise RuntimeError("Telegram did not return a sent message identifier")
         reference = f"{self.target_username}:{message_id}"
         receipt = CatchReceipt(reference=reference, character_name=character_name)
-        self._sent[reference] = message
+        self._sent[reference] = SentCatch(
+            receipt=receipt,
+            target_username=self.target_username,
+            outgoing_message=message,
+        )
+        while len(self._sent) > _MAX_SENT_CATCHES:
+            self._sent.popitem(last=False)
         return receipt
 
     async def verify_catch(self, receipt: CatchReceipt) -> bool:
-        message = self._sent.get(receipt.reference)
-        if message is None or self.response_verifier is None:
+        sent = self._sent.get(receipt.reference)
+        if (
+            sent is None
+            or self.response_verifier is None
+            or sent.receipt != receipt
+            or sent.target_username != self.target_username
+        ):
             return False
-        return bool(
-            await self.response_verifier(
-                self.client, self.target_username, message, receipt
+        try:
+            result = await self.response_verifier(
+                self.client,
+                sent.target_username,
+                sent.outgoing_message,
+                sent.receipt,
             )
-        )
+        except Exception:
+            # A missing listener or verifier failure must never become success.
+            return False
+        # Do not coerce arbitrary truthy values (e.g. "false" or 1) to success.
+        return result is True
