@@ -1,8 +1,8 @@
 """Authenticated HTTP boundary between the Cloudflare Worker and Python Core.
 
-Account identifiers are derived by the Worker from verified Telegram Mini App
-initData and sent over HMAC-authenticated internal requests. Login codes and
-2FA passwords are accepted only on these signed, non-logged request paths;
+Account identifiers originate from verified Telegram Bot API webhook updates
+and are sent over HMAC-authenticated internal requests. Login codes and 2FA
+passwords are accepted only on these signed, non-logged request paths;
 raw session material is never accepted from or returned to the Worker.
 """
 from __future__ import annotations
