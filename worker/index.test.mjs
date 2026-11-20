@@ -1076,11 +1076,13 @@ test("native account login completes phone, keypad OTP, and optional 2FA entirel
     idFromName: () => "connection-links-v1",
     get: () => ({ fetch: (input, init) => store.fetch(new Request(input, init)) }),
   };
-  await store.fetch(new Request("https://do.internal/register", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId: 500123, ownerTelegramId: "999001" }),
-  }));
+  for (const telegramUserId of [500123, 500124]) {
+    await store.fetch(new Request("https://do.internal/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ telegramUserId, ownerTelegramId: "999001" }),
+    }));
+  }
 
   const telegramCalls = [];
   const coreCalls = [];
@@ -1101,8 +1103,9 @@ test("native account login completes phone, keypad OTP, and optional 2FA entirel
       }
       const payload = init.body ? JSON.parse(init.body) : null;
       coreCalls.push({ url: target, payload });
-      if (target.endsWith("/v1/accounts/500123/connect")) return new Response(JSON.stringify({ status: "code_sent" }), { status: 200 });
+      if (/\/v1\/accounts\/(500123|500124)\/connect$/.test(target)) return new Response(JSON.stringify({ status: "code_sent" }), { status: 200 });
       if (target.endsWith("/v1/accounts/500123/connect/code")) return new Response(JSON.stringify({ status: "password_required" }), { status: 200 });
+      if (target.endsWith("/v1/accounts/500124/connect/code")) return new Response(JSON.stringify({ status: "connected" }), { status: 200 });
       if (target.endsWith("/v1/accounts/500123/connect/password")) return new Response(JSON.stringify({ status: "connected" }), { status: 200 });
       return new Response(JSON.stringify({ error: "unexpected_core_route" }), { status: 404 });
     },
@@ -1114,20 +1117,20 @@ test("native account login completes phone, keypad OTP, and optional 2FA entirel
     body: JSON.stringify({ update_id, ...update }),
   }), env);
 
-  const callback = (id, data, messageId = 1) => ({
+  const callback = (id, data, messageId = 1, telegramUserId = 500123) => ({
     callback_query: {
       id: "cb-" + id,
       data,
-      from: { id: 500123 },
-      message: { message_id: messageId, chat: { id: 500123, type: "private" } },
+      from: { id: telegramUserId },
+      message: { message_id: messageId, chat: { id: telegramUserId, type: "private" } },
     },
   });
-  const message = (id, text) => ({
+  const message = (id, text, telegramUserId = 500123) => ({
     message: {
       message_id: id,
       text,
-      chat: { id: 500123, type: "private" },
-      from: { id: 500123, first_name: "Member" },
+      chat: { id: telegramUserId, type: "private" },
+      from: { id: telegramUserId, first_name: "Member" },
     },
   });
 
@@ -1161,6 +1164,26 @@ test("native account login completes phone, keypad OTP, and optional 2FA entirel
     body: JSON.stringify({ telegramUserId: 500123, action: "get" }),
   }));
   assert.deepEqual(await remaining.json(), { state: null });
+
+  // A Telegram account without 2FA completes authorization immediately after its OTP.
+  assert.equal((await webhook(10, callback(10, "account:connect", 1, 500124))).status, 200);
+  assert.equal((await webhook(11, message(11, "+989121234568", 500124))).status, 200);
+  for (const [index, digit] of ["6", "5", "4", "3", "2"].entries()) {
+    assert.equal((await webhook(12 + index, callback(12 + index, "auth:digit:" + digit, 77, 500124))).status, 200);
+  }
+  assert.equal((await webhook(17, callback(17, "auth:submit", 77, 500124))).status, 200);
+
+  const directCodeRequest = coreCalls.find((call) => call.url.endsWith("/v1/accounts/500124/connect/code"));
+  assert.deepEqual(directCodeRequest.payload, { code: "65432" });
+  assert.equal(coreCalls.some((call) => call.url.endsWith("/v1/accounts/500124/connect/password")), false);
+  assert.ok(telegramCalls.some((call) => call.method === "editMessageText" && /با موفقیت متصل شد/.test(call.payload.text)));
+  assert.equal(telegramCalls.some((call) => call.method === "sendMessage" && /رمز دومرحله‌ای/.test(call.payload.text)), false);
+  const directRemaining = await store.fetch(new Request("https://do.internal/auth-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId: 500124, action: "get" }),
+  }));
+  assert.deepEqual(await directRemaining.json(), { state: null });
 });
 
 
