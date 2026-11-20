@@ -94,3 +94,8 @@ The branch Core wiring has been hardened: `create_app` accepts an optional `catc
 - Added CatchPipeline integration tests and a Core regression test proving the queue cannot replace the guarded incoming handler.
 
 Validation remains pending: no workflow run has been reported for the current branch HEAD, and the branch remains divergent from main.
+
+
+## Additional input-hardening regression coverage
+
+The queue boundary now rejects non-string media-kind values in the producer without raising an uncaught type error. CatchPipeline normalizes malformed event media metadata to `unknown` before calling the producer. Regression tests cover both cases. Latest checked branch HEAD is `33e213586deef6945b2d08a2d63d4d35c4750fc7`; GitHub reports no combined status checks and no pull-request workflow run for this commit. The PR is still 201 commits ahead and 4 behind current main, so this is not validated for merge.
