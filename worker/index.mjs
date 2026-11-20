@@ -136,70 +136,6 @@ async function coreRequest(env, method, path, payload = null) {
   }
 }
 
-async function miniAppCoreProxy(request, env, action) {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
-  let body;
-  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
-  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
-  if (!verified) return json({ error: "unauthorized" }, 401);
-  let actor;
-  try { actor = await getTelegramUser(env, verified.user.id); }
-  catch { return json({ error: "identity_service_unavailable" }, 503); }
-  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
-  if (role === "BLOCKED" || role === "DENIED") return json({ error: "forbidden" }, 403);
-  const userId = verified.user.id;
-  const accountPath = "/v1/accounts/" + userId;
-  const requestSpec = action === "status"
-    ? { method: "GET", path: accountPath }
-    : action === "connect"
-      ? { method: "POST", path: accountPath + "/connect", payload: { phone: body.phone } }
-      : action === "connect-code"
-        ? { method: "POST", path: accountPath + "/connect/code", payload: { code: body.code } }
-        : action === "connect-password"
-          ? { method: "POST", path: accountPath + "/connect/password", payload: { password: body.password } }
-          : action === "connect-status"
-            ? { method: "GET", path: accountPath + "/connect/status" }
-            : action === "connect-cancel"
-              ? { method: "POST", path: accountPath + "/connect/cancel" }
-              : action === "reconnect"
-                ? { method: "POST", path: accountPath + "/reconnect" }
-                : action === "disconnect"
-                  ? { method: "POST", path: accountPath + "/disconnect" }
-                  : action === "revoke"
-                    ? { method: "DELETE", path: accountPath }
-                    : null;
-  if (!requestSpec) return json({ error: "unknown_account_action" }, 400);
-  const result = await coreRequest(env, requestSpec.method, requestSpec.path, requestSpec.payload ?? null);
-  return json(result.data, result.status);
-}
-
-async function miniAppSession(request, env) {
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (!(request.headers.get("content-type") || "").toLowerCase().startsWith("application/json")) return json({ error: "unsupported_media_type" }, 415);
-  let body;
-  try { body = await request.json(); } catch { return json({ error: "invalid_request" }, 400); }
-  const verified = await verifyWebAppInitData(body?.initData, env.TELEGRAM_BOT_TOKEN);
-  if (!verified) return json({ error: "unauthorized" }, 401);
-  let actor;
-  try { actor = await getTelegramUser(env, verified.user.id); }
-  catch { return json({ error: "identity_service_unavailable" }, 503); }
-  const role = resolveRole(verified.user.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
-  if (role === "BLOCKED" || role === "DENIED") return json({ error: "forbidden" }, 403);
-  return json({
-    authenticated: true,
-    user: {
-      id: verified.user.id,
-      first_name: typeof verified.user.first_name === "string" ? verified.user.first_name : "",
-      username: typeof verified.user.username === "string" ? verified.user.username : null,
-    },
-    role,
-    status: actor?.status ?? "active",
-    core_status: "not_connected",
-    account_status: "not_connected",
-  });
-}
-
 async function telegramApi(env, method, payload = {}) {
   if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is not configured");
   const requestFetch = env.FETCH || fetch;
@@ -566,7 +502,7 @@ export class ConnectionLinkStore {
       const key = 'telegram-auth-state:' + telegramUserId;
       if (action === 'delete') { await this.state.storage.delete(key); return json({ status: 'deleted' }); }
       if (action === 'set') {
-        if (!authState || !['phone', 'code', 'password'].includes(authState.stage) || !Number.isSafeInteger(authState.expiresAt) || authState.expiresAt <= Date.now() || authState.expiresAt > Date.now() + 300000 || (authState.code !== undefined && (typeof authState.code !== 'string' || !/^\\d{0,8}$/.test(authState.code))) || (authState.phone !== undefined && (typeof authState.phone !== 'string' || authState.phone.length > 16))) return json({ error: 'invalid_auth_state' }, 400);
+        if (!authState || !Array.isArray(authState.iv) || authState.iv.length !== 12 || !Array.isArray(authState.ciphertext) || authState.ciphertext.length < 16 || authState.ciphertext.length > 2048 || !Number.isSafeInteger(authState.expiresAt) || authState.expiresAt <= Date.now() || authState.expiresAt > Date.now() + 300000) return json({ error: 'invalid_auth_state' }, 400);
         await this.state.storage.put(key, authState);
         return json({ status: 'saved' });
       }
@@ -743,50 +679,6 @@ export class ConnectionLinkStore {
         return draft ? json({ draft }) : json({ error: 'no_confirmable_broadcast' }, 409);
       }
     }
-    if (url.pathname === '/create') {
-      const { telegramUserId, ttlSeconds } = body || {};
-      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 600) return json({ error: 'invalid_request' }, 400);
-      const bytes = crypto.getRandomValues(new Uint8Array(32));
-      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      const token = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-      const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      await this.state.storage.put(key, { telegramUserId, expiresAt: Date.now() + ttlSeconds * 1000 });
-      return json({ token, expiresIn: ttlSeconds }, 201);
-    }
-    if (url.pathname === '/consume') {
-      const token = body?.token;
-      if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(token)) return json({ error: 'invalid_link' }, 400);
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-      const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const bytes = crypto.getRandomValues(new Uint8Array(32));
-      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      const sessionToken = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
-      const sessionDigest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sessionToken));
-      const sessionKey = 'browser:' + Array.from(new Uint8Array(sessionDigest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const record = await this.state.storage.transaction(async (txn) => {
-        const value = await txn.get(key);
-        if (!value) return null;
-        await txn.delete(key);
-        if (value.expiresAt <= Date.now()) return null;
-        await txn.put(sessionKey, { telegramUserId: value.telegramUserId, expiresAt: Date.now() + 10 * 60 * 1000 });
-        return value;
-      });
-      if (!record) return json({ error: 'invalid_or_expired_link' }, 410);
-      return json({ sessionToken, expiresIn: 600 }, 200);
-    }
-    if (url.pathname === '/browser-session') {
-      const sessionToken = body?.sessionToken;
-      if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{40,}$/.test(sessionToken)) return json({ error: 'invalid_session' }, 401);
-      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sessionToken));
-      const key = 'browser:' + Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const record = await this.state.storage.get(key);
-      if (!record || record.expiresAt <= Date.now()) {
-        if (record) await this.state.storage.delete(key);
-        return json({ error: 'invalid_or_expired_session' }, 401);
-      }
-      return json({ telegramUserId: record.telegramUserId }, 200);
-    }
     return json({ error: 'not_found' }, 404);
   }
 }
@@ -802,13 +694,28 @@ async function registryRequest(env, path, payload) {
 async function authStateRequest(env, telegramUserId, action, state = null) {
   if (!env.CONNECT_LINKS) throw new Error("Temporary auth state store unavailable");
   const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  let encrypted = null;
+  if (action === "set") {
+    if (!env.CORE_API_SECRET || !state || !Number.isSafeInteger(state.expiresAt)) throw new Error("Auth state encryption is not configured");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
+    const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(state)));
+    encrypted = { iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)), expiresAt: state.expiresAt };
+  }
   const response = await stub.fetch("https://connect-links.internal/auth-state", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ telegramUserId, action, state }),
+    body: JSON.stringify({ telegramUserId, action, state: encrypted }),
   });
   if (!response.ok) throw new Error("Temporary auth state operation failed");
-  return response.json();
+  const result = await response.json();
+  if (action !== "get" || !result.state) return result;
+  if (!env.CORE_API_SECRET) throw new Error("Auth state encryption is not configured");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
+  const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(result.state.iv) }, key, new Uint8Array(result.state.ciphertext));
+  return { state: JSON.parse(new TextDecoder().decode(plaintext)) };
 }
 
 async function beginTelegramLogin(env, telegramUserId, phone) {
@@ -1501,18 +1408,6 @@ export default {
     if (url.pathname === "/internal/manual-review") return internalManualReviewStore(request, env);
     if (url.pathname.startsWith("/internal/session-store/")) return internalSessionStore(request, env);
     if (url.pathname.startsWith("/internal/auth-challenge/")) return internalAuthChallengeStore(request, env);
-    if (url.pathname === "/connect/exchange") return connectionExchange(request, env);
-    if (url.pathname === "/connect/api") return standaloneConnectApi(request, env);
-    if (url.pathname === "/api/session") return miniAppSession(request, env);
-    if (url.pathname === "/api/account/status") return miniAppCoreProxy(request, env, "status");
-    if (url.pathname === "/api/account/connect") return miniAppCoreProxy(request, env, "connect");
-    if (url.pathname === "/api/account/connect/code") return miniAppCoreProxy(request, env, "connect-code");
-    if (url.pathname === "/api/account/connect/password") return miniAppCoreProxy(request, env, "connect-password");
-    if (url.pathname === "/api/account/connect/status") return miniAppCoreProxy(request, env, "connect-status");
-    if (url.pathname === "/api/account/connect/cancel") return miniAppCoreProxy(request, env, "connect-cancel");
-    if (url.pathname === "/api/account/reconnect") return miniAppCoreProxy(request, env, "reconnect");
-    if (url.pathname === "/api/account/disconnect") return miniAppCoreProxy(request, env, "disconnect");
-    if (url.pathname === "/api/account/revoke") return miniAppCoreProxy(request, env, "revoke");
     if (url.pathname === "/panel" && request.method === "GET") return panelPage();
     if (url.pathname.startsWith("/connect/")) return connectionLanding(request, env, decodeURIComponent(url.pathname.slice("/connect/".length)));
     if (url.pathname === WEBHOOK_PATH) return handleWebhook(request, env);
