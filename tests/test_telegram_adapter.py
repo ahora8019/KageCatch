@@ -1,5 +1,8 @@
 import unittest
+from dataclasses import replace
+from unittest.mock import patch
 
+from kagecatch.adapters import TARGETS
 from kagecatch.engine import Spawn
 from kagecatch.telegram_adapter import TelethonCatchAdapter
 
@@ -19,6 +22,12 @@ class FakeClient:
 
 class TelethonAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # Exercise adapter behavior with a temporary test-only target opt-in.
+        self._target_patch = patch.dict(
+            TARGETS,
+            {"henta_catcher": replace(TARGETS["henta_catcher"], enabled=True)},
+        )
+        self._target_patch.start()
         self.client = FakeClient()
         self.verified = True
         async def verifier(username, receipt):
@@ -28,6 +37,9 @@ class TelethonAdapterTests(unittest.IsolatedAsyncioTestCase):
             client=self.client,
             response_verifier=verifier,
         )
+
+    async def asyncTearDown(self):
+        self._target_patch.stop()
 
     async def test_sends_expected_command_to_target_bot(self):
         spawn = Spawn("henta_catcher", 1, 2, "image", ())
