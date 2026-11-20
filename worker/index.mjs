@@ -520,11 +520,17 @@ async function authStateRequest(env, telegramUserId, action, state = null) {
 
 async function beginTelegramLogin(env, telegramUserId, phone) {
   if (!validatePhoneNumber(phone)) throw new Error("invalid_phone");
-  const result = await coreRequest(env, "POST", "/v1/accounts/" + telegramUserId + "/connect", { phone: phone.trim() });
+  const path = "/v1/accounts/" + telegramUserId;
+  const result = await coreRequest(env, "POST", path + "/connect", { phone: phone.trim() });
+  if (result.status === 409 && result.data?.error === "authorization_already_pending") {
+    const pending = await coreRequest(env, "GET", path + "/connect/status");
+    if (pending.status === 200 && pending.data?.status === "pending") return "code_sent";
+  }
   if (result.status < 200 || result.status >= 300) throw new Error(result.data?.error || "telegram_code_request_failed");
   if (result.data?.status === "already_authorized") {
-    const reconnect = await coreRequest(env, "POST", "/v1/accounts/" + telegramUserId + "/reconnect");
+    const reconnect = await coreRequest(env, "POST", path + "/reconnect");
     if (reconnect.status >= 200 && reconnect.status < 300) return "connected";
+    return "reauthorization_required";
   }
   return result.data?.status || "code_sent";
 }
@@ -848,6 +854,9 @@ async function handleWebhook(request, env) {
         if (status === "connected") {
           await authStateRequest(env, message.from.id, "delete");
           await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "✅ حساب تلگرام شما از قبل مجاز بود و اتصال برقرار شد.", reply_markup: BACK_MENU });
+        } else if (status === "reauthorization_required") {
+          await authStateRequest(env, message.from.id, "delete");
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ برای این حساب نشست قبلی وجود دارد اما تلگرام ورود مجدد می‌خواهد. ابتدا نشست قبلی را از بخش امنیت لغو کن و دوباره اتصال را شروع کن.", reply_markup: BACK_MENU });
         } else {
           await authStateRequest(env, message.from.id, "set", { stage: "code", code: "", expiresAt: Date.now() + 300000 });
           await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "🔐 کد ورود را با صفحه‌کلید زیر وارد کن.\n\n" + maskLoginCode(""), reply_markup: buildLoginCodeKeyboard() });
