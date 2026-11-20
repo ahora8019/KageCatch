@@ -2,7 +2,7 @@ import "./panel_queue.test.mjs";
 import "./telegram_login_ui.test.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply } from "./index.mjs";
+import worker, { buildMainMenu, buildRoleMenu, buildStartMenu, resolveRole, resolveCallback, commandReply, isSavedAccountStatus } from "./index.mjs";
 
 
 test("main menu is inline-first and exposes the agreed account controls", () => {
@@ -1161,4 +1161,13 @@ test("native account login completes phone, keypad OTP, and optional 2FA entirel
     body: JSON.stringify({ telegramUserId: 500123, action: "get" }),
   }));
   assert.deepEqual(await remaining.json(), { state: null });
+});
+
+
+test("an authorized session is recognized as saved even when the execution client is offline", () => {
+  assert.equal(isSavedAccountStatus("connected"), true);
+  assert.equal(isSavedAccountStatus("authorized"), true);
+  assert.equal(isSavedAccountStatus("pending"), false);
+  assert.equal(isSavedAccountStatus("not_connected"), false);
+  assert.equal(isSavedAccountStatus(undefined), false);
 });
