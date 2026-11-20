@@ -54,3 +54,21 @@ Do not merge the two branches wholesale and do not replace main's `core_api.py` 
 - Therefore a safe integration needs an adapter at the already-detected Spawn/review boundary, not a wholesale Core API cherry-pick.
 
 This document is a design/reconciliation note only. It does not assert that the queue has been integrated into current main, that CI has passed, or that production behavior has been validated.
+
+
+## Follow-up implementation on the queue branch
+
+The queue branch now exposes `RecognitionJobProducer.process_spawn(user_id, spawn, chat_id)`.
+It accepts an already-detected Spawn and does not call the detector. It validates the
+chat/message identifiers and enqueues only bounded recognition metadata plus the
+origin identifiers. Regression tests assert the detector is not called and invalid
+chat identifiers are rejected.
+
+This is an integration seam only, not an active CatchPipeline integration. The
+branch's current Core still installs the raw-event RecognitionJobProducer as the
+incoming handler when the queue is enabled. That wiring must not be carried forward
+over main's guarded CatchPipeline. The eventual integration must make CatchPipeline
+the sole detector and decision owner, pass a validated chat identifier into the
+manual-review adapter, and call `process_spawn` only on its review branch. Until
+that end-to-end change is implemented and tested against main's current pipeline,
+the queue branch must remain unmerged.
