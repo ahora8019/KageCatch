@@ -1457,18 +1457,33 @@ async function handleD1MigrationAdmin(request, env) {
   if (!Array.isArray(payload.expected_ledger) || JSON.stringify(payload.expected_ledger) !== JSON.stringify(EXPECTED_D1_MIGRATION_LEDGER)) {
     return json({ error: "expected_ledger_mismatch" }, 409);
   }
+  let phase = "read_ledger";
   try {
     const ledgerResult = await env.KAGECATCH_DB.prepare("SELECT name FROM d1_migrations ORDER BY id").all();
     const currentLedger = Array.isArray(ledgerResult?.results) ? ledgerResult.results.map((row) => String(row.name)) : [];
-    if (JSON.stringify(currentLedger) !== JSON.stringify(EXPECTED_D1_MIGRATION_LEDGER)) {
+    const baseLedgerMatches = EXPECTED_D1_MIGRATION_LEDGER.every((name, index) => currentLedger[index] === name);
+    const extraLedgerEntries = currentLedger.slice(EXPECTED_D1_MIGRATION_LEDGER.length);
+    const allowedExtraEntries = extraLedgerEntries.every((name) => Object.hasOwn(D1_SAFETY_MIGRATIONS, name));
+    const uniqueExtraEntries = new Set(extraLedgerEntries).size === extraLedgerEntries.length;
+    if (!baseLedgerMatches || !allowedExtraEntries || !uniqueExtraEntries || currentLedger.length > EXPECTED_D1_MIGRATION_LEDGER.length + Object.keys(D1_SAFETY_MIGRATIONS).length) {
       return json({ error: "live_ledger_changed", migration_count: currentLedger.length }, 409);
     }
     const applied = [];
+    const rechecked = [];
     for (const [name, sql] of Object.entries(D1_SAFETY_MIGRATIONS)) {
-      await env.KAGECATCH_DB.exec(sql);
-      await env.KAGECATCH_DB.prepare("INSERT INTO d1_migrations (name) VALUES (?)").bind(name).run();
-      applied.push(name);
+      phase = `apply:${name}`;
+      for (const statement of sql.split(";").map((value) => value.trim()).filter(Boolean)) {
+        await env.KAGECATCH_DB.prepare(statement).run();
+      }
+      if (currentLedger.includes(name)) {
+        rechecked.push(name);
+      } else {
+        phase = `record:${name}`;
+        await env.KAGECATCH_DB.prepare("INSERT INTO d1_migrations (name) VALUES (?)").bind(name).run();
+        applied.push(name);
+      }
     }
+    phase = "verify_schema";
     const [tablesResult, migrationsResult] = await Promise.all([
       env.KAGECATCH_DB.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all(),
       env.KAGECATCH_DB.prepare("SELECT name FROM d1_migrations ORDER BY id").all(),
@@ -1477,10 +1492,12 @@ async function handleD1MigrationAdmin(request, env) {
     const required = ["telegram_bot_safety", "telegram_bot_chat_pacing", "telegram_bot_chat_circuit_breaker"];
     const requiredTables = required.filter((name) => tables.includes(name)).length;
     const migrations = Array.isArray(migrationsResult?.results) ? migrationsResult.results.map((row) => String(row.name)) : [];
-    return json({ status: requiredTables === 3 ? "ready" : "schema_incomplete", applied, required_tables: requiredTables, tables, migrations });
+    return json({ status: requiredTables === 3 ? "ready" : "schema_incomplete", applied, rechecked, required_tables: requiredTables, tables, migrations });
   } catch (error) {
-    console.error(JSON.stringify({ event: "d1_migration_admin_failed", error_name: typeof error?.name === "string" ? error.name.slice(0, 64) : "Error" }));
-    return json({ error: "migration_failed" }, 500);
+    const safePhase = typeof phase === "string" ? phase.slice(0, 96) : "unknown";
+    const safeErrorName = typeof error?.name === "string" ? error.name.slice(0, 64) : "Error";
+    console.error(JSON.stringify({ event: "d1_migration_admin_failed", phase: safePhase, error_name: safeErrorName }));
+    return json({ error: "migration_failed", phase: safePhase, error_name: safeErrorName }, 500);
   }
 }
 
