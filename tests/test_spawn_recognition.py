@@ -106,15 +106,17 @@ class SenpaiAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata.character_confidence, 0.0)
         self.assertEqual(self.trace.calls, [b"jpeg-frame"])
 
-    async def test_api_timeout_is_reported_as_metadata_error(self):
+    async def test_trace_api_timeout_preserves_spawn_with_unknown_character(self):
         adapter = SenpaiCatcherAdapter(
             sender_id=123,
             frame_extractor=FakeFrameExtractor(),
             trace_client=FakeTraceClient(error=TimeoutError("timeout")),
         )
-        from kagecatch.targets.senpai_catcher import MetadataLookupError
-        with self.assertRaises(MetadataLookupError):
-            await adapter.extract_metadata(FakeEvent())
+        metadata = await adapter.extract_metadata(FakeEvent())
+        self.assertIsNone(metadata.anime_name)
+        self.assertIsNone(metadata.character_name)
+        self.assertEqual(metadata.character_confidence, 0.0)
+        self.assertEqual(metadata.additional["scene_lookup_status"], "unavailable")
 
     async def test_http_failure_is_converted_to_metadata_error(self):
         import httpx

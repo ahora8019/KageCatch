@@ -15,14 +15,17 @@ class FakeFrameExtractor:
 
 
 class FakeTraceClient:
-    def __init__(self, results=None):
+    def __init__(self, results=None, error=None):
         self.results = results if results is not None else [{
             "anilist": {"title": {"english": "Example Anime"}},
             "episode": 2,
             "similarity": 0.96,
         }]
+        self.error = error
 
     async def search(self, image):
+        if self.error:
+            raise self.error
         return {"result": self.results}
 
 
@@ -40,11 +43,11 @@ class FakeCharacterRecognizer:
 
 
 class CharacterRecognitionSpawnIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    def _adapter(self, recognizer=None, trace_results=None):
+    def _adapter(self, recognizer=None, trace_results=None, trace_error=None):
         return SenpaiCatcherAdapter(
             sender_id=123,
             frame_extractor=FakeFrameExtractor(),
-            trace_client=FakeTraceClient(trace_results),
+            trace_client=FakeTraceClient(trace_results, trace_error),
             character_recognizer=recognizer,
         )
 
@@ -128,6 +131,23 @@ class CharacterRecognitionSpawnIntegrationTests(unittest.IsolatedAsyncioTestCase
         self.assertEqual(metadata.character_confidence, 0.93)
         self.assertEqual(metadata.source, "senpai_catcher")
         self.assertEqual(recognizer.calls, [(b"jpeg-frame", "image/jpeg")])
+
+    async def test_character_recognition_survives_trace_moe_network_failure(self):
+        record = CharacterRecord("sakura-001", "Sakura", "Example Anime")
+        recognizer = FakeCharacterRecognizer(
+            CharacterRecognitionResult(status="known", character=record, confidence=0.93)
+        )
+        metadata = await self._adapter(
+            recognizer, trace_error=TimeoutError("trace.moe unavailable")
+        ).extract_metadata(
+            SimpleNamespace(sender_id=123, id=77, video=b"video",
+                            raw_text="A New Character Has Appeared!")
+        )
+
+        self.assertIsNone(metadata.anime_name)
+        self.assertEqual(metadata.character_name, "Sakura")
+        self.assertEqual(metadata.character_confidence, 0.93)
+        self.assertEqual(metadata.additional["scene_lookup_status"], "unavailable")
 
     async def test_without_character_recognizer_does_not_invent_identity(self):
         metadata = await self._adapter().extract_metadata(
