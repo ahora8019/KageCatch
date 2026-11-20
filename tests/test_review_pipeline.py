@@ -67,6 +67,41 @@ class ReviewPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.items[0]["spawn_id"], 91)
         self.assertEqual(queue.items[0]["candidates"], ("Megumin", "Aqua"))
 
+
+    async def test_catalog_verified_character_is_queued_without_anime_scene_match(self):
+        from kagecatch.models.spawn import CharacterMetadata, SpawnEvent
+
+        spawn = SpawnEvent(
+            message_id=93,
+            character_name="Sakura",
+            confidence_score=0.93,
+            metadata=CharacterMetadata(
+                anime_name=None,
+                source="senpai_catcher",
+                character_name="Sakura",
+                character_confidence=0.93,
+                additional={"character_recognition_status": "known"},
+            ),
+            target_name="senpai_catcher",
+        )
+
+        class ResolverMustNotRun:
+            async def resolve(self, metadata):
+                raise AssertionError("catalog-verified character should be queued directly")
+
+        queue = FakeQueue()
+        pipeline = ReviewPipeline(
+            detector=FakeDetector(spawn),
+            resolver=ResolverMustNotRun(),
+            review_queue=queue,
+        )
+
+        result = await pipeline.process(event=object(), user_id="12345")
+
+        self.assertEqual(result["status"], "review_queued")
+        self.assertEqual(queue.items[0]["anime_name"], "Unknown anime")
+        self.assertEqual(queue.items[0]["candidates"], ("Sakura",))
+
     async def test_no_spawn_does_not_create_review_item(self):
         queue = FakeQueue()
         pipeline = ReviewPipeline(
