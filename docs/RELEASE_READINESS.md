@@ -70,8 +70,9 @@
 
 ## Known blockers — refreshed 2026-11-20
 
-- `main` is at `644af294f776a921bb5dbfec6f51a427a6fd6734`; PR #46 head is `4de9fe91dac73255a3222cdaf000d698d66e3295`. The branch diverged from the common base `b0c4f0fedfb09cc0049d11235dc9ec592396e267`: it is 176 commits ahead and 4 commits behind. The four main-only commits add guarded CatchPipeline ingress, strict fail-closed Catch verification, a bounded sent-message verification cache, and validation that recognition metadata belongs to the detected target. These changes must be reconciled before release; do not treat the old green run on `2d1aac2` as validation of the current head.
-- PR #46 remains Draft. No pull-request workflow run is currently reported for head `4de9fe91dac73255a3222cdaf000d698d66e3295`; the Broadcast preparation-recovery regression test therefore remains unverified by CI on this exact commit.
+- `main` is at `2a5366cbee1240fc459bd3dc7d921cbb30086ac8`; PR #46 head at this refresh is `c081740fc0c1978c7e7d3ac3452133ad4abb4825`. The PR remains Draft and GitHub reports it as not mergeable: 219 commits ahead and 5 behind. File-level reconciliation has restored current mainline behavior in Core/Catch ingress, ReviewPipeline, bounded Catch receipt verification, and bounded Senpai media download; branch ancestry is still divergent and must be reconciled before merge/release.
+- The last confirmed green CI run is on older commit `2d1aac2d88379df033d173d1bf422c213e2d4783`. The current head has no reported combined status checks or pull-request workflow run. Do not treat the older green run as validation of the current code.
+- The queue/Catch integration now has regression tests for single detection, queue routing, invalid origin/media metadata, worker lease loss, review idempotency after an acknowledgement failure, and bounded worker shutdown. These tests have not yet run on the current head.
 - The documented D1 resource is Preview; production database/bindings have not been established here.
 - The Python Core still requires a verified persistent host and durable storage.
 - Real-account authorization and live Catch/Broadcast end-to-end verification have not been performed.
