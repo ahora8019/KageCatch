@@ -1,8 +1,18 @@
 import { enqueuePanelRequestAndDispatch, processPanelQueue, handlePanelCallback } from "./panel_queue.mjs";
+import { buildLoginCodeKeyboard, maskLoginCode, parseLoginCodeCallback, validatePhoneNumber } from "./telegram_login_ui.mjs";
 import { TelegramApiError, waitForTelegramSendPermit, waitForTelegramChatPermit, recordTelegramApiFailure, assertTelegramChatCircuitClosed, recordTelegramChatApiFailure, recordTelegramChatApiSuccess, getTelegramSafetySnapshot, recoverTelegramGlobalPause, recoverTelegramChatCircuit, isTelegramMutatingMethod, isValidTelegramMethod } from "./telegram_safety.mjs";
 const WEBHOOK_PATH = "/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
 const VERSION = "0.9.0";
+
+export function isSavedAccountStatus(status) {
+  return status === "connected" || status === "authorized";
+}
+
+export function isPendingAuthorizationConflict(status, data) {
+  return status === 409 && (data?.detail === "authorization_already_pending" || data?.error === "authorization_already_pending");
+}
+
 const CONNECTION_LINK_TTL_SECONDS = 300;
 const CONNECTION_LINK_BASE = "https://kagecatch-control.ahora-project.workers.dev";
 const PANEL_URL = "https://kagecatch-control.ahora-project.workers.dev/panel";
@@ -701,6 +711,23 @@ export class ConnectionLinkStore {
     let body;
     try { if (!(request.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) throw new Error('content type'); body = await request.json(); }
     catch { return json({ error: 'invalid_request' }, 400); }
+    if (url.pathname === '/auth-state') {
+      const { telegramUserId, action, state: authState } = body || {};
+      if (!Number.isSafeInteger(telegramUserId) || telegramUserId <= 0 || !['get', 'set', 'delete'].includes(action)) return json({ error: 'invalid_request' }, 400);
+      const key = 'telegram-auth-state:' + telegramUserId;
+      if (action === 'delete') { await this.state.storage.delete(key); return json({ status: 'deleted' }); }
+      if (action === 'set') {
+        if (!authState || !Array.isArray(authState.iv) || authState.iv.length !== 12 || !Array.isArray(authState.ciphertext) || authState.ciphertext.length < 16 || authState.ciphertext.length > 2048 || !Number.isSafeInteger(authState.expiresAt) || authState.expiresAt <= Date.now() || authState.expiresAt > Date.now() + 300000) return json({ error: 'invalid_auth_state' }, 400);
+        await this.state.storage.put(key, authState);
+        return json({ status: 'saved' });
+      }
+      const stored = await this.state.storage.get(key);
+      if (!stored || stored.expiresAt <= Date.now()) {
+        if (stored) await this.state.storage.delete(key);
+        return json({ state: null });
+      }
+      return json({ state: stored });
+    }
     if (url.pathname === '/claim-nonce') {
       const { nonce, expiresAt } = body || {};
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
@@ -934,6 +961,51 @@ async function registryRequest(env, path, payload) {
   return response.json();
 }
 
+// OTP and 2FA flow state is encrypted at rest with AES-GCM and authenticated to its Telegram user ID.
+async function authStateRequest(env, telegramUserId, action, state = null) {
+  if (!env.CONNECT_LINKS) throw new Error("Temporary auth state store unavailable");
+  const stub = env.CONNECT_LINKS.get(env.CONNECT_LINKS.idFromName("connection-links-v1"));
+  let encrypted = null;
+  if (action === "set") {
+    if (!env.CORE_API_SECRET || !state || !Number.isSafeInteger(state.expiresAt)) throw new Error("Auth state encryption is not configured");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
+    const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(String(telegramUserId)) }, key, new TextEncoder().encode(JSON.stringify(state)));
+    encrypted = { iv: Array.from(iv), ciphertext: Array.from(new Uint8Array(ciphertext)), expiresAt: state.expiresAt };
+  }
+  const response = await stub.fetch("https://connect-links.internal/auth-state", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ telegramUserId, action, state: encrypted }),
+  });
+  if (!response.ok) throw new Error("Temporary auth state operation failed");
+  const result = await response.json();
+  if (action !== "get" || !result.state) return result;
+  if (!env.CORE_API_SECRET) throw new Error("Auth state encryption is not configured");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.CORE_API_SECRET));
+  const key = await crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(result.state.iv), additionalData: new TextEncoder().encode(String(telegramUserId)) }, key, new Uint8Array(result.state.ciphertext));
+  return { state: JSON.parse(new TextDecoder().decode(plaintext)) };
+}
+
+async function beginTelegramLogin(env, telegramUserId, phone) {
+  if (!validatePhoneNumber(phone)) throw new Error("invalid_phone");
+  const path = "/v1/accounts/" + telegramUserId;
+  const result = await coreRequest(env, "POST", path + "/connect", { phone: phone.trim() });
+  if (isPendingAuthorizationConflict(result.status, result.data)) {
+    const pending = await coreRequest(env, "GET", path + "/connect/status");
+    if (pending.status === 200 && pending.data?.status === "pending") return "code_sent";
+  }
+  if (result.status < 200 || result.status >= 300) throw new Error(result.data?.error || result.data?.detail || "telegram_code_request_failed");
+  if (result.data?.status === "already_authorized") {
+    const reconnect = await coreRequest(env, "POST", path + "/reconnect");
+    if (reconnect.status >= 200 && reconnect.status < 300) return "connected";
+    return "reauthorization_required";
+  }
+  return result.data?.status || "code_sent";
+}
+
 async function getTelegramUser(env, userId) {
   const result = await registryRequest(env, '/user', { telegramUserId: userId });
   return result.user;
@@ -1080,6 +1152,63 @@ async function handleCallback(callback, env) {
     await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "⛔ این بخش فقط برای Owner است.", show_alert: true });
     return;
   }
+  if (typeof callback.data === "string" && callback.data.startsWith("auth:")) {
+    try { await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id }); } catch {}
+    const action = parseLoginCodeCallback(callback.data);
+    const current = await authStateRequest(env, callback.from.id, "get");
+    const state = current.state;
+    if (!action || action.action === "cancel") {
+      await coreRequest(env, "POST", "/v1/accounts/" + callback.from.id + "/connect/cancel");
+      await authStateRequest(env, callback.from.id, "delete");
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+      return;
+    }
+    if (!state || state.stage !== "code" || state.expiresAt <= Date.now()) {
+      await authStateRequest(env, callback.from.id, "delete");
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⏳ درخواست ورود منقضی شده. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+      return;
+    }
+    let code = state.code || "";
+    if (action.action === "digit") {
+      if (code.length < 8) code += action.digit;
+      await authStateRequest(env, callback.from.id, "set", { ...state, code });
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 کد ورود را وارد کن\n\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
+      return;
+    }
+    if (action.action === "delete") {
+      code = code.slice(0, -1);
+      await authStateRequest(env, callback.from.id, "set", { ...state, code });
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 کد ورود را وارد کن\n\n" + maskLoginCode(code), reply_markup: buildLoginCodeKeyboard() });
+      return;
+    }
+    if (action.action === "submit") {
+      if (!/^\\d{4,8}$/.test(code)) {
+        await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id, text: "کد باید بین ۴ تا ۸ رقم باشد.", show_alert: true });
+        return;
+      }
+      const result = await coreRequest(env, "POST", "/v1/accounts/" + callback.from.id + "/connect/code", { code });
+      if (result.status >= 200 && result.status < 300 && result.data?.status === "password_required") {
+        await authStateRequest(env, callback.from.id, "set", { stage: "password", expiresAt: Date.now() + 300000 });
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "🔐 حساب شما رمز دومرحله‌ای دارد.\n\nرمز را در پیام بعدی بفرست. پیام ورودی بلافاصله برای حذف اقدام می‌شود.", reply_markup: BACK_MENU });
+        return;
+      }
+      if (result.status >= 200 && result.status < 300 && isSavedAccountStatus(result.data?.status)) {
+        await authStateRequest(env, callback.from.id, "delete");
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست تلگرام ذخیره شد؛ اما فعال‌شدن کلاینت نیازمند بررسی Core است.", reply_markup: BACK_MENU });
+        return;
+      }
+      const pendingStatus = await coreRequest(env, "GET", "/v1/accounts/" + callback.from.id + "/connect/status");
+      if (pendingStatus.status === 200 && pendingStatus.data?.status !== "pending") {
+        await authStateRequest(env, callback.from.id, "delete");
+        await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: "⏳ تلاش‌های ورود پایان یافت یا درخواست منقضی شد. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+        return;
+      }
+      const nextCode = result.status === 400 ? "" : code;
+      await authStateRequest(env, callback.from.id, "set", { ...state, code: nextCode });
+      await telegramApi(env, "editMessageText", { chat_id: chat.id, message_id: callback.message.message_id, text: result.status === 400 ? "❌ کد اشتباه است. دوباره وارد کن.\n\n" + maskLoginCode("") : "⚠️ ارتباط با Core برقرار نشد؛ دوباره تلاش کن.", reply_markup: buildLoginCodeKeyboard() });
+      return;
+    }
+  }
   // Acknowledge before Core/Durable Object work so Telegram does not time out long monitoring callbacks.
   try { await telegramApi(env, "answerCallbackQuery", { callback_query_id: callback.id }); } catch {}
   try { await registryRequest(env, '/activity/record', { telegramUserId: callback.from.id, action: callback.data || 'message', firstName: callback.from.first_name, username: callback.from.username }); } catch {}
@@ -1101,11 +1230,8 @@ async function handleCallback(callback, env) {
     }
   }
   if (callback.data === 'account:connect') {
-    const link=await createConnectionLink(env,callback.from.id);
-    result = {
-      text: '🟢 بزن بریم حسابت رو وصل کنیم! لینک امن مخصوص خودت آماده شد؛ تا ۵ دقیقه اعتبار داره.',
-      keyboard: { inline_keyboard: [[{ text: '🌸 اتصال امن حساب', url: link }], [{ text: 'منوی اصلی', callback_data: 'menu:main' }]] },
-    };
+    await authStateRequest(env, callback.from.id, "set", { stage: "phone", expiresAt: Date.now() + 300000 });
+    result = { text: "🌸 اتصال حساب تلگرام\\n\\nشماره تلفنت رو با پیش‌شماره کشور بفرست.\\nنمونه: +98912…\\n\\n⏳ این درخواست ۵ دقیقه اعتبار داره.", keyboard: BACK_MENU };
   }
   if (result.alert) {
     // The callback was already acknowledged; the message itself carries the validation notice.
@@ -1333,6 +1459,63 @@ async function handleWebhook(request, env) {
     const role = resolveRole(message.from.id, env.OWNER_TELEGRAM_ID, actor?.role, actor?.status);
     if (role === 'BLOCKED' || role === 'DENIED') {
       await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⛔ ابتدا باید دسترسی شما توسط Owner فعال شود." });
+      return new Response("OK", { status: 200 });
+    }
+    const authSnapshot = await authStateRequest(env, message.from.id, "get");
+    const authState = authSnapshot.state;
+    if (authState && authState.expiresAt <= Date.now()) await authStateRequest(env, message.from.id, "delete");
+    else if (authState?.stage === "phone") {
+      if (command === "/cancel") {
+        await authStateRequest(env, message.from.id, "delete");
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+        return new Response("OK", { status: 200 });
+      }
+      try {
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        if (!validatePhoneNumber(message.text)) throw new Error("invalid_phone");
+        const status = await beginTelegramLogin(env, message.from.id, message.text);
+        if (status === "connected") {
+          await authStateRequest(env, message.from.id, "delete");
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "✅ حساب تلگرام شما از قبل مجاز بود و اتصال برقرار شد.", reply_markup: BACK_MENU });
+        } else if (status === "reauthorization_required") {
+          await authStateRequest(env, message.from.id, "delete");
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ برای این حساب نشست قبلی وجود دارد اما تلگرام ورود مجدد می‌خواهد. ابتدا نشست قبلی را لغو کن و دوباره اتصال را شروع کن.", reply_markup: BACK_MENU });
+        } else {
+          await authStateRequest(env, message.from.id, "set", { stage: "code", code: "", expiresAt: Date.now() + 300000 });
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "🔐 کد ورود را با صفحه‌کلید زیر وارد کن.\\n\\n" + maskLoginCode(""), reply_markup: buildLoginCodeKeyboard() });
+        }
+      } catch (error) {
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: error.message === "invalid_phone" ? "شماره معتبر نیست. با فرمت بین‌المللی مثل +98912… بفرست." : "❌ درخواست کد انجام نشد. دوباره تلاش کن.", reply_markup: BACK_MENU });
+      }
+      return new Response("OK", { status: 200 });
+    } else if (authState?.stage === "password") {
+      if (command === "/cancel") {
+        await authStateRequest(env, message.from.id, "delete");
+        await coreRequest(env, "POST", "/v1/accounts/" + message.from.id + "/connect/cancel");
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "ورود لغو شد.", reply_markup: BACK_MENU });
+        return new Response("OK", { status: 200 });
+      }
+      try {
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        const result = await coreRequest(env, "POST", "/v1/accounts/" + message.from.id + "/connect/password", { password: message.text });
+        if (result.status >= 200 && result.status < 300 && isSavedAccountStatus(result.data?.status)) {
+          await authStateRequest(env, message.from.id, "delete");
+          await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: result.data.status === "connected" ? "✅ حساب تلگرام با موفقیت متصل شد." : "✅ نشست ذخیره شد؛ اتصال کلاینت در تلاش مجدد فعال می‌شود.", reply_markup: BACK_MENU });
+        } else {
+          const pendingStatus = await coreRequest(env, "GET", "/v1/accounts/" + message.from.id + "/connect/status");
+          if (pendingStatus.status === 200 && pendingStatus.data?.status !== "pending") {
+            await authStateRequest(env, message.from.id, "delete");
+            await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⏳ تلاش‌های ورود پایان یافت یا درخواست منقضی شد. دوباره اتصال حساب را شروع کن.", reply_markup: BACK_MENU });
+          } else {
+            await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "❌ رمز دومرحله‌ای تأیید نشد. دوباره تلاش کن یا /cancel را بزن.", reply_markup: BACK_MENU });
+          }
+        }
+      } catch {
+        await telegramApi(env, "deleteMessage", { chat_id: message.chat.id, message_id: message.message_id }).catch(() => {});
+        await telegramApi(env, "sendMessage", { chat_id: message.chat.id, text: "⚠️ اتصال به Core ناموفق بود. دوباره تلاش کن." });
+      }
       return new Response("OK", { status: 200 });
     }
     try { await registryRequest(env, '/activity/record', { telegramUserId: message.from.id, action: command.startsWith('/') ? 'command' : 'message', firstName: message.from.first_name, username: message.from.username }); } catch {}
