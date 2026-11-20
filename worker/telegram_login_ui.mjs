@@ -14,11 +14,11 @@ export function buildLoginCodeKeyboard(code = "") {
   const digitRows = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]];
   const keyboard = digitRows.map((row) => row.map((digit) => ({
     text: digit,
-    callback_data: "auth:digit:" + code + digit,
+    callback_data: code.length < MAX_LOGIN_CODE_LENGTH ? "auth:digit:" + code + digit : "auth:limit",
   })));
   keyboard.push([
     { text: "⌫", callback_data: "auth:delete:" + code },
-    { text: "0", callback_data: "auth:digit:" + code + "0" },
+    { text: "0", callback_data: code.length < MAX_LOGIN_CODE_LENGTH ? "auth:digit:" + code + "0" : "auth:limit" },
     { text: "✅", callback_data: "auth:submit:" + code },
   ]);
   keyboard.push([{ text: "✖️ لغو ورود", callback_data: "auth:cancel" }]);
@@ -32,7 +32,7 @@ export function parseLoginCodeCallback(data) {
   if (!match) return null;
   const [, action, code] = match;
   if (action === "digit" && code.length === 0) return null;
-  if (action === "delete" && code.length === 0) return { action, code: "" };
+  if (action === "delete") return { action, code: code.slice(0, -1) };
   return { action, code };
 }
 
