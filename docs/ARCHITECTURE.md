@@ -107,6 +107,24 @@ The recent Cloudflare error was a Durable Objects Free-tier row-read quota exhau
 
 **Direction:** Move high-volume, queryable records to D1 with indexed, bounded SQL operations and atomic uniqueness constraints. Keep Durable Objects only for state that truly requires per-entity coordination. Avoid a single global DO for unrelated user and nonce traffic.
 
+
+
+### Confirmed hot-path amplification
+
+A source-level audit confirmed that the global DO is not used only for low-volume user administration. The same fixed singleton is also called as a replay-nonce gate before otherwise D1-backed Core endpoints:
+
+- `POST /internal/manual-review`
+- `POST /internal/job-queue`
+- `GET|PUT|DELETE /internal/session-store/{telegram_user_id}`
+- `GET|PUT|DELETE /internal/auth-challenge/{telegram_user_id}`
+- `POST /internal/panel-requests` through `worker/panel_queue.mjs`
+
+The helper `claim-nonce` performs a transactional nonce lookup/insert and a paginated expiry scan (up to 50 keys per call). This means normal authenticated Core traffic can consume Durable Object row reads even when the actual business data is stored in D1. This is a stronger and more actionable explanation for the quota hotspot than merely noting that the user registry shares one object.
+
+**Preferred first migration:** move the Worker-side replay nonce ledger to D1 with a primary-key/unique constraint on the nonce and an indexed expiry timestamp. Keep the replay window short and bounded; cleanup must use indexed expiry batches, not a full-table scan. Preserve the existing HMAC signature validation and 409 replay response. The D1 operation must be atomic so concurrent duplicate requests cannot both pass. Only after tests and a Preview migration should the affected endpoints stop calling the DO replay gate.
+
+Do not remove the old DO nonce path until all endpoints have migrated and the compatibility/rollback period has completed.
+
 ### P0 — Preview is the only provisioned environment
 
 The active Worker and Render service are Preview-oriented. The checked-in main Wrangler config explicitly references the Preview D1 database.
@@ -213,9 +231,15 @@ The README describes the active Telegram-only design. The roadmap document is ex
 - Never scale the Python Core horizontally while its replay guard is process-local.
 - Keep paid infrastructure off unless the user approves the exact cost first.
 
-## 8. Current next actions
+## 8. Verification evidence from this audit
 
-1. Verify Render application logs and current queue behavior (requires the correct Render workspace to be selected).
+- Worker JavaScript tests: `node --test worker/*.test.mjs` — **134 passed, 0 failed**.
+- Python suite: `python3 -m unittest discover -s tests -q` — **not fully verifiable in the current sandbox**. 232 tests were discovered; 18 errored during import/execution because required dependencies are absent, including `httpx` and `telethon`. Do not interpret this as a clean Python suite.
+- Workspace inspection found unrelated uncommitted ProductOS inspector files and `node_modules`; these were not changed or included in this documentation PR.
+
+## 9. Current next actions
+
+1. Verify Render application logs and current queue behavior (requires the user to confirm the Render workspace returned by the connector).
 2. Recheck Worker health after the daily Durable Objects quota reset.
 3. Audit every `ConnectionLinkStore` call site and classify it as D1, Durable Object, or stateless.
 4. Draft the D1 schema/migration for nonce and user-control state, with rollback and backup.
