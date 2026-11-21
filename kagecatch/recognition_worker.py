@@ -43,8 +43,12 @@ class RecognitionWorker:
         if (isinstance(retry_delay, bool) or not isinstance(retry_delay, (int, float))
                 or not math.isfinite(float(retry_delay)) or retry_delay < 0):
             raise ValueError("retry_delay must be a finite non-negative number")
+        if (isinstance(recovery_interval, bool) or not isinstance(recovery_interval, (int, float))
+                or not math.isfinite(float(recovery_interval)) or not 0 < recovery_interval <= 3600):
+            raise ValueError("recovery_interval must be between 0 and 3600 seconds")
         self.queue, self.resolver, self.review_queue = queue, resolver, review_queue
         self.worker_id, self.lease_seconds, self.retry_delay = worker_id, float(lease_seconds), float(retry_delay)
+        self.recovery_interval = float(recovery_interval)
 
     async def run_once(self) -> RecognitionWorkResult:
         job = await self.queue.claim_next(
