@@ -35,7 +35,7 @@ class RecognitionWorkResult:
 
 class RecognitionWorker:
     def __init__(self, *, queue: Queue, resolver, review_queue, worker_id: str,
-                 lease_seconds: float = 60, retry_delay: float = 5) -> None:
+                 lease_seconds: float = 60, retry_delay: float = 5, recovery_interval: float = 60) -> None:
         if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 128:
             raise ValueError("worker_id must contain 1 to 128 characters")
         if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float)) or not math.isfinite(float(lease_seconds)) or not 1 <= lease_seconds <= 3600:
@@ -158,15 +158,19 @@ class RecognitionWorker:
                 return RecognitionWorkResult("lease_lost", job.job_id)
             return RecognitionWorkResult("retry_scheduled", job.job_id)
 
-    async def run_forever(self, *, stop_event: asyncio.Event, idle_sleep: float = 1.0) -> int:
+    async def run_forever(self, *, stop_event: asyncio.Event, idle_sleep: float = 5.0) -> int:
         if not isinstance(stop_event, asyncio.Event):
             raise ValueError("stop_event must be an asyncio.Event")
         if isinstance(idle_sleep, bool) or not isinstance(idle_sleep, (int, float)) or not 0 < idle_sleep <= 60:
             raise ValueError("idle_sleep must be between 0 and 60 seconds")
         processed = 0
+        loop = asyncio.get_running_loop()
+        last_recovery = float("-inf")
         while not stop_event.is_set():
             try:
-                await self.queue.recover_expired()
+                if loop.time() - last_recovery >= self.recovery_interval:
+                    await self.queue.recover_expired()
+                    last_recovery = loop.time()
                 if stop_event.is_set():
                     break
                 result = await self.run_once()
