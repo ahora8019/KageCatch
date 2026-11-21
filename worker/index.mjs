@@ -405,15 +405,16 @@ export class ConnectionLinkStore {
       if (typeof nonce !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 180000) return json({ error: 'invalid_request' }, 400);
       const claimed = await this.state.storage.transaction(async (txn) => {
         const prefix = 'internal-nonce:';
-        const entries = await txn.list({ prefix, limit: 1000 });
-        let cleaned = 0;
+        const cursorKey = 'internal-nonce-cleanup-cursor';
+        const cursor = await txn.get(cursorKey);
+        const entries = await txn.list({ prefix, limit: 50, ...(typeof cursor === 'string' ? { startAfter: cursor } : {}) });
+        let lastKey = null;
         for (const [storedKey, storedExpiry] of entries) {
-          if (storedExpiry <= Date.now()) {
-            await txn.delete(storedKey);
-            cleaned += 1;
-            if (cleaned >= 50) break;
-          }
+          lastKey = storedKey;
+          if (storedExpiry <= Date.now()) await txn.delete(storedKey);
         }
+        if (entries.size === 50 && lastKey) await txn.put(cursorKey, lastKey);
+        else await txn.delete(cursorKey);
         const key = prefix + nonce;
         const existing = await txn.get(key);
         if (existing && existing > Date.now()) return false;

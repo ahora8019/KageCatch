@@ -133,14 +133,21 @@ function createTelegramSafetyDb() {
 }
 
 
-function createDurableObjectState() {
+function createDurableObjectState({ maxListLimit = Infinity } = {}) {
   const values = new Map();
   let tail = Promise.resolve();
   const storage = {
     async get(key) { return values.get(key); },
     async put(key, value) { values.set(key, value); },
     async delete(key) { return values.delete(key); },
-    async list({ prefix = "" } = {}) { return new Map([...values.entries()].filter(([key]) => key.startsWith(prefix))); },
+    async list({ prefix = "", startAfter, limit = Infinity } = {}) {
+      if (limit !== Infinity && limit > maxListLimit) throw new Error("Durable Object list read limit exceeded");
+      const entries = [...values.entries()]
+        .filter(([key]) => key.startsWith(prefix) && (startAfter === undefined || key > startAfter))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .slice(0, limit);
+      return new Map(entries);
+    },
     async transaction(callback) {
       const run = tail.then(() => callback(storage));
       tail = run.catch(() => {});
@@ -1593,4 +1600,27 @@ test("D1 catch admission is authenticated, atomic, deduplicated, and quota bound
   assert.equal(db.rows.size, 3);
   const invalid = await worker.fetch(await makeSignedJobQueueRequest({ action: "admit_catch", user_id: "12345", source: "../bad", dedupe_key: "x", max_attempts: 2, window_seconds: 60 }, secret, "e".repeat(32)), env);
   assert.equal(invalid.status, 400);
+});
+
+test("claim-nonce cleanup bounds each storage scan and paginates expired nonce records", async () => {
+  const { ConnectionLinkStore } = await import("./index.mjs");
+  const state = createDurableObjectState({ maxListLimit: 50 });
+  const store = new ConnectionLinkStore(state);
+  const expiredAt = Date.now() - 1000;
+  for (let index = 0; index < 75; index += 1) {
+    await state.storage.put(`internal-nonce:${String(index).padStart(3, "0")}`, expiredAt);
+  }
+
+  for (let index = 0; index < 2; index += 1) {
+    const response = await store.fetch(new Request("https://do.internal/claim-nonce", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nonce: `new-nonce-id-${String(index).padStart(4, "0")}`, expiresAt: Date.now() + 120000 }),
+    }));
+    assert.equal(response.status, 200);
+  }
+
+  const remainingExpired = [...(await state.storage.list({ prefix: "internal-nonce:" })).entries()]
+    .filter(([key, expiry]) => key.startsWith("internal-nonce:000") || expiry <= Date.now());
+  assert.equal(remainingExpired.length, 0);
 });
