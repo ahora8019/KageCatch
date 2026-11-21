@@ -331,6 +331,34 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue.recovery_calls, 1)
 
 
+    async def test_queue_failures_back_off_for_the_recovery_interval(self):
+        import asyncio
+
+        stop = asyncio.Event()
+
+        class FailingQueue(FakeQueue):
+            def __init__(self):
+                super().__init__(None)
+                self.recovery_calls = 0
+
+            async def recover_expired(self):
+                self.recovery_calls += 1
+                if self.recovery_calls == 1:
+                    raise OSError("storage quota temporarily unavailable")
+                stop.set()
+                return 0
+
+        queue = FailingQueue()
+        worker = RecognitionWorker(
+            queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer", recovery_interval=0.05,
+        )
+        started = asyncio.get_running_loop().time()
+        await worker.run_forever(stop_event=stop, idle_sleep=0.001)
+        elapsed = asyncio.get_running_loop().time() - started
+        self.assertEqual(queue.recovery_calls, 2)
+        self.assertGreaterEqual(elapsed, 0.045)
+
 
 if __name__ == "__main__":
     unittest.main()
