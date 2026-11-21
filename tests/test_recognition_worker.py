@@ -155,7 +155,7 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         queue = RecoveringQueue(stop)
         worker = RecognitionWorker(
             queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(),
-            worker_id="recognizer",
+            worker_id="recognizer", recovery_interval=0.001,
         )
         self.assertEqual(await worker.run_forever(stop_event=stop, idle_sleep=0.001), 0)
         self.assertEqual(queue.calls, 2)
