@@ -186,6 +186,11 @@ class RecognitionWorker:
                 raise
             except Exception:
                 logger.exception("Recognition worker iteration failed")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=self.recovery_interval)
+                except asyncio.TimeoutError:
+                    pass
+                continue
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=float(idle_sleep))
             except asyncio.TimeoutError:
