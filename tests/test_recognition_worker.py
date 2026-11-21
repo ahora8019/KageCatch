@@ -300,6 +300,37 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
                                    review_queue=FakeReviewQueue(), worker_id="recognizer")
         self.assertEqual((await worker.run_once()).status, "idle")
 
+    async def test_recovery_runs_once_per_interval_while_worker_is_idle(self):
+        import asyncio
+
+        stop = asyncio.Event()
+
+        class IdleQueue(FakeQueue):
+            def __init__(self):
+                super().__init__(None)
+                self.recovery_calls = 0
+                self.claim_calls = 0
+
+            async def recover_expired(self):
+                self.recovery_calls += 1
+                return 0
+
+            async def claim_next(self, worker_id, *, lease_seconds=60, job_types=None):
+                self.claim_calls += 1
+                if self.claim_calls >= 3:
+                    stop.set()
+                return None
+
+        queue = IdleQueue()
+        worker = RecognitionWorker(
+            queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer", recovery_interval=60,
+        )
+        await worker.run_forever(stop_event=stop, idle_sleep=0.001)
+        self.assertEqual(queue.claim_calls, 3)
+        self.assertEqual(queue.recovery_calls, 1)
+
+
 
 if __name__ == "__main__":
     unittest.main()
