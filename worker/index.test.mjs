@@ -45,8 +45,8 @@ test("/start uses the minimal KageCatch control-center heading", () => {
   assert.match(start.text, /پنل کنترل \/ CONTROL CENTER/);
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("account:connect"));
+  assert.ok(callbacks.includes("account:open"));
+  assert.equal(start.reply_markup.inline_keyboard.length, 2);
 });
 
 test("/panel opens the compact member menu directly", () => {
