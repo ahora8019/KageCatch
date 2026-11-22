@@ -70,6 +70,31 @@ class D1JobQueueTests(unittest.IsolatedAsyncioTestCase):
             "worker_id": "worker-a", "lease_generation": 7,
         })
 
+    async def test_fenced_transitions_reject_invalid_input_before_network(self):
+        calls = 0
+
+        async def handler(request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json={"status": "ok", "lease_until": 1794140060})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            queue = D1JobQueue(BASE_URL, SECRET, client=client)
+            for args in [
+                ("", "worker-a", 1),
+                ("job-a", "", 1),
+                ("job-a", "worker-a", -1),
+            ]:
+                with self.assertRaises(ValueError):
+                    await queue.complete(*args)
+
+            with self.assertRaises(ValueError):
+                await queue.renew_lease("job-a", "worker-a", lease_generation=True)
+            with self.assertRaises(ValueError):
+                await queue.fail("job-a", "worker-a", lease_generation=1)
+
+        self.assertEqual(calls, 0)
+
     async def test_rejects_insecure_url_and_short_secret(self):
         with self.assertRaises(ValueError):
             D1JobQueue("http://control.example.test", SECRET)
