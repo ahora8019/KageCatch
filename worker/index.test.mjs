@@ -49,11 +49,12 @@ test("/start uses the minimal KageCatch control-center heading", () => {
   assert.ok(callbacks.includes("account:connect"));
 });
 
-test("/panel opens the member feature menu directly as an explicit choice", () => {
+test("/panel opens the compact member menu directly", () => {
   const panel = commandReply("/panel");
   const callbacks = panel.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("account:connect"));
-  assert.ok(callbacks.includes("account:list"));
+  assert.ok(callbacks.includes("account:open"));
+  assert.ok(callbacks.includes("catch:open"));
+  assert.equal(panel.reply_markup.inline_keyboard.length, 2);
 });
 
 test("owner menu is compact and does not duplicate member controls", () => {
@@ -206,10 +207,10 @@ test("blocked users cannot enter even if their stored role says MEMBER", () => {
   assert.equal(resolveRole(1002, "1001", "MEMBER", "blocked"), "BLOCKED");
 });
 
-test("member menu contains only personal account and catch features", () => {
+test("member menu exposes only personal controls and keeps account actions in its submenu", () => {
   const callbacks = buildRoleMenu("MEMBER").inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
-  assert.ok(callbacks.includes("account:list"));
-  assert.ok(callbacks.includes("account:connect"));
+  assert.ok(callbacks.includes("account:open"));
+  assert.ok(callbacks.includes("catch:open"));
   assert.ok(!callbacks.includes("owner:members"));
   assert.ok(!callbacks.includes("owner:settings"));
   assert.ok(!callbacks.includes("owner:broadcast"));
@@ -472,14 +473,14 @@ test("health distinguishes a reachable but unconfigured Python Core from an unre
 
 
 
-test("Telegram member menu exposes native Catch, bot target, and settings controls", () => {
+test("Telegram member menu exposes compact Catch and settings controls with no Mini App", () => {
   const menu = buildRoleMenu("MEMBER");
   const buttons = menu.inline_keyboard.flat();
   const callbacks = buttons.map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
   assert.ok(callbacks.includes("settings:open"));
   assert.equal(buttons.some((button) => button.web_app), false);
+  assert.ok(resolveCallback("catch:open").keyboard.inline_keyboard.flat().some((button) => button.callback_data === "bots:open"));
 });
 
 test("Telegram bot menus explain Catch and target bot readiness without claiming live execution", () => {
@@ -497,12 +498,12 @@ test("settings callback is reachable and clearly separates unavailable controls"
   assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
 });
 
-test("/start opens the native role menu directly instead of a redundant landing menu", () => {
+test("/start opens the compact native role menu directly", () => {
   const start = commandReply("/start");
   const callbacks = start.reply_markup.inline_keyboard.flat().map((button) => button.callback_data).filter(Boolean);
   assert.ok(callbacks.includes("catch:open"));
-  assert.ok(callbacks.includes("bots:open"));
-  assert.ok(callbacks.includes("account:connect"));
+  assert.ok(callbacks.includes("account:open"));
+  assert.equal(start.reply_markup.inline_keyboard.length, 2);
 });
 
 
