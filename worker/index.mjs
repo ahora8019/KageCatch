@@ -170,22 +170,16 @@ export async function telegramApi(env, method, payload = {}) {
 }
 
 export function buildRoleMenu(role = "MEMBER") {
-  const memberRows = [
-    [{ text: "🎯 کنترل Catch", callback_data: "catch:open" }, { text: "🤖 بات‌های مقصد", callback_data: "bots:open" }],
-    [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }, { text: "👤 حساب متصل من", callback_data: "account:list" }],
-    [{ text: "📊 آمار من", callback_data: "stats:open" }, { text: "⚙️ تنظیمات", callback_data: "settings:open" }],
-    [{ text: "🔒 امنیت حساب", callback_data: "security:open" }, { text: "❌ قطع اتصال", callback_data: "account:disconnect" }],
-    [{ text: "❓ راهنما", callback_data: "help:open" }],
-  ];
   if (role === "OWNER") return { inline_keyboard: [
-    [{ text: "📊 نمای کلی", callback_data: "owner:stats" }, { text: "👁️ نظارت کاربران", callback_data: "owner:monitor" }],
-    [{ text: "👥 مدیریت اعضا", callback_data: "owner:members" }],
-    [{ text: "🎟️ مدیریت دعوت‌ها", callback_data: "owner:invites" }, { text: "⚙️ تنظیمات", callback_data: "owner:settings" }],
-    [{ text: "🛡️ وضعیت ایمنی بات", callback_data: "owner:safety" }],
+    [{ text: "📊 نمای کلی", callback_data: "owner:stats" }, { text: "👁️ نظارت", callback_data: "owner:monitor" }],
+    [{ text: "👥 اعضا", callback_data: "owner:members" }, { text: "🎟️ دعوت‌ها", callback_data: "owner:invites" }],
+    [{ text: "⚙️ تنظیمات", callback_data: "owner:settings" }, { text: "🛡️ ایمنی بات", callback_data: "owner:safety" }],
     [{ text: "📣 پیام همگانی", callback_data: "owner:broadcast" }, { text: "🛑 توقف اضطراری", callback_data: "owner:emergency" }],
-    ...memberRows,
   ] };
-  return { inline_keyboard: memberRows };
+  return { inline_keyboard: [
+    [{ text: "🎯 کنترل Catch", callback_data: "catch:open" }, { text: "👤 حساب من", callback_data: "account:open" }],
+    [{ text: "📊 آمار من", callback_data: "stats:open" }, { text: "⚙️ تنظیمات", callback_data: "settings:open" }],
+  ] };
 }
 
 export function buildMainMenu() { return buildRoleMenu("MEMBER"); }
@@ -204,6 +198,15 @@ const BACK_MENU = { inline_keyboard: [[{ text: "⬅️ منوی اصلی", callb
 
 export function resolveCallback(data) {
   switch (data) {
+    case "account:open":
+      return {
+        text: "👤 حساب من\n\nاتصال، نشست‌ها و امنیت حساب تلگرام.",
+        keyboard: { inline_keyboard: [
+          [{ text: "🟢 اتصال حساب", callback_data: "account:connect" }, { text: "📋 حساب متصل", callback_data: "account:list" }],
+          [{ text: "🔒 امنیت", callback_data: "security:open" }, { text: "❌ قطع اتصال", callback_data: "account:disconnect" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
+      };
     case "account:connect":
       return {
         text: "🟢 اتصال حساب تلگرام\n\nشماره تلفنت رو با پیش‌شماره کشور بفرست؛ کد ورود رو با صفحه‌کلید داخل همین بات وارد می‌کنی.",
@@ -223,8 +226,11 @@ export function resolveCallback(data) {
       };
     case "settings:open":
       return {
-        text: "⚙️ تنظیمات\n\nبعضی تنظیمات هنوز آماده نیستن. به‌محض اینکه بخش مربوطه کامل بشه، از همین‌جا می‌تونی تغییرشون بدی.",
-        keyboard: BACK_MENU,
+        text: "⚙️ تنظیمات\n\nبعضی تنظیمات هنوز آماده نیستن؛ بعد از اتصال کامل هسته فعال می‌شن.",
+        keyboard: { inline_keyboard: [
+          [{ text: "❓ راهنما", callback_data: "help:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
       };
     case "stats:open":
       return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: BACK_MENU };
@@ -241,7 +247,7 @@ export function resolveCallback(data) {
         keyboard: BACK_MENU,
       };
     case "menu:main":
-      return { text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز منو هرچی لازم داری انتخاب کن:", keyboard: buildStartMenu() };
+      return { text: "🌸 ━━━ KAGECATCH ━━━\nپنل کنترل / CONTROL CENTER\n\nبخش موردنظر را انتخاب کن:", keyboard: buildStartMenu() };
     default:
       return { text: "این گزینه معتبر نیست. منوی اصلی را دوباره باز کن.", keyboard: BACK_MENU, alert: true };
   }
@@ -251,13 +257,13 @@ export function commandReply(text) {
   const command = (text || "").trim().split(/\s+/, 1)[0].split("@", 1)[0].toLowerCase();
   if (command === "/start") {
     return {
-      text: "🌸 سلام! خوش اومدی به KageCatch 😎\n\nاز این منو می‌تونی Catch، بات‌ها و حسابت رو مدیریت کنی:",
+      text: "🌸 ━━━ KAGECATCH ━━━\nپنل کنترل / CONTROL CENTER\n\nبخش موردنظر را انتخاب کن:",
       reply_markup: buildStartMenu(),
     };
   }
   if (command === "/panel") {
     return {
-      text: "🧩 اینم منوی KageCatch!\n\nبگو کدوم بخش رو می‌خوای:",
+      text: "🌸 ━━━ KAGECATCH ━━━\nپنل کنترل / CONTROL CENTER\n\nبخش موردنظر را انتخاب کن:",
       reply_markup: buildMainMenu(),
     };
   }

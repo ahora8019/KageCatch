@@ -118,6 +118,10 @@ test("scheduler claims a queued request once and stores the delivered panel mess
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, "sendMessage");
   assert.equal(calls[0].payload.chat_id, -100123456);
+  assert.match(calls[0].payload.text, /🌸 ━━━ KAGECATCH ━━━/);
+  assert.match(calls[0].payload.text, /پنل کنترل \/ CONTROL CENTER/);
+  assert.equal(calls[0].payload.reply_markup.inline_keyboard.length, 2);
+  assert.ok(calls[0].payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data.endsWith(":close")));
   assert.equal(env.db.rows.get(requestId).status, "completed");
   assert.equal(env.db.rows.get(requestId).panel_message_id, 444);
   assert.match(calls[0].payload.reply_markup.inline_keyboard[0][0].callback_data, /^kp:[a-f0-9]{32}:stats$/);
@@ -143,7 +147,7 @@ test("panel callback is bound to owner, exact group and exact message", async ()
   assert.match(calls[0].payload.text, /دسترسی/);
   calls.length = 0;
   assert.equal(await handlePanelCallback(callback(12345, -100123456, 444), env, telegram), true);
-  assert.match(calls.at(-1).payload.text, /موتور اجرایی: آماده نیست/);
+  assert.match(calls.at(-1).payload.text, /اجرا: ⚪ آماده نیست/);
 });
 
 test("panel callback payload is short, strict and rejects modified data", () => {
@@ -250,8 +254,8 @@ test("stats callback edits the group panel with live persisted queue counts", as
   assert.equal(calls.filter((call) => call.method === "answerCallbackQuery").length, 1);
   const edit = calls.find((call) => call.method === "editMessageText");
   assert.ok(edit, "stats should update the visible panel message");
-  assert.match(edit.payload.text, /درخواست‌های ثبت‌شده: 1/);
-  assert.match(edit.payload.text, /تکمیل‌شده: 1/);
+  assert.match(edit.payload.text, /ثبت‌شده: 1/);
+  assert.match(edit.payload.text, /تکمیل: 1/);
 });
 
 
@@ -275,8 +279,8 @@ test("engine panel reads real Core state and renders explicit enable/disable con
     data: "kp:" + requestId + ":engine",
   }, env, async (_env, method, payload) => calls.push({ method, payload }));
   const edit = calls.find((call) => call.method === "editMessageText");
-  assert.match(edit.payload.text, /وضعیت حالت: ⚪ خاموش/);
-  assert.match(edit.payload.text, /موتور اجرایی: آماده نیست/);
+  assert.match(edit.payload.text, /حالت: ⚪ خاموش/);
+  assert.match(edit.payload.text, /اجرا: ⚪ آماده نیست/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_on");
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][1].callback_data, "kp:" + requestId + ":engine");
 });
@@ -328,6 +332,6 @@ test("engine enable callback sends an authenticated Core state change and refres
   const signedHeaders = new Headers(captured.init.headers);
   assert.match(signedHeaders.get("X-KageCatch-Signature"), /^[a-f0-9]{64}$/);
   assert.match(signedHeaders.get("X-KageCatch-Nonce"), /^[a-f0-9]{32}$/);
-  assert.match(edit.payload.text, /وضعیت حالت: 🟢 روشن/);
+  assert.match(edit.payload.text, /حالت: 🟢 روشن/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_off");
 });
