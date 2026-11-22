@@ -255,7 +255,7 @@ test("stats callback edits the group panel with live persisted queue counts", as
   const edit = calls.find((call) => call.method === "editMessageText");
   assert.ok(edit, "stats should update the visible panel message");
   assert.match(edit.payload.text, /ثبت‌شده: 1/);
-  assert.match(edit.payload.text, /تکمیل‌شده: 1/);
+  assert.match(edit.payload.text, /تکمیل: 1/);
 });
 
 
@@ -280,7 +280,7 @@ test("engine panel reads real Core state and renders explicit enable/disable con
   }, env, async (_env, method, payload) => calls.push({ method, payload }));
   const edit = calls.find((call) => call.method === "editMessageText");
   assert.match(edit.payload.text, /حالت: ⚪ خاموش/);
-  assert.match(edit.payload.text, /موتور اجرایی: آماده نیست/);
+  assert.match(edit.payload.text, /اجرا: ⚪ آماده نیست/);
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][0].callback_data, "kp:" + requestId + ":engine_on");
   assert.equal(edit.payload.reply_markup.inline_keyboard[0][1].callback_data, "kp:" + requestId + ":engine");
 });
