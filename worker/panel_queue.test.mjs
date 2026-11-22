@@ -118,6 +118,10 @@ test("scheduler claims a queued request once and stores the delivered panel mess
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, "sendMessage");
   assert.equal(calls[0].payload.chat_id, -100123456);
+  assert.match(calls[0].payload.text, /🌸 ━━━ KAGECATCH ━━━/);
+  assert.match(calls[0].payload.text, /پنل کنترل \/ CONTROL CENTER/);
+  assert.equal(calls[0].payload.reply_markup.inline_keyboard.length, 2);
+  assert.ok(calls[0].payload.reply_markup.inline_keyboard.flat().some((button) => button.callback_data.endsWith(":close")));
   assert.equal(env.db.rows.get(requestId).status, "completed");
   assert.equal(env.db.rows.get(requestId).panel_message_id, 444);
   assert.match(calls[0].payload.reply_markup.inline_keyboard[0][0].callback_data, /^kp:[a-f0-9]{32}:stats$/);
