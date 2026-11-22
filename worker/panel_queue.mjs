@@ -117,8 +117,7 @@ export async function processPanelQueue(env, sendTelegram) {
       const callback = (action) => "kp:" + row.request_id + ":" + action;
       const sent = await sendTelegram("sendMessage", {
         chat_id: Number(row.chat_id),
-        text: "🌸 ━━━ <b>KAGECATCH</b> ━━━\n<b>پنل کنترل / CONTROL CENTER</b>\n\nوضعیت پنل: 🟢 آماده\nموتور Catch: ⚪ خاموش\nدسترسی: فقط سازنده",
-        parse_mode: "HTML",
+        text: "🌸 ━━━ KAGECATCH ━━━\nپنل کنترل / CONTROL CENTER\n\nوضعیت پنل: 🟢 آماده\nموتور Catch: ⚪ خاموش\nدسترسی: فقط سازنده",
         reply_markup: { inline_keyboard: [
           [{ text: "📊 آمار", callback_data: callback("stats") }, { text: "🎯 موتور Catch", callback_data: callback("engine") }],
           [{ text: "⚙️ تنظیمات", callback_data: callback("settings") }, { text: "🔄 بروزرسانی", callback_data: callback("refresh") }, { text: "✖️ بستن", callback_data: callback("close") }],
