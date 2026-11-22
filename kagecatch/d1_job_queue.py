@@ -1,4 +1,4 @@
-"""Durable D1-backed recognition queue accessed through the signed Control Worker API."""
+""""Durable D1-backed recognition queue accessed through the signed Control Worker API."""
 from __future__ import annotations
 
 import hashlib
@@ -67,21 +67,33 @@ class D1JobQueue:
         await self._transition("dead_letter", job_id, worker_id, lease_generation)
 
     async def _transition(self, action: str, job_id: str, worker_id: str, lease_generation: int) -> None:
-        await self._request({"action":action, "job_id":job_id, "worker_id":worker_id, "lease_generation":lease_generation})
+        self._validate_fenced_transition(job_id, worker_id, lease_generation)
+        await self._request({"action":action, "job_id":job_id, "worker_id":worker_id.strip(), "lease_generation":lease_generation})
 
     async def renew_lease(self, job_id: str, worker_id: str, *, lease_generation: int, lease_seconds: float = 60) -> float:
+        self._validate_fenced_transition(job_id, worker_id, lease_generation)
         if isinstance(lease_seconds,bool) or not isinstance(lease_seconds,(int,float)) or not math.isfinite(float(lease_seconds)) or not 1 <= lease_seconds <= 3600:
             raise ValueError("lease_seconds must be between 1 and 3600")
-        result = await self._request({"action":"renew", "job_id":job_id, "worker_id":worker_id,
+        result = await self._request({"action":"renew", "job_id":job_id, "worker_id":worker_id.strip(),
                                       "lease_generation":lease_generation, "lease_seconds":lease_seconds})
         return float(result["lease_until"])
 
     async def fail(self, job_id: str, worker_id: str, *, lease_generation: int, retry_delay: float = 0) -> str:
+        self._validate_fenced_transition(job_id, worker_id, lease_generation)
         if isinstance(retry_delay,bool) or not isinstance(retry_delay,(int,float)) or not math.isfinite(float(retry_delay)) or retry_delay < 0:
             raise ValueError("retry_delay must be a finite non-negative number")
-        result = await self._request({"action":"fail", "job_id":job_id, "worker_id":worker_id,
+        result = await self._request({"action":"fail", "job_id":job_id, "worker_id":worker_id.strip(),
                                       "lease_generation":lease_generation, "retry_delay":retry_delay})
         return result["status"]
+
+    @staticmethod
+    def _validate_fenced_transition(job_id: str, worker_id: str, lease_generation: int) -> None:
+        if not isinstance(job_id, str) or not job_id.strip() or len(job_id) > 128:
+            raise ValueError("job_id must contain 1 to 128 characters")
+        if not isinstance(worker_id, str) or not worker_id.strip() or len(worker_id) > 128:
+            raise ValueError("worker_id must contain 1 to 128 characters")
+        if isinstance(lease_generation, bool) or not isinstance(lease_generation, int) or lease_generation < 0:
+            raise ValueError("lease_generation must be a non-negative integer")
 
     async def recover_expired(self) -> int:
         return int((await self._request({"action":"recover_expired"}))["recovered"])
@@ -102,7 +114,7 @@ class D1JobQueue:
         nonce = nonce_value.hex if hasattr(nonce_value,"hex") else str(nonce_value)
         nonce = nonce.replace("-","")
         if not re.fullmatch(r"[A-Za-z0-9_]{16,128}", nonce): raise ValueError("nonce factory returned an invalid nonce")
-        text = f"{timestamp}\n{nonce}\nPOST\n{self.PATH}\n{hashlib.sha256(body).hexdigest()}"
+        text = f"{timestamp}\\n{nonce}\\nPOST\\n{self.PATH}\\n{hashlib.sha256(body).hexdigest()}"
         signature = hmac.new(self._secret,text.encode(),hashlib.sha256).hexdigest()
         response = await self._client.post(self._base_url+self.PATH, content=body, headers={
             "content-type":"application/json", "X-KageCatch-Timestamp":timestamp,
