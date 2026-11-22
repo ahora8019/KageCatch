@@ -226,8 +226,11 @@ export function resolveCallback(data) {
       };
     case "settings:open":
       return {
-        text: "⚙️ تنظیمات\n\nبعضی تنظیمات هنوز آماده نیستن. به‌محض اینکه بخش مربوطه کامل بشه، از همین‌جا می‌تونی تغییرشون بدی.",
-        keyboard: BACK_MENU,
+        text: "⚙️ تنظیمات\n\nبعضی تنظیمات هنوز آماده نیستن؛ بعد از اتصال کامل هسته فعال می‌شن.",
+        keyboard: { inline_keyboard: [
+          [{ text: "❓ راهنما", callback_data: "help:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
       };
     case "stats:open":
       return { text: "📊 آمار تو\n\nهنوز آماری نداریم؛ وقتی Catch راه بیفته، نتیجه‌ها همین‌جا نمایش داده می‌شن.", keyboard: BACK_MENU };
