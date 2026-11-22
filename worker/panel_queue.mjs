@@ -117,12 +117,11 @@ export async function processPanelQueue(env, sendTelegram) {
       const callback = (action) => "kp:" + row.request_id + ":" + action;
       const sent = await sendTelegram("sendMessage", {
         chat_id: Number(row.chat_id),
-        text: "🌸 <b>KageCatch — پنل گروه</b>\n━━━━━━━━━━━━━━\nوضعیت: آماده\nموتور Catch: خاموش\n\nاین پنل فقط برای سازنده قابل کنترل است.",
+        text: "🌸 ━━━ <b>KAGECATCH</b> ━━━\n<b>پنل کنترل / CONTROL CENTER</b>\n\nوضعیت پنل: 🟢 آماده\nموتور Catch: ⚪ خاموش\nدسترسی: فقط سازنده",
         parse_mode: "HTML",
         reply_markup: { inline_keyboard: [
           [{ text: "📊 آمار", callback_data: callback("stats") }, { text: "🎯 موتور Catch", callback_data: callback("engine") }],
-          [{ text: "⚙️ تنظیمات", callback_data: callback("settings") }, { text: "🔄 بروزرسانی", callback_data: callback("refresh") }],
-          [{ text: "✖️ بستن پنل", callback_data: callback("close") }],
+          [{ text: "⚙️ تنظیمات", callback_data: callback("settings") }, { text: "🔄 بروزرسانی", callback_data: callback("refresh") }, { text: "✖️ بستن", callback_data: callback("close") }],
         ] },
       });
       const messageId = sent?.message_id;
@@ -185,13 +184,13 @@ function engineKeyboard(requestId, enabled) {
 
 function engineText(state) {
   return [
-    "🎯 کنترل موتور Catch",
-    "━━━━━━━━━━━━━━",
-    "وضعیت حالت: " + (state.enabled ? "🟢 روشن" : "⚪ خاموش"),
-    "موتور اجرایی: " + (state.execution_ready ? "آماده" : "آماده نیست"),
+    "🎯 موتور Catch",
+    "",
+    "حالت: " + (state.enabled ? "🟢 روشن" : "⚪ خاموش"),
+    "اجرا: " + (state.execution_ready ? "🟢 آماده" : "⚪ آماده نیست"),
     state.execution_ready
-      ? "پردازش رویدادها به خط لولهٔ بررسی متصل است."
-      : "تغییر حالت ثبت می‌شود، اما تشخیص و اجرای خودکار تا اتصال کامل موتور فعال نیست.",
+      ? "خط لولهٔ بررسی متصل است."
+      : "تا اتصال کامل، اجرای خودکار غیرفعال است.",
   ].join("\n");
 }
 
@@ -279,25 +278,21 @@ export async function handlePanelCallback(callback, env, telegramApi) {
       const stats = await readPanelQueueStats(env.KAGECATCH_DB);
       const total = Object.values(stats).reduce((sum, value) => sum + value, 0);
       text = [
-        "📊 آمار زندهٔ پنل KageCatch",
-        "━━━━━━━━━━━━━━",
-        `درخواست‌های ثبت‌شده: ${total}`,
-        `⏳ در انتظار: ${stats.pending}`,
-        `⚙️ در حال پردازش: ${stats.processing}`,
-        `✅ تکمیل‌شده: ${stats.completed}`,
-        `❌ ناموفق: ${stats.failed}`,
-        `⌛ منقضی: ${stats.expired}`,
-        `🔒 بسته‌شده: ${stats.closed}`,
+        "📊 آمار پنل",
+        `ثبت‌شده: ${total}`,
+        `⏳ انتظار: ${stats.pending}  ·  ⚙️ پردازش: ${stats.processing}`,
+        `✅ تکمیل: ${stats.completed}  ·  ❌ ناموفق: ${stats.failed}`,
+        `⌛ منقضی: ${stats.expired}  ·  🔒 بسته: ${stats.closed}`,
       ].join("\n");
     } catch {
       text = "⚠️ دریافت آمار از پایگاه داده ممکن نشد؛ دوباره بروزرسانی کن.";
     }
   } else if (parsed.action === "engine") {
-    text = "🎯 موتور Catch\n━━━━━━━━━━━━━━\nوضعیت: خاموش\nارسال زنده فرمان فعال نیست؛ موتور تشخیص و کنترل هنوز متصل نشده و این دکمه موتور را روشن نمی‌کند.";
+    text = "🎯 موتور Catch\n\nوضعیت: ⚪ خاموش\nاجرای زنده تا اتصال و تأیید کامل غیرفعال است.";
   } else if (parsed.action === "settings") {
-    text = "⚙️ تنظیمات پنل\n━━━━━━━━━━━━━━\nتنظیمات عملیاتی هنوز به ذخیره‌ساز متصل نشده‌اند. هیچ تغییری اعمال نشده است.";
+    text = "⚙️ تنظیمات\n\nتنظیمات عملیاتی هنوز متصل نیستند؛ تغییری اعمال نشده است.";
   } else {
-    text = "🌸 پنل KageCatch بروزرسانی شد.\nوضعیت موتور Catch: خاموش";
+    text = "🌸 KAGECATCH\nپنل به‌روزرسانی شد.\nموتور Catch: ⚪ خاموش";
   }
   await telegramApi(env, "editMessageText", {
     chat_id: chatId, message_id: messageId, text,
