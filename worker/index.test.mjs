@@ -492,10 +492,11 @@ test("Telegram bot menus explain Catch and target bot readiness without claiming
   assert.match(bots.text, /هنوز تست واقعی نگرفتیم/);
 });
 
-test("settings callback is reachable and clearly separates unavailable controls", () => {
+test("settings callback is concise and keeps help reachable", () => {
   const settings = resolveCallback("settings:open");
   assert.match(settings.text, /⚙️ تنظیمات/);
   assert.match(settings.text, /بعضی تنظیمات هنوز آماده نیستن/);
+  assert.ok(settings.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "help:open"));
 });
 
 test("/start opens the compact native role menu directly", () => {
