@@ -127,12 +127,18 @@ class PersistentManualReviewQueue:
             expires_at = expires_at.astimezone(timezone.utc)
             if expires_at <= created_at:
                 raise ValueError("expires_at must be after created_at")
+            spawn_id = record["spawn_id"]
+            if isinstance(spawn_id, bool) or not isinstance(spawn_id, int) or not 0 <= spawn_id <= (2**53 - 1):
+                raise ValueError("spawn_id must be a non-negative safe integer")
+            candidates = record["candidates"]
+            if isinstance(candidates, (str, bytes)) or not isinstance(candidates, (list, tuple)):
+                raise ValueError("candidates must be a list or tuple")
             return ReviewItem(
                 review_id=record["review_id"],
                 user_id=record["user_id"],
-                spawn_id=int(record["spawn_id"]),
+                spawn_id=spawn_id,
                 anime_name=record["anime_name"],
-                candidates=tuple(record["candidates"]),
+                candidates=tuple(candidates),
                 created_at=created_at,
                 expires_at=expires_at,
                 status=ReviewStatus(record["status"]),
