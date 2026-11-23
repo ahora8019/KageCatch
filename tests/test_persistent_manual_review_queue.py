@@ -169,6 +169,23 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
             await queue.enqueue(user_id="12345", spawn_id=1, anime_name="KonoSuba", candidates=tuple(f"C{i}" for i in range(31)))
         self.assertEqual(store.records, {})
 
+    async def test_rejects_malformed_persisted_spawn_id_and_candidates(self):
+        base = {
+            "review_id": "review-1",
+            "user_id": "12345",
+            "spawn_id": 90,
+            "anime_name": "KonoSuba",
+            "candidates": ["Megumin"],
+            "created_at": "2026-11-08T12:00:00+00:00",
+            "expires_at": "2026-11-08T12:15:00+00:00",
+            "status": "pending",
+            "selected_character": None,
+        }
+        for field, value in (("spawn_id", "90"), ("spawn_id", True), ("candidates", "Megumin")):
+            record = {**base, field: value}
+            with self.assertRaises(RuntimeError):
+                PersistentManualReviewQueue._deserialize(record)
+
     async def test_expiry_delegates_to_durable_store(self):
         class ExpiringStore(FakeDurableStore):
             async def expire(self):
