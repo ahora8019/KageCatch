@@ -216,10 +216,10 @@ export function resolveCallback(data) {
       return { text: "👤 حساب‌های متصل\n\nبرای اضافه کردن حساب، از گزینهٔ «اتصال حساب» استفاده کن.", keyboard: BACK_MENU };
     case "catch:open":
       return {
-        text: "🌸 KAGECATCH / CATCH CENTER\n━━━━━━━━━━━━━━━━━━\n🎯 وضعیت موتور شکار\n🔴 اجرای خودکار: خاموش\n🟡 تشخیص Spawn: محدود\n🟡 تشخیص هویت کاراکتر: تکمیل نشده\n🟢 سهمیه و ضدتکرار: پیاده‌سازی شده\n🟡 بازبینی انسانی: مسیر پایه موجود\n🔒 ارسال فرمان: قفل\n━━━━━━━━━━━━━━━━━━\nموتور Catch ساخته شده، اما تا تکمیل تشخیص کاراکتر و تأیید پاسخ مقصد، هیچ فرمانی ارسال نمی‌شود.",
+        text: "🌸 KAGECATCH / CATCH CENTER\n━━━━━━━━━━━━━━━━━━\n🎯 وضعیت موتور شکار\n🔴 اجرای خودکار: خاموش\n🟡 تشخیص Spawn: محدود\n🟡 تشخیص هویت کاراکتر: تکمیل نشده\n🟢 سهمیه و ضدتکرار: پیاده‌سازی شده\n🟡 بازبینی انسانی: مسیر پایه موجود\n🔒 ارسال فرمان: قفل\n━━━━━━━━━━━━━━━━━━\nهنوز آمادهٔ شکار واقعی نیستیم؛ موتور Catch ساخته شده، اما تا تکمیل تشخیص کاراکتر و تأیید پاسخ مقصد، هیچ فرمانی ارسال نمی‌شود.",
         keyboard: { inline_keyboard: [
           [{ text: "🧠 وضعیت موتور", callback_data: "catch:engine" }],
-          [{ text: "🤖 مقصدهای Catch", callback_data: "catch:targets" }],
+          [{ text: "🤖 مقصدهای Catch", callback_data: "catch:targets" }, { text: "📋 فهرست بات‌ها", callback_data: "bots:open" }],
           [{ text: "⚙️ تنظیمات", callback_data: "settings:open" }],
           ...BACK_MENU.inline_keyboard,
         ] },
