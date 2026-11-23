@@ -1651,8 +1651,8 @@ test("Catch control center explains the real disabled engine state and exposes r
 
 test("Catch engine status is transparent about recognition and dispatch gates", () => {
   const status = resolveCallback("catch:engine");
-  assert.match(status.text, /سهمیه و ضدتکرار: پیاده‌سازی شده/);
-  assert.match(status.text, /ارسال فرمان: قفل/);
+  assert.match(status.text, /سهمیه و ضدتکرار اتمیک: پیاده‌سازی شده/);
+  assert.match(status.text, /ارسال فرمان: قفل و غیرفعال/);
   assert.match(status.text, /رسید و پاسخ مقصد: نیازمند تأیید/);
   assert.equal(status.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "catch:enable"), false);
 });
