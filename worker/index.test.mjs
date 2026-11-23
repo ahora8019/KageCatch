@@ -847,12 +847,12 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
     FETCH: async (url, init) => { calls.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 }); } };
   const response = await worker.fetch(new Request("https://kagecatch-control.ahora-project.workers.dev/webhook", {
     method: "POST", headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "hook-secret" },
-    body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001 }, text: "/start inv_" + invite.token } }),
+    body: JSON.stringify({ update_id: 400001, message: { chat: { id: 400001, type: "private" }, from: { id: 400001, first_name: "アフラ" }, text: "/start inv_" + invite.token } }),
   }), env);
   assert.equal(response.status, 200);
   assert.equal(calls.length, 1, "invite redemption must send one dashboard message only");
   assert.match(calls[0].text, /KAGECATCH \| داشبورد/);
-  assert.match(calls[0].text, /👤 کاربر: کاربر/);
+  assert.match(calls[0].text, /👤 کاربر: アフラ/);
   assert.match(calls[0].text, /هستهٔ کنترل: آنلاین/);
   assert.match(calls[0].text, /هستهٔ پایتون: نامشخص/);
   assert.match(calls[0].text, /نشست: نامشخص/);
