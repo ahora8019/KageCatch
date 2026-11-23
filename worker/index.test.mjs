@@ -1638,3 +1638,28 @@ test("claim-nonce cleanup bounds each storage scan and paginates expired nonce r
     .filter(([key, expiry]) => key.startsWith("internal-nonce:000") || expiry <= Date.now());
   assert.equal(remainingExpired.length, 0);
 });
+
+
+test("Catch control center explains the real disabled engine state and exposes readiness sections", () => {
+  const panel = resolveCallback("catch:open");
+  const callbacks = panel.keyboard.inline_keyboard.flat().map((button) => button.callback_data);
+  assert.ok(callbacks.includes("catch:engine"));
+  assert.ok(callbacks.includes("catch:targets"));
+  assert.match(panel.text, /اجرای خودکار: خاموش/);
+  assert.match(panel.text, /تشخیص هویت کاراکتر: تکمیل نشده/);
+});
+
+test("Catch engine status is transparent about recognition and dispatch gates", () => {
+  const status = resolveCallback("catch:engine");
+  assert.match(status.text, /سهمیه و ضدتکرار: پیاده‌سازی شده/);
+  assert.match(status.text, /ارسال فرمان: قفل/);
+  assert.match(status.text, /رسید مقصد: نیازمند تأیید/);
+  assert.equal(status.keyboard.inline_keyboard.flat().some((button) => button.callback_data === "catch:enable"), false);
+});
+
+test("Catch target list never presents frozen or unimplemented targets as ready", () => {
+  const targets = resolveCallback("catch:targets");
+  assert.match(targets.text, /SenpaiCatcherBot.*غیرفعال/);
+  assert.match(targets.text, /HentaCatcherBot.*آماده نیست/);
+  assert.match(targets.text, /Character_Catcher_Bot.*آماده نیست/);
+});
