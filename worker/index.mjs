@@ -959,6 +959,30 @@ function logWebhookFailure(stage, updateId, error) {
   }));
 }
 
+async function buildMainDashboard(env, telegramUser, role) {
+  const displayName = String(telegramUser?.first_name || telegramUser?.username || "کاربر").trim().slice(0, 64);
+  let coreStatus = "نامشخص";
+  if (env.CORE_API_URL && env.CORE_API_SECRET) {
+    const health = await coreRequest(env, "GET", "/v1/health");
+    if (health.status >= 200 && health.status < 300) coreStatus = "آنلاین";
+    else if (health.status === 503 || health.status === 502) coreStatus = "در دسترس نیست";
+  }
+  return {
+    text: [
+      "🌸 KAGECATCH | داشبورد",
+      "━━━━━━━━━━━━━━━━━━━━",
+      `👤 کاربر: ${displayName}`,
+      "🟢 هستهٔ کنترل: آنلاین",
+      `⚙️ هستهٔ پایتون: ${coreStatus}`,
+      "🔐 نشست: نامشخص",
+      "🎯 وضعیت شکار: غیرفعال",
+      "━━━━━━━━━━━━━━━━━━━━",
+      "یک گزینه را انتخاب کن:",
+    ].join("\n"),
+    reply_markup: buildRoleMenu(role),
+  };
+}
+
 async function handleWebhook(request, env) {
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
   if (!env.TELEGRAM_WEBHOOK_SECRET) return new Response("Webhook secret missing", { status: 503 });
@@ -1004,7 +1028,7 @@ async function handleWebhook(request, env) {
         if (actor && role !== 'DENIED' && role !== 'BLOCKED') { try { await registryRequest(env, '/activity/record', { telegramUserId: message.from.id, action: command === '/panel' ? 'panel' : 'start', firstName: message.from.first_name, username: message.from.username }); } catch {} }
         const reply = role === 'BLOCKED' || role === 'DENIED'
           ? { text: actor ? "⛔ دسترسی شما به KageCatch فعال نیست. با Owner تماس بگیر." : "🔐 برای ورود به KageCatch به لینک دعوت نیاز داری. از Owner درخواست دعوت کن." }
-          : { text: role === 'OWNER' ? "🌸 خوش آمدی Owner؛ پنل مدیریت آماده‌ست." : "🌸 دعوتت تأیید شد! به KageCatch خوش اومدی 😎", reply_markup: command === "/start" ? buildStartMenu(role) : buildRoleMenu(role) };
+          : await buildMainDashboard(env, message.from, role);
         await telegramApi(env, "sendMessage", { chat_id: message.chat.id, ...reply });
       } catch (error) {
         logWebhookFailure("start", update.update_id, error);
