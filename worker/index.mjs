@@ -216,8 +216,31 @@ export function resolveCallback(data) {
       return { text: "👤 حساب‌های متصل\n\nبرای اضافه کردن حساب، از گزینهٔ «اتصال حساب» استفاده کن.", keyboard: BACK_MENU };
     case "catch:open":
       return {
-        text: "🎯 بخش Catch\n\nهنوز آمادهٔ شکار واقعی نیستیم 😅\nداریم بخش تشخیص و گرفتن کاراکترها رو تکمیل می‌کنیم. تا وقتی همه‌چیز تست نشه، چیزی به‌صورت خودکار اجرا نمی‌شه.",
-        keyboard: { inline_keyboard: [[{ text: "🤖 مشاهده بات‌های مقصد", callback_data: "bots:open" }], [{ text: "⚙️ تنظیمات Catch", callback_data: "settings:open" }], ...BACK_MENU.inline_keyboard] },
+        text: "🌸 KAGECATCH / CATCH CENTER\n━━━━━━━━━━━━━━━━━━\n🎯 وضعیت موتور شکار\n🔴 اجرای خودکار: خاموش\n🟡 تشخیص Spawn: محدود\n🟡 تشخیص هویت کاراکتر: تکمیل نشده\n🟢 سهمیه و ضدتکرار: پیاده‌سازی شده\n🟡 بازبینی انسانی: مسیر پایه موجود\n🔒 ارسال فرمان: قفل\n━━━━━━━━━━━━━━━━━━\nهنوز آمادهٔ شکار واقعی نیستیم؛ موتور Catch ساخته شده، اما تا تکمیل تشخیص کاراکتر و تأیید پاسخ مقصد، هیچ فرمانی ارسال نمی‌شود.",
+        keyboard: { inline_keyboard: [
+          [{ text: "🧠 وضعیت موتور", callback_data: "catch:engine" }],
+          [{ text: "🤖 مقصدهای Catch", callback_data: "catch:targets" }, { text: "📋 فهرست بات‌ها", callback_data: "bots:open" }],
+          [{ text: "⚙️ تنظیمات", callback_data: "settings:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
+      };
+    case "catch:engine":
+      return {
+        text: "🧠 KAGECATCH / ENGINE STATUS\n━━━━━━━━━━━━━━━━━━\n🟢 هسته Catch: پیاده‌سازی شده\n🟢 سهمیه و ضدتکرار اتمیک: پیاده‌سازی شده\n🟡 تشخیص و رتبه‌بندی: ناقص\n🔴 تشخیص قطعی هویت کاراکتر: آماده نیست\n🟡 صف بازبینی: مسیر پایه موجود\n🔴 رسید و پاسخ مقصد: نیازمند تأیید\n🔒 ارسال فرمان: قفل و غیرفعال\n━━━━━━━━━━━━━━━━━━\nبرای فعال‌شدن Catch واقعی باید تشخیص اختصاصی هر مقصد، مجوز کاربر، ذخیره‌سازی پایدار و تأیید پاسخ مقصد با هم تست شوند.",
+        keyboard: { inline_keyboard: [
+          [{ text: "🤖 وضعیت مقصدها", callback_data: "catch:targets" }],
+          [{ text: "⬅️ بازگشت به Catch", callback_data: "catch:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
+      };
+    case "catch:targets":
+      return {
+        text: "🤖 KAGECATCH / TARGETS\n━━━━━━━━━━━━━━━━━━\n🔴 SenpaiCatcherBot · ویدیو · /pick · غیرفعال (مقصد Frozen)\n🟡 HentaCatcherBot · تصویر · /catch · آماده نیست؛ تشخیص اختصاصی متصل نشده\n🟡 Character_Catcher_Bot · تصویر · /catch · آماده نیست؛ تشخیص اختصاصی متصل نشده\n━━━━━━━━━━━━━━━━━━\nهیچ‌کدام از مقصدها از این صفحه فرمان دریافت نمی‌کنند. وضعیت مقصدها به معنی تأیید دسترسی یا موفقیت Catch نیست.",
+        keyboard: { inline_keyboard: [
+          [{ text: "🧠 وضعیت موتور", callback_data: "catch:engine" }],
+          [{ text: "⬅️ بازگشت به Catch", callback_data: "catch:open" }],
+          ...BACK_MENU.inline_keyboard,
+        ] },
       };
     case "bots:open":
       return {
