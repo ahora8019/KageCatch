@@ -851,7 +851,7 @@ test("a valid Telegram invite deep link on /start creates a member record", asyn
   }), env);
   assert.equal(response.status, 200);
   assert.equal(calls.length, 1, "invite redemption must send one dashboard message only");
-  assert.match(calls[0].text, /KAGECATCH \\| داشبورد/);
+  assert.match(calls[0].text, /KAGECATCH \| داشبورد/);
   assert.match(calls[0].text, /👤 کاربر: کاربر/);
   assert.match(calls[0].text, /هستهٔ کنترل: آنلاین/);
   assert.match(calls[0].text, /هستهٔ پایتون: نامشخص/);
