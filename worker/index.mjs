@@ -978,7 +978,7 @@ async function buildMainDashboard(env, telegramUser, role) {
       "🎯 وضعیت شکار: غیرفعال",
       "━━━━━━━━━━━━━━━━━━━━",
       "یک گزینه را انتخاب کن:",
-    ].join("\\n"),
+    ].join("\n"),
     reply_markup: buildRoleMenu(role),
   };
 }
