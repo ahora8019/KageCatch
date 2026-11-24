@@ -1,4 +1,4 @@
-"""Durable implementation of the ManualReviewQueue state-machine contract."""
+""""Durable implementation of the ManualReviewQueue state-machine contract."""
 
 from __future__ import annotations
 
@@ -55,9 +55,12 @@ class PersistentManualReviewQueue:
         ):
             raise ValueError("invalid idempotency_key")
         now = self._now()
+        normalized_idempotency_key = idempotency_key.strip() if idempotency_key is not None else None
         review_id = (
-            hashlib.sha256(("kagecatch-review:" + idempotency_key).encode("utf-8")).hexdigest()[:32]
-            if idempotency_key is not None else uuid4().hex
+            hashlib.sha256(
+                ("kagecatch-review:" + user_id + ":" + normalized_idempotency_key).encode("utf-8")
+            ).hexdigest()[:32]
+            if normalized_idempotency_key is not None else uuid4().hex
         )
         item = ReviewItem(
             review_id=review_id, user_id=user_id, spawn_id=spawn_id,
@@ -140,3 +143,4 @@ class PersistentManualReviewQueue:
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("manual review store returned an invalid record") from exc
+"
