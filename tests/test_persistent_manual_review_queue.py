@@ -68,7 +68,7 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         queue = PersistentManualReviewQueue(store=store)
         first = await queue.enqueue(
             user_id="12345", spawn_id=90, anime_name="KonoSuba",
-            candidates=("Megumin", "Aqua"), idempotency_key="recognition:job-1",
+            candidates=("Megumin", "Aqua"), idempotency_key=" recognition:job-1 ",
         )
         second = await queue.enqueue(
             user_id="12345", spawn_id=90, anime_name="KonoSuba",
@@ -76,6 +76,20 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first.review_id, second.review_id)
         self.assertEqual(len(store.records), 1)
+
+    async def test_idempotency_key_is_scoped_per_user(self):
+        store = FakeDurableStore()
+        queue = PersistentManualReviewQueue(store=store)
+        first = await queue.enqueue(
+            user_id="12345", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin", "Aqua"), idempotency_key="recognition:job-1",
+        )
+        second = await queue.enqueue(
+            user_id="99999", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin", "Aqua"), idempotency_key="recognition:job-1",
+        )
+        self.assertNotEqual(first.review_id, second.review_id)
+        self.assertEqual(len(store.records), 2)
 
     async def test_idempotency_key_is_validated(self):
         queue = PersistentManualReviewQueue(store=FakeDurableStore())
