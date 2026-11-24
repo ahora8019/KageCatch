@@ -147,6 +147,41 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
         queue = PersistentManualReviewQueue(store=ExpiringStore())
         self.assertEqual(await queue.expire_old_items(), 4)
 
+    async def test_deserialize_rejects_naive_timestamps(self):
+        record = {
+            "review_id": "review-1",
+            "user_id": "12345",
+            "spawn_id": 90,
+            "anime_name": "KonoSuba",
+            "candidates": ["Megumin"],
+            "created_at": "2026-11-08T12:00:00",
+            "expires_at": "2026-11-08T12:15:00+00:00",
+            "status": "pending",
+            "selected_character": None,
+        }
+        with self.assertRaises(RuntimeError):
+            PersistentManualReviewQueue._deserialize(record)
+
+    async def test_deserialize_rejects_non_positive_expiry_window(self):
+        base = {
+            "review_id": "review-1",
+            "user_id": "12345",
+            "spawn_id": 90,
+            "anime_name": "KonoSuba",
+            "candidates": ["Megumin"],
+            "status": "pending",
+            "selected_character": None,
+        }
+        for expires_at in ("2026-11-08T12:00:00+00:00", "2026-11-08T11:59:59+00:00"):
+            with self.subTest(expires_at=expires_at):
+                record = {
+                    **base,
+                    "created_at": "2026-11-08T12:00:00+00:00",
+                    "expires_at": expires_at,
+                }
+                with self.assertRaises(RuntimeError):
+                    PersistentManualReviewQueue._deserialize(record)
+
 
 if __name__ == "__main__":
     unittest.main()
