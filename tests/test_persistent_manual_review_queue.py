@@ -135,7 +135,9 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
             candidates=("Megumin",),
         )
 
-        rejected = await queue.reject(user_id="12345", review_id=item.review_id)
+        rejected = await queue.reject(
+            user_id="12345", review_id=item.review_id,
+        )
 
         self.assertEqual(rejected.status, ReviewStatus.REJECTED)
         self.assertIsNone(rejected.selected_character)
@@ -195,6 +197,30 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
                 }
                 with self.assertRaises(RuntimeError):
                     PersistentManualReviewQueue._deserialize(record)
+
+    async def test_deserialize_rejects_worker_incompatible_payload_shapes(self):
+        base = {
+            "review_id": "review-1",
+            "user_id": "12345",
+            "anime_name": "KonoSuba",
+            "created_at": "2026-11-08T12:00:00+00:00",
+            "expires_at": "2026-11-08T12:15:00+00:00",
+            "status": "pending",
+            "selected_character": None,
+        }
+        for bad_spawn_id, bad_candidates in (
+            ("90", ["Megumin"]),
+            (True, ["Megumin"]),
+            (90, "Megumin"),
+            (90, [""]),
+        ):
+            with self.subTest(bad_spawn_id=bad_spawn_id, bad_candidates=bad_candidates):
+                with self.assertRaises(RuntimeError):
+                    PersistentManualReviewQueue._deserialize({
+                        **base,
+                        "spawn_id": bad_spawn_id,
+                        "candidates": bad_candidates,
+                    })
 
 
 if __name__ == "__main__":
