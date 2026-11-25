@@ -388,5 +388,36 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(elapsed, 0.5)
 
 
+    async def test_stop_event_aborts_queue_claim_backoff(self):
+        import asyncio
+
+        stop = asyncio.Event()
+
+        class FailingClaimQueue(FakeQueue):
+            def __init__(self):
+                super().__init__(None)
+                self.claim_calls = 0
+
+            async def claim_next(self, worker_id, *, lease_seconds=60, job_types=None):
+                self.claim_calls += 1
+                raise OSError("temporary queue read failure")
+
+            async def recover_expired(self):
+                stop.set()
+                return 0
+
+        queue = FailingClaimQueue()
+        worker = RecognitionWorker(
+            queue=queue, resolver=FakeResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer", recovery_interval=10,
+        )
+        started = asyncio.get_running_loop().time()
+        await worker.run_forever(stop_event=stop, idle_sleep=0.001)
+        elapsed = asyncio.get_running_loop().time() - started
+
+        self.assertEqual(queue.claim_calls, 1)
+        self.assertLess(elapsed, 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()
