@@ -114,6 +114,8 @@ class PersistentManualReviewQueue:
             "candidates": list(item.candidates),
             "created_at": item.created_at.isoformat(),
             "expires_at": item.expires_at.isoformat(),
+            "status": item.status.value,
+            "selected_character": item.selected_character,
         }
 
     @staticmethod
