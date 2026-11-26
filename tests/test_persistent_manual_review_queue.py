@@ -223,5 +223,15 @@ class PersistentManualReviewQueueTests(unittest.IsolatedAsyncioTestCase):
                     })
 
 
+    async def test_serialize_persists_terminal_state_fields(self):
+        item = await PersistentManualReviewQueue(store=FakeDurableStore()).enqueue(
+            user_id="12345", spawn_id=90, anime_name="KonoSuba",
+            candidates=("Megumin",),
+        )
+        payload = PersistentManualReviewQueue._serialize(item)
+        self.assertEqual(payload["status"], ReviewStatus.PENDING.value)
+        self.assertIsNone(payload["selected_character"])
+
+
 if __name__ == "__main__":
     unittest.main()
