@@ -419,5 +419,25 @@ class RecognitionWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(elapsed, 0.5)
 
 
+    async def test_worker_loop_propagates_cancellation_during_recovery_backoff(self):
+        import asyncio
+
+        stop = asyncio.Event()
+
+        class FailingQueue(FakeQueue):
+            async def recover_expired(self):
+                raise OSError("temporary storage error")
+
+        worker = RecognitionWorker(
+            queue=FailingQueue(None), resolver=FakeResolver(), review_queue=FakeReviewQueue(),
+            worker_id="recognizer", recovery_interval=10,
+        )
+        task = asyncio.create_task(worker.run_forever(stop_event=stop, idle_sleep=0.001))
+        await asyncio.sleep(0)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+
 if __name__ == "__main__":
     unittest.main()
