@@ -258,6 +258,40 @@ test("stats callback edits the group panel with live persisted queue counts", as
   assert.match(edit.payload.text, /تکمیل: 1/);
 });
 
+test("stale processing claims are recovered and exhausted attempts are failed", async () => {
+  const env = envWithDb();
+  const accepted = await enqueuePanelRequest(
+    signedRequest(env, { owner_id: "12345", chat_id: -100123456, source_message_id: 321 }),
+    env,
+  );
+  const requestId = (await accepted.json()).request_id;
+  const row = env.db.rows.get(requestId);
+  row.status = "processing";
+  row.attempts = 2;
+  row.updated_at = "2000-01-01 00:00:00";
+
+  const sent = [];
+  const result = await processPanelQueue(env, async (_method, payload) => {
+    sent.push(payload);
+    return { message_id: 808 };
+  });
+
+  assert.deepEqual(result, { processed: 1 });
+  assert.equal(sent.length, 1);
+  assert.equal(env.db.rows.get(requestId).status, "completed");
+  assert.equal(env.db.rows.get(requestId).attempts, 3);
+
+  row.status = "processing";
+  row.attempts = 3;
+  row.updated_at = "2000-01-01 00:00:00";
+  const exhausted = await processPanelQueue(env, async () => {
+    throw new Error("should not redeliver exhausted claim");
+  });
+  assert.deepEqual(exhausted, { processed: 0 });
+  assert.equal(env.db.rows.get(requestId).status, "failed");
+});
+
+
 
 test("engine panel reads real Core state and renders explicit enable/disable controls", async () => {
   const env = envWithDb();
